@@ -1,8 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving `coder`.
-
-## Development setup
+## Setup
 
 ```bash
 git clone https://github.com/canesin/coder.git
@@ -12,38 +10,31 @@ npm install
 
 ## Validation
 
-Before opening a PR, run:
-
 ```bash
-npm run lint
-npm run format:check
-npm test
+npm run lint          # biome check
+npm run format:check  # biome format
+npm test              # node --test (101 tests)
 npm audit --audit-level=high
 ```
 
-If you need automatic fixes/formatting:
+Auto-fix formatting:
 
 ```bash
 npm run lint:fix
 ```
 
-## Pull request checklist
-
-- Keep changes focused and scoped to one concern.
-- Add or update tests when behavior changes.
-- Update `README.md` if user-facing behavior or config changes.
-- Never commit secrets or local machine config (`.env`, `.mcp.json`, `.claude/settings.local.json`).
-
 ## Commit hygiene
 
-This project includes a built-in `ppcommit` checker:
+This project uses `ppcommit` (tree-sitter AST-based) to enforce commit quality:
 
 ```bash
-coder ppcommit
+coder ppcommit              # check all files
+coder ppcommit --base main  # check branch diff only
 ```
 
-For PR-scope checks:
+## Pull request checklist
 
-```bash
-coder ppcommit --base main
-```
+- Keep changes focused and scoped to one concern
+- Add or update tests when behavior changes
+- Update README.md if user-facing behavior or config changes
+- Never commit secrets or local config (`.env`, `.mcp.json`, `.claude/settings.local.json`)

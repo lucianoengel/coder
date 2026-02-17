@@ -1,4 +1,9 @@
 {
+  "models": {
+    "gemini": "gemini-2.5-flash",
+    "geminiPreview": "gemini-3-flash-preview",
+    "claude": "claude-opus-4-6"
+  },
   "workflow": {
     "agentRoles": {
       "issueSelector": "gemini",
@@ -23,8 +28,28 @@
   "ppcommit": {
     "enableLlm": true,
     "llmServiceUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "llmApiKey": "",
     "llmApiKeyEnv": "GEMINI_API_KEY",
     "llmModel": "gemini-3-flash-preview"
+  },
+  "test": {
+    "command": "",
+    "allowNoTests": false
+  },
+  "design": {
+    "stitch": {
+      "enabled": false,
+      "serverCommand": "",
+      "apiKeyEnv": "GOOGLE_STITCH_API_KEY"
+    },
+    "specDir": "spec/UI"
+  },
+  "github": {
+    "epicAsMilestone": true,
+    "defaultLabels": []
+  },
+  "agents": {
+    "preferApi": false,
+    "geminiApiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
+    "anthropicApiEndpoint": "https://api.anthropic.com"
   }
 }

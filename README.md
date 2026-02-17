@@ -1,66 +1,87 @@
 # coder
 
-Multi-agent MCP server orchestrating `gemini` + `claude` + `codex` across three composable workflows: **Develop**, **Research**, and **Design**.
+MCP server that orchestrates `gemini`, `claude`, and `codex` CLI agents across three composable pipelines: **Develop**, **Research**, and **Design**.
+
+Each pipeline step is an independent **machine** — callable as a standalone MCP tool or composed into full workflows. An LLM host (Claude Code, Cursor, etc.) connects to the MCP server and drives the tools.
 
 ## Prerequisites
 
-- Node.js >= 20
-- `gemini`, `claude` (Claude Code), and `codex` CLIs installed and authenticated
-- Optional: Google Stitch MCP server for the Design workflow
+| Requirement | Notes |
+|-------------|-------|
+| Node.js >= 20 | Runtime |
+| `gemini` CLI | Default agent for issue selection, plan review, research |
+| `claude` (Claude Code) | Default agent for planning, implementation |
+| `codex` CLI | Default agent for code review, committing |
+| `gh` CLI | GitHub issue listing, PR creation |
+
+Agent role assignments are configurable — any role can use any of the three backends.
 
 ## Install
 
 ```bash
-cd coder
 npm install
-npm link
+npm link   # makes `coder` and `coder-mcp` available globally
 ```
 
-## MCP Server
+## Quick start
 
-The primary interface is the MCP server (`coder-mcp`):
+### As MCP server (primary interface)
+
+Add to your MCP client config (`.mcp.json`, Claude Code settings, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "coder": {
+      "command": "node",
+      "args": ["./bin/coder-mcp.js"]
+    }
+  }
+}
+```
+
+Or run directly:
 
 ```bash
-# stdio (default — used by Claude Code, Cursor, etc.)
-coder-mcp
-
-# HTTP (long-running daemon)
-coder-mcp --transport http --host 127.0.0.1 --port 8787 --path /mcp
+coder-mcp                    # stdio (default)
+coder-mcp --transport http   # HTTP on 127.0.0.1:8787/mcp
 ```
 
-## CLI
-
-The `coder` CLI is for management only:
+### CLI (management)
 
 ```bash
-coder status              # Show workflow state
-coder config              # Show resolved config
-coder ppcommit            # Run commit hygiene checks
-coder ppcommit --base main  # PR-scope check
-coder serve               # Start HTTP MCP server
+coder status              # workflow state and progress
+coder config              # resolved configuration
+coder ppcommit            # commit hygiene (all files)
+coder ppcommit --base main  # commit hygiene (branch diff only)
+coder serve               # start MCP server (delegates to coder-mcp)
 ```
 
-## Three Workflows
+## Pipelines
 
 ### Develop
 
-Consumes GitHub/Linear issues, implements code, pushes PRs:
+Picks up GitHub/Linear issues, implements code, pushes PRs:
 
 ```
 issue-list → issue-draft → planning → plan-review → implementation → quality-review → pr-creation
 ```
 
-Start via MCP: `coder_workflow { action: "start", workflow: "develop" }`
+```
+coder_workflow { action: "start", workflow: "develop" }
+```
 
 ### Research
 
-Turns free-form ideas into validated, reference-grounded issue backlogs:
+Turns ideas into validated, reference-grounded issue backlogs:
 
 ```
 context-gather → deep-research → tech-selection → poc-validation → issue-synthesis → issue-critique → spec-publish
 ```
 
-Start via MCP: `coder_workflow { action: "start", workflow: "research", pointers: "..." }`
+```
+coder_workflow { action: "start", workflow: "research", pointers: "..." }
+```
 
 ### Design
 
@@ -70,61 +91,84 @@ Generates UI designs from intent descriptions via Google Stitch:
 intent-capture → ui-generation → ui-refinement → spec-export
 ```
 
-Start via MCP: `coder_workflow { action: "start", workflow: "design", designIntent: "..." }`
-
-Outputs: `/spec/UI/{screen-name}.png` + `/spec/UI/{screen-name}.md`
-
-## Machine Architecture
-
-Every workflow step is a **machine** — an atomic, independently callable unit:
-
 ```
-defineMachine({ name, description, inputSchema, execute, mcpAnnotations })
+coder_workflow { action: "start", workflow: "design", designIntent: "..." }
 ```
 
-Each machine is automatically registered as an MCP tool (`coder_develop_planning`, `coder_research_context_gather`, etc.) AND composable into workflow pipelines via `WorkflowRunner`.
+## Architecture
+
+### Machines
+
+Every pipeline step is a machine defined with `defineMachine()`:
+
+```js
+defineMachine({ name, description, inputSchema, execute })
+```
+
+Machines are auto-registered as MCP tools (`coder_develop_planning`, `coder_research_context_gather`, etc.) and composable into pipelines via `WorkflowRunner`.
 
 ```
 src/machines/
-  develop/     # 7 machines
-  research/    # 7 machines
-  design/      # 4 machines
-  shared/      # 2 reusable machines (web-research, poc-runner)
+  develop/     7 machines
+  research/    7 machines
+  design/      4 machines
+  shared/      2 reusable (web-research, poc-runner)
 ```
 
-## Agent Layer
+### Agents
 
-Three agent backends:
+Three backends, assigned to roles via config:
 
-| Mode | Backend | Use Case |
-|------|---------|----------|
-| `cli` | `CliAgent` (shell) | Complex tasks: planning, implementation, review |
-| `api` | `ApiAgent` (HTTP) | Simple tasks: classification, JSON extraction, scoring |
-| `mcp` | `McpAgent` (MCP SDK) | External MCP servers (Stitch) |
+| Backend | Class | Use case |
+|---------|-------|----------|
+| CLI | `CliAgent` | Complex tasks — planning, implementation, review |
+| API | `ApiAgent` | Simple tasks — classification, JSON extraction |
+| MCP | `McpAgent` | External MCP servers (Stitch) |
 
-`AgentPool.getAgent(role, { scope, mode })` manages agent lifecycle and caching.
+`AgentPool.getAgent(role, { scope, mode })` manages lifecycle and caching. Roles: `issueSelector`, `planner`, `planReviewer`, `programmer`, `reviewer`, `committer`.
 
-## Workflow Control Plane
+### Workflow control
 
-`coder_workflow` is the unified control tool:
+`coder_workflow` is the unified control plane:
 
 | Action | Description |
 |--------|-------------|
-| `start` | Launch a workflow (develop/research/design) |
-| `status` | Check current run state |
-| `events` | Read event log with cursor pagination |
+| `start` | Launch a pipeline run |
+| `status` | Current stage, heartbeat, progress |
+| `events` | Structured event log with cursor pagination |
 | `pause` | Pause at next checkpoint |
 | `resume` | Resume paused run |
-| `cancel` | Cancel active run |
+| `cancel` | Cooperative cancellation |
 
-XState v5 models the workflow lifecycle: `idle → running → paused/cancelling → completed/failed/cancelled`.
+XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled`.
+
+### State
+
+All state lives under `.coder/` (gitignored):
+
+| Path | Purpose |
+|------|---------|
+| `workflow-state.json` | Per-issue step completion |
+| `loop-state.json` | Multi-issue develop queue |
+| `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
+| `scratchpad/` | Research pipeline checkpoints |
+| `logs/*.jsonl` | Structured event logs |
+| `state.db` | Optional SQLite mirror |
 
 ## Configuration
 
-`coder.json` in workspace root or `~/.config/coder/config.json`:
+Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP tool inputs.
 
-```json
+```jsonc
 {
+  // Model selection
+  "models": {
+    "gemini": "gemini-2.5-flash",
+    "geminiPreview": "gemini-3-flash-preview",
+    "claude": "claude-opus-4-6"
+  },
+
+  // Agent role assignments (gemini | claude | codex)
   "workflow": {
     "agentRoles": {
       "issueSelector": "gemini",
@@ -134,84 +178,66 @@ XState v5 models the workflow lifecycle: `idle → running → paused/cancelling
       "reviewer": "codex",
       "committer": "codex"
     },
-    "wip": { "push": true, "autoCommit": true },
-    "scratchpad": { "sqliteSync": true }
+    "wip": { "push": true, "autoCommit": true }
   },
+
+  // Commit hygiene (tree-sitter AST-based)
+  "ppcommit": {
+    "enableLlm": true,
+    "llmModel": "gemini-3-flash-preview"
+  },
+
+  // Test execution
+  "test": {
+    "command": "",
+    "allowNoTests": false
+  },
+
+  // Design pipeline (requires Google Stitch)
   "design": {
-    "stitch": { "enabled": true, "serverCommand": "npx stitch-mcp" },
+    "stitch": { "enabled": false },
     "specDir": "spec/UI"
-  },
-  "github": {
-    "epicAsMilestone": true,
-    "defaultLabels": ["coder"]
-  },
-  "agents": {
-    "preferApi": false,
-    "geminiApiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
-    "anthropicApiEndpoint": "https://api.anthropic.com"
   }
 }
 ```
 
-## GitHub Integration
-
-The research workflow's `spec-publish` machine can push issues to GitHub:
-- Creates milestones (Epics) via `gh api`
-- Topologically sorts issues by dependencies
-- Creates issues with labels and milestone assignment
-- Adds "Depends on #N" cross-references
-
-## State and Durability
-
-All state lives under `.coder/`:
-
-| File | Purpose |
-|------|---------|
-| `state.json` | Per-issue workflow state |
-| `loop-state.json` | Multi-issue develop loop state |
-| `workflow-state.json` | XState lifecycle snapshot |
-| `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
-| `scratchpad/` | Research artifacts, pipeline checkpoints |
-| `logs/*.jsonl` | Structured event logs |
-| `state.db` | Optional SQLite mirror |
+See [`coder.example.json`](coder.example.json) for a full example.
 
 ## ppcommit
 
-Built-in commit hygiene checks (tree-sitter AST-based):
-- Blocks: secrets, TODOs, LLM markers, narration comments, emojis in code, magic numbers, placeholder code, compat hacks, over-engineering
-- `coder ppcommit` or `coder ppcommit --base main`
+Built-in commit hygiene checker using tree-sitter AST analysis. Blocks:
+
+- Secrets and API keys
+- TODO/FIXME comments
+- LLM narration markers (`Here we...`, `Step 1:`, etc.)
+- Emojis in code (not strings)
+- Magic numbers
+- Placeholder code and compat hacks
+- Over-engineering patterns
+- New markdown files outside allowed directories
+
+Optional LLM-assisted checks via Gemini API for deeper analysis.
 
 ## Safety
 
-- Workspace boundaries enforced by default
-- Non-destructive reset between issues (opt-in `destructiveReset: true`)
+- Workspace boundaries enforced — agents operate within the target repo
+- Non-destructive reset between issues (opt-in `destructiveReset`)
 - Health-check URLs restricted to localhost
 - One active run per workspace
+- Session TTL with automatic cleanup (HTTP mode)
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
 
-## Architecture
+## Environment variables
 
-```mermaid
-flowchart TD
-  U[User / Automation] --> CP[coder_workflow control plane]
-  CP --> WF{Select workflow}
-
-  WF -->|develop| DEV[Develop pipeline]
-  WF -->|research| RES[Research pipeline]
-  WF -->|design| DES[Design pipeline]
-
-  DEV --> D1[Issue intake] --> D2[Draft + Plan] --> D3[Implement] --> D4[Review + PR]
-  RES --> R1[Context gather] --> R2[Deep research] --> R3[Validation] --> R4[Issue synthesis]
-  DES --> G1[Intent capture] --> G2[UI generation] --> G3[Refinement] --> G4[Spec export]
-
-  D4 --> OUT1[Code + PRs]
-  R4 --> OUT2[Issue backlog]
-  G4 --> OUT3[UI specs + PNGs]
-
-  CP --> DUR[Durability: .coder/]
-  CP --> OBS[Observability: status, events, logs]
-```
+| Variable | Purpose |
+|----------|---------|
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI + ppcommit LLM checks (auto-aliased) |
+| `ANTHROPIC_API_KEY` | Claude Code |
+| `OPENAI_API_KEY` | Codex CLI |
+| `GITHUB_TOKEN` | GitHub API (issues, PRs) |
+| `LINEAR_API_KEY` | Linear issue tracking |
+| `GOOGLE_STITCH_API_KEY` | Design pipeline (Google Stitch) |
 
 ## Contributing
 
@@ -219,4 +245,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-See [LICENSE](LICENSE).
+[MIT](LICENSE)

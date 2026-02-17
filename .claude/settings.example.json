@@ -2,11 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(gemini:*)",
-      "Bash(codex exec:*)",
       "Bash(codex:*)",
       "Bash(gh issue list:*)",
-      "Bash(gh issue view:*)"
+      "Bash(gh issue view:*)",
+      "Bash(gh pr:*)"
     ]
   }
 }
-
