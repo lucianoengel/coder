@@ -11,6 +11,7 @@ node_modules/
 # Workflow artifacts
 .coder/
 .coder-worktrees/
+issues/
 
 # IDE
 .idea/
