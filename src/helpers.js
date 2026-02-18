@@ -50,8 +50,24 @@ export const DEFAULT_PASS_ENV = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
   "LINEAR_API_KEY",
 ];
+
+export function detectRemoteType(repoDir) {
+  const res = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (res.status === 0) {
+    const url = (res.stdout || "").trim();
+    const httpsMatch = url.match(/^https?:\/\/([^/:]+)/);
+    const sshMatch = url.match(/^[^@]+@([^:]+):/);
+    const host = (httpsMatch?.[1] || sshMatch?.[1] || "").toLowerCase();
+    if (host.includes("gitlab")) return "gitlab";
+  }
+  return "github";
+}
 
 const AGENT_NOISE_LINE_PATTERNS = [
   /^Warning:/i,
