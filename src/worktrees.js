@@ -35,6 +35,7 @@ export function normalizeBranchType(type, { fallback = "feat" } = {}) {
 
 function sourceShortCode(source) {
   if (source === "github") return "GH";
+  if (source === "gitlab") return "GL";
   if (source === "linear") return "LN";
   const normalized = String(source || "")
     .toUpperCase()

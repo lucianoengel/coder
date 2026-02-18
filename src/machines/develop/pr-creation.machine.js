@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   buildPrBodyFromIssue,
   computeGitWorktreeFingerprint,
+  detectRemoteType,
   runPpcommit,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -18,7 +19,7 @@ import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 export default defineMachine({
   name: "develop.pr_creation",
   description:
-    "Create pull request: commit changes, push to remote, create PR via gh CLI.",
+    "Create pull request or merge request: commit changes, push to remote, create PR/MR via gh/glab CLI.",
   inputSchema: z.object({
     type: z.string().default("feat"),
     semanticName: z.string().default(""),
@@ -136,7 +137,7 @@ export default defineMachine({
     // Append issue link
     if (state.selected) {
       const { source, id } = state.selected;
-      if (source === "github") {
+      if (source === "github" || source === "gitlab") {
         const normalized = String(id).trim();
         body += normalized.includes("#")
           ? `\n\nCloses ${normalized}`
@@ -150,28 +151,53 @@ export default defineMachine({
       input.title ||
       `${normalizedType}: ${state.selected?.title || input.semanticName || state.branch}`;
 
-    // Create PR
-    const prArgs = [
-      "pr",
-      "create",
-      "--head",
-      remoteBranch,
-      "--title",
-      prTitle,
-      "--body",
-      body,
-    ];
-    if (baseBranch) prArgs.push("--base", baseBranch);
-    const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+    // Create PR/MR
+    const source = state.selected?.source;
+    const useGitlab =
+      source === "gitlab" ||
+      (source === "local" && detectRemoteType(repoRoot) === "gitlab");
+
+    let pr;
+    let cliLabel;
+    if (useGitlab) {
+      const mrArgs = [
+        "mr",
+        "create",
+        "--source-branch",
+        remoteBranch,
+        "--title",
+        prTitle,
+        "--description",
+        body,
+        "--yes",
+      ];
+      if (baseBranch) mrArgs.push("--target-branch", baseBranch);
+      pr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
+      cliLabel = "glab mr create";
+    } else {
+      const prArgs = [
+        "pr",
+        "create",
+        "--head",
+        remoteBranch,
+        "--title",
+        prTitle,
+        "--body",
+        body,
+      ];
+      if (baseBranch) prArgs.push("--base", baseBranch);
+      pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+      cliLabel = "gh pr create";
+    }
     if (pr.status !== 0)
-      throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
+      throw new Error(`${cliLabel} failed: ${pr.stderr || pr.stdout}`);
 
     const raw = (pr.stdout || "").trim();
     const lines = raw.split("\n").filter((l) => l.trim());
     const prUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
     if (!prUrl || !prUrl.startsWith("http")) {
       throw new Error(
-        `gh pr create did not return a PR URL. Output:\n${raw || "(empty)"}`,
+        `${cliLabel} did not return a URL. Output:\n${raw || "(empty)"}`,
       );
     }
 
