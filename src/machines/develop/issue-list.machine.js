@@ -130,7 +130,7 @@ export default defineMachine({
     const { agentName, agent } = ctx.agentPool.getAgent("issueSelector", {
       scope: "workspace",
     });
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     // Sub-step: list Linear teams if LINEAR_API_KEY is available
@@ -177,7 +177,7 @@ Return ONLY valid JSON in this schema:
           if (match) state.selectedProject = match;
         }
         state.steps.listedProjects = true;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       } catch (err) {
         ctx.log({
           event: "step0_list_projects_failed",
@@ -185,7 +185,7 @@ Return ONLY valid JSON in this schema:
         });
         state.steps.listedProjects = true;
         state.linearProjects ||= [];
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
     }
 
@@ -235,7 +235,7 @@ Return ONLY valid JSON in this schema:
 
     state.steps.listedIssues = true;
     state.issuesPayload = issuesPayload;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return {
       status: "ok",

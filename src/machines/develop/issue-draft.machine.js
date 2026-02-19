@@ -41,7 +41,7 @@ export default defineMachine({
   async execute(input, ctx) {
     await checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     // Stale workflow check
@@ -65,7 +65,7 @@ export default defineMachine({
     state.repoPath = repoPath;
     state.baseBranch = input.baseBranch || null;
     state.branch = buildIssueBranchName(input.issue);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Update pool repo root
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
@@ -93,7 +93,7 @@ export default defineMachine({
       sqliteSync: ctx.config.workflow.scratchpad.sqliteSync,
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
-    scratchpad.restoreFromSqlite(scratchpadPath);
+    await scratchpad.restoreFromSqlite(scratchpadPath);
     if (
       !(await access(scratchpadPath)
         .then(() => true)
@@ -110,17 +110,17 @@ export default defineMachine({
       ].join("\n");
       await writeFile(scratchpadPath, header, "utf8");
     }
-    scratchpad.appendSection(scratchpadPath, "Input", [
+    await scratchpad.appendSection(scratchpadPath, "Input", [
       `- clarifications: ${(input.clarifications || "(none provided)").trim()}`,
     ]);
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Verify clean repo, then set up ignore files
     gitCleanOrThrow(repoRoot);
     await ensureGitignore(ctx.workspaceDir);
     state.steps.verifiedCleanRepo = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
@@ -211,9 +211,9 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
     }
 
     state.steps.wroteIssue = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
-    scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
+    await scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
       `- issue_artifact: ${paths.issue}`,
       "- status: complete",
     ]);
