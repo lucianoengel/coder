@@ -70,7 +70,7 @@ function loadLocalIssues(issuesDir) {
 export default defineMachine({
   name: "develop.issue_list",
   description:
-    "List assigned GitHub and Linear issues, rate difficulty, return with recommended_index.",
+    "List assigned GitHub, GitLab, and Linear issues, rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
     localIssuesDir: z
@@ -189,7 +189,7 @@ Return ONLY valid JSON in this schema:
       projectFilterClause = `\nOnly include Linear issues from projects matching "${input.projectFilter}".`;
     }
 
-    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilterClause}
+    const listPrompt = `Use your GitHub MCP, GitLab MCP, and Linear MCP to list the issues assigned to me.${projectFilterClause}
 
 Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
@@ -199,7 +199,7 @@ Return ONLY valid JSON in this schema:
 {
   "issues": [
     {
-      "source": "github" | "linear",
+      "source": "github" | "gitlab" | "linear",
       "id": "string",
       "title": "string",
       "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
