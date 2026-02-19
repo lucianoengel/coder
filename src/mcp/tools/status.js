@@ -7,7 +7,13 @@ import { resolveWorkspaceForMcp } from "../workspace.js";
 
 async function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
-  if (!(await access(p).then(() => true, () => false))) return null;
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
     return JSON.parse(await readFile(p, "utf8"));
   } catch {
@@ -17,7 +23,13 @@ async function readActivityFile(workspaceDir) {
 
 async function readMcpHealth(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (!(await access(p).then(() => true, () => false))) return null;
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
     return JSON.parse(await readFile(p, "utf8"));
   } catch {
@@ -27,7 +39,13 @@ async function readMcpHealth(workspaceDir) {
 
 async function readResearchState(workspaceDir) {
   const statePath = path.join(workspaceDir, ".coder", "research-state.json");
-  if (!(await access(statePath).then(() => true, () => false))) return null;
+  if (
+    !(await access(statePath).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
     const state = JSON.parse(await readFile(statePath, "utf8"));
     const runId = state.runId;
@@ -40,7 +58,12 @@ async function readResearchState(workspaceDir) {
       "pipeline.json",
     );
     let pipeline = null;
-    if (await access(pipelinePath).then(() => true, () => false)) {
+    if (
+      await access(pipelinePath).then(
+        () => true,
+        () => false,
+      )
+    ) {
       try {
         pipeline = JSON.parse(await readFile(pipelinePath, "utf8"));
       } catch {
@@ -64,12 +87,24 @@ async function getStatus(workspaceDir) {
     : null;
 
   const [issueExists, planExists, critiqueExists] = await Promise.all([
-    access(path.join(artifactsDir, "ISSUE.md")).then(() => true, () => false),
-    access(path.join(artifactsDir, "PLAN.md")).then(() => true, () => false),
-    access(path.join(artifactsDir, "PLANREVIEW.md")).then(() => true, () => false),
+    access(path.join(artifactsDir, "ISSUE.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLAN.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLANREVIEW.md")).then(
+      () => true,
+      () => false,
+    ),
   ]);
   const currentExists = scratchpadPath
-    ? await access(scratchpadPath).then(() => true, () => false)
+    ? await access(scratchpadPath).then(
+        () => true,
+        () => false,
+      )
     : false;
 
   return {

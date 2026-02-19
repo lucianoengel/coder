@@ -1,9 +1,15 @@
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loopStatePathFor, statePathFor } from "../state/workflow-state.js";
 
 async function findLatestScratchpadFile(scratchpadDir) {
-  if (!(await access(scratchpadDir).then(() => true, () => false))) return null;
+  if (
+    !(await access(scratchpadDir).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
 
   /** @type {{ path: string, mtimeMs: number } | null} */
   let latest = null;
@@ -48,7 +54,12 @@ export function registerResources(server, defaultWorkspace) {
     },
     async () => {
       const statePath = statePathFor(defaultWorkspace);
-      if (!(await access(statePath).then(() => true, () => false))) {
+      if (
+        !(await access(statePath).then(
+          () => true,
+          () => false,
+        ))
+      ) {
         return {
           contents: [
             { uri: "coder://state", mimeType: "application/json", text: "{}" },
@@ -78,7 +89,12 @@ export function registerResources(server, defaultWorkspace) {
         "artifacts",
         "ISSUE.md",
       );
-      if (!(await access(issuePath).then(() => true, () => false))) {
+      if (
+        !(await access(issuePath).then(
+          () => true,
+          () => false,
+        ))
+      ) {
         return {
           contents: [
             {
@@ -112,7 +128,12 @@ export function registerResources(server, defaultWorkspace) {
         "artifacts",
         "PLAN.md",
       );
-      if (!(await access(planPath).then(() => true, () => false))) {
+      if (
+        !(await access(planPath).then(
+          () => true,
+          () => false,
+        ))
+      ) {
         return {
           contents: [
             {
@@ -146,7 +167,12 @@ export function registerResources(server, defaultWorkspace) {
         "artifacts",
         "PLANREVIEW.md",
       );
-      if (!(await access(critiquePath).then(() => true, () => false))) {
+      if (
+        !(await access(critiquePath).then(
+          () => true,
+          () => false,
+        ))
+      ) {
         return {
           contents: [
             {
@@ -178,7 +204,12 @@ export function registerResources(server, defaultWorkspace) {
     },
     async () => {
       const loopPath = loopStatePathFor(defaultWorkspace);
-      if (!(await access(loopPath).then(() => true, () => false))) {
+      if (
+        !(await access(loopPath).then(
+          () => true,
+          () => false,
+        ))
+      ) {
         return {
           contents: [
             {
@@ -213,7 +244,12 @@ export function registerResources(server, defaultWorkspace) {
       const scratchpadDir = path.join(defaultWorkspace, ".coder", "scratchpad");
       let scratchpadPath = null;
 
-      if (await access(statePath).then(() => true, () => false)) {
+      if (
+        await access(statePath).then(
+          () => true,
+          () => false,
+        )
+      ) {
         try {
           const state = JSON.parse(await readFile(statePath, "utf8"));
           if (
@@ -224,7 +260,13 @@ export function registerResources(server, defaultWorkspace) {
               defaultWorkspace,
               state.scratchpadPath,
             );
-            if (await access(candidate).then(() => true, () => false)) scratchpadPath = candidate;
+            if (
+              await access(candidate).then(
+                () => true,
+                () => false,
+              )
+            )
+              scratchpadPath = candidate;
           }
         } catch {
           // best-effort
