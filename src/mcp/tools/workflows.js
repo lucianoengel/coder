@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
@@ -163,7 +164,7 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
-function readWorkflowStatus(workspaceDir) {
+async function readWorkflowStatus(workspaceDir) {
   const loopState = loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
@@ -198,7 +199,7 @@ function readWorkflowStatus(workspaceDir) {
   const activityPath = path.join(workspaceDir, ".coder", "activity.json");
   if (existsSync(activityPath)) {
     try {
-      agentActivity = JSON.parse(readFileSync(activityPath, "utf8"));
+      agentActivity = JSON.parse(await readFile(activityPath, "utf8"));
     } catch {
       /* best-effort */
     }
@@ -208,7 +209,7 @@ function readWorkflowStatus(workspaceDir) {
   const healthPath = path.join(workspaceDir, ".coder", "mcp-health.json");
   if (existsSync(healthPath)) {
     try {
-      mcpHealth = JSON.parse(readFileSync(healthPath, "utf8"));
+      mcpHealth = JSON.parse(await readFile(healthPath, "utf8"));
     } catch {
       /* best-effort */
     }
@@ -474,7 +475,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         const { action, workflow } = params;
 
         if (action === "status") {
-          const status = readWorkflowStatus(ws);
+          const status = await readWorkflowStatus(ws);
           const workflowMachine = readWorkflowMachineStatus(
             ws,
             status.runId,

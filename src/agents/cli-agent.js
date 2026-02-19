@@ -116,15 +116,16 @@ export class CliAgent extends AgentAdapter {
       if (structured) {
         return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
       }
-      const model = this.config.models.gemini;
+      const model = this.config.models.gemini?.model;
       const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      if (this.config.models.claude) {
-        flags += ` --model ${this.config.models.claude}`;
+      const claudeModel = this.config.models.claude?.model;
+      if (claudeModel) {
+        flags += ` --model ${claudeModel}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
