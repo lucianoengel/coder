@@ -234,10 +234,14 @@ Do the thing`;
 
 test("detectRemoteType returns gitlab for HTTPS gitlab remote", () => {
   const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
-  spawnSync("git", ["remote", "add", "origin", "https://gitlab.com/org/repo.git"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://gitlab.com/org/repo.git"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
   assert.equal(detectRemoteType(repoDir), "gitlab");
 });
 
@@ -252,10 +256,14 @@ test("detectRemoteType returns gitlab for SSH gitlab remote", () => {
 
 test("detectRemoteType returns github for github remote", () => {
   const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
-  spawnSync("git", ["remote", "add", "origin", "https://github.com/org/repo.git"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/org/repo.git"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
   assert.equal(detectRemoteType(repoDir), "github");
 });
 
