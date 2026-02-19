@@ -284,7 +284,9 @@ export async function beginPipelineStep(
     ...meta,
   };
   await writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
-  await appendScratchpad(scratchpadPath, `Step: ${name}`, ["- status: running"]);
+  await appendScratchpad(scratchpadPath, `Step: ${name}`, [
+    "- status: running",
+  ]);
 }
 
 /**
