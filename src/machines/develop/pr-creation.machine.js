@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { z } from "zod";
 import {
@@ -16,6 +16,24 @@ import {
 import { defineMachine } from "../_base.js";
 import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 
+function spawnAsync(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { ...opts, stdio: "pipe" });
+    let stdout = "",
+      stderr = "";
+    proc.stdout.on("data", (d) => {
+      stdout += d;
+    });
+    proc.stderr.on("data", (d) => {
+      stderr += d;
+    });
+    proc.on("close", (code) => resolve({ status: code, stdout, stderr }));
+    proc.on("error", (err) =>
+      resolve({ status: 1, stdout: "", stderr: err.message }),
+    );
+  });
+}
+
 export default defineMachine({
   name: "develop.pr_creation",
   description:
@@ -29,7 +47,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.testsPassed) {
@@ -79,13 +97,13 @@ export default defineMachine({
     }
 
     // Commit uncommitted changes
-    const status = spawnSync("git", ["status", "--porcelain"], {
+    const status = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
     });
     const hasChanges = (status.stdout || "").trim().length > 0;
     if (hasChanges) {
-      const add = spawnSync("git", ["add", "."], {
+      const add = await spawnAsync("git", ["add", "."], {
         cwd: repoRoot,
         encoding: "utf8",
       });
@@ -93,7 +111,7 @@ export default defineMachine({
 
       const issueTitle = state.selected?.title || "coder workflow changes";
       const commitMsg = `${normalizedType}: ${issueTitle}`;
-      const commit = spawnSync("git", ["commit", "-m", commitMsg], {
+      const commit = await spawnAsync("git", ["commit", "-m", commitMsg], {
         cwd: repoRoot,
         encoding: "utf8",
       });
@@ -113,7 +131,7 @@ export default defineMachine({
     const baseBranch = input.base || state.baseBranch || null;
 
     // Push to remote
-    const push = spawnSync(
+    const push = await spawnAsync(
       "git",
       ["push", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, encoding: "utf8" },
@@ -176,7 +194,7 @@ export default defineMachine({
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
-      pr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
+      pr = await spawnAsync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
       cliLabel = "glab mr create";
     } else {
       const prArgs = [
@@ -190,7 +208,7 @@ export default defineMachine({
         body,
       ];
       if (baseBranch) prArgs.push("--base", baseBranch);
-      pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+      pr = await spawnAsync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
       cliLabel = "gh pr create";
     }
     if (pr.status !== 0)
@@ -209,7 +227,7 @@ export default defineMachine({
     state.prBranch = remoteBranch;
     state.prBase = baseBranch;
     state.steps.prCreated = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     ctx.log({
       event: "pr_created",

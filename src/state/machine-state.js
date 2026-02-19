@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -27,24 +27,36 @@ export function checkpointPathFor(workspaceDir, runId) {
   return path.join(workspaceDir, ".coder", `checkpoint-${runId}.json`);
 }
 
-export function saveCheckpoint(workspaceDir, checkpoint) {
+export async function saveCheckpoint(workspaceDir, checkpoint) {
   const p = checkpointPathFor(workspaceDir, checkpoint.runId);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, JSON.stringify(checkpoint, null, 2) + "\n");
 }
 
-export function loadCheckpoint(workspaceDir, runId) {
+export async function loadCheckpoint(workspaceDir, runId) {
   const p = checkpointPathFor(workspaceDir, runId);
-  if (!existsSync(p)) return null;
+  if (
+    !(await access(p)
+      .then(() => true)
+      .catch(() => false))
+  )
+    return null;
   try {
-    return WorkflowCheckpointSchema.parse(JSON.parse(readFileSync(p, "utf8")));
+    return WorkflowCheckpointSchema.parse(
+      JSON.parse(await readFile(p, "utf8")),
+    );
   } catch {
     return null;
   }
 }
 
-export function appendStepCheckpoint(workspaceDir, runId, workflow, step) {
-  const existing = loadCheckpoint(workspaceDir, runId) || {
+export async function appendStepCheckpoint(
+  workspaceDir,
+  runId,
+  workflow,
+  step,
+) {
+  const existing = (await loadCheckpoint(workspaceDir, runId)) || {
     runId,
     workflow,
     steps: [],
@@ -57,6 +69,6 @@ export function appendStepCheckpoint(workspaceDir, runId, workflow, step) {
   });
   existing.currentStep = existing.steps.length;
   existing.updatedAt = new Date().toISOString();
-  saveCheckpoint(workspaceDir, existing);
+  await saveCheckpoint(workspaceDir, existing);
   return existing;
 }
