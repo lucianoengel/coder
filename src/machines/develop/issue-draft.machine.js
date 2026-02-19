@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -39,7 +39,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
+    await checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
@@ -71,7 +71,11 @@ export default defineMachine({
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
     ctx.agentPool.setRepoRoot(repoRoot);
 
-    if (!existsSync(repoRoot))
+    if (
+      !(await access(repoRoot)
+        .then(() => true)
+        .catch(() => false))
+    )
       throw new Error(`Repo root does not exist: ${repoRoot}`);
 
     const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
@@ -90,7 +94,11 @@ export default defineMachine({
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
     scratchpad.restoreFromSqlite(scratchpadPath);
-    if (!existsSync(scratchpadPath)) {
+    if (
+      !(await access(scratchpadPath)
+        .then(() => true)
+        .catch(() => false))
+    ) {
       const header = [
         `# Scratchpad for ${input.issue.source}#${input.issue.id}`,
         "",
@@ -100,7 +108,7 @@ export default defineMachine({
         "Use this file for iterative issue research notes and feedback loops.",
         "",
       ].join("\n");
-      writeFileSync(scratchpadPath, header, "utf8");
+      await writeFile(scratchpadPath, header, "utf8");
     }
     scratchpad.appendSection(scratchpadPath, "Input", [
       `- clarifications: ${(input.clarifications || "(none provided)").trim()}`,
@@ -110,7 +118,7 @@ export default defineMachine({
 
     // Verify clean repo, then set up ignore files
     gitCleanOrThrow(repoRoot);
-    ensureGitignore(ctx.workspaceDir);
+    await ensureGitignore(ctx.workspaceDir);
     state.steps.verifiedCleanRepo = true;
     saveState(ctx.workspaceDir, state);
 
@@ -169,12 +177,16 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 
     // Prefer on-disk file if agent wrote it via tool use
     let issueMd;
-    if (existsSync(paths.issue)) {
-      const onDisk = sanitizeIssueMarkdown(readFileSync(paths.issue, "utf8"));
+    if (
+      await access(paths.issue)
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      const onDisk = sanitizeIssueMarkdown(await readFile(paths.issue, "utf8"));
       if (onDisk.length > 40 && onDisk.startsWith("#")) {
         issueMd = onDisk + "\n";
-        if (issueMd !== readFileSync(paths.issue, "utf8")) {
-          writeFileSync(paths.issue, issueMd);
+        if (issueMd !== (await readFile(paths.issue, "utf8"))) {
+          await writeFile(paths.issue, issueMd);
         }
       }
     }
@@ -195,7 +207,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         }
         issueMd = fallback + "\n";
       }
-      writeFileSync(paths.issue, issueMd);
+      await writeFile(paths.issue, issueMd);
     }
 
     state.steps.wroteIssue = true;
