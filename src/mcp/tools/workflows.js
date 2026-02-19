@@ -196,7 +196,12 @@ async function readWorkflowStatus(workspaceDir) {
 
   let agentActivity = null;
   const activityPath = path.join(workspaceDir, ".coder", "activity.json");
-  if (await access(activityPath).then(() => true, () => false)) {
+  if (
+    await access(activityPath).then(
+      () => true,
+      () => false,
+    )
+  ) {
     try {
       agentActivity = JSON.parse(await readFile(activityPath, "utf8"));
     } catch {
@@ -206,7 +211,12 @@ async function readWorkflowStatus(workspaceDir) {
 
   let mcpHealth = null;
   const healthPath = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (await access(healthPath).then(() => true, () => false)) {
+  if (
+    await access(healthPath).then(
+      () => true,
+      () => false,
+    )
+  ) {
     try {
       mcpHealth = JSON.parse(await readFile(healthPath, "utf8"));
     } catch {
@@ -246,7 +256,13 @@ async function readWorkflowEvents(
     "logs",
     `${workflowName}.jsonl`,
   );
-  if (!(await access(logPath).then(() => true, () => false))) return { events: [], nextSeq: 0, totalLines: 0 };
+  if (
+    !(await access(logPath).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return { events: [], nextSeq: 0, totalLines: 0 };
 
   const content = await readFile(logPath, "utf8");
   const allLines = content.split("\n").filter((l) => l.trim());
