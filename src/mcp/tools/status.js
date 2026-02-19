@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
@@ -15,11 +16,11 @@ function readActivityFile(workspaceDir) {
   }
 }
 
-function readMcpHealth(workspaceDir) {
+async function readMcpHealth(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "mcp-health.json");
   if (!existsSync(p)) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
   } catch {
     return null;
   }
@@ -53,7 +54,7 @@ function readResearchState(workspaceDir) {
   }
 }
 
-function getStatus(workspaceDir) {
+async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
   const state = loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
@@ -101,7 +102,7 @@ function getStatus(workspaceDir) {
     currentStageStartedAt: null,
     lastHeartbeatAt: null,
     activeAgent: null,
-    mcpHealth: readMcpHealth(workspaceDir),
+    mcpHealth: await readMcpHealth(workspaceDir),
     researchWorkflow: readResearchState(workspaceDir),
   };
 }
@@ -129,7 +130,7 @@ export function registerStatusTools(server, defaultWorkspace) {
     async ({ workspace }) => {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
-        const status = getStatus(ws);
+        const status = await getStatus(ws);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
         };
