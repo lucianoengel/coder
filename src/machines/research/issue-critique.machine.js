@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -39,30 +39,30 @@ export default defineMachine({
       scope: "workspace",
     });
 
-    const pipeline = loadPipeline(input.pipelinePath) || {
+    const pipeline = (await loadPipeline(input.pipelinePath)) || {
       version: 1,
       runId: "issue-critique",
       current: "init",
       history: [],
       steps: {},
     };
-    const _analysisBrief = resolveArtifact(
+    const _analysisBrief = await resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const _webReferenceMap = resolveArtifact(
+    const _webReferenceMap = await resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
     );
-    const validationResults = resolveArtifact(
+    const validationResults = await resolveArtifact(
       input.validationResults,
       input.stepsDir,
       "validation-results",
     );
 
-    beginPipelineStep(
+    await beginPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
@@ -144,9 +144,9 @@ Return JSON:
 
     // Save critique artifact
     const critiquePath = path.join(input.stepsDir, "issue-critique.json");
-    writeFileSync(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
+    await writeFile(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
 
-    appendScratchpad(input.scratchpadPath, "Issue Critique", [
+    await appendScratchpad(input.scratchpadPath, "Issue Critique", [
       `- agent: ${agentName}`,
       `- verdict: ${payload?.verdict || "unknown"}`,
       `- score: ${payload?.overallScore || "unknown"}`,
@@ -154,7 +154,7 @@ Return JSON:
       `- gaps_found: ${(payload?.backlogIssues?.gaps || []).length}`,
     ]);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,

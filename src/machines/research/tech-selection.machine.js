@@ -46,25 +46,25 @@ export default defineMachine({
       scope: "workspace",
     });
 
-    const pipeline = loadPipeline(input.pipelinePath) || {
+    const pipeline = (await loadPipeline(input.pipelinePath)) || {
       version: 1,
       runId: "tech-selection",
       current: "init",
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const webRefs = resolveArtifact(
+    const webRefs = await resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
     );
 
-    beginPipelineStep(
+    await beginPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
@@ -142,13 +142,13 @@ Return JSON:
 
     const payload = parseAgentPayload(agentName, res.stdout);
 
-    appendScratchpad(input.scratchpadPath, "Tech Selection", [
+    await appendScratchpad(input.scratchpadPath, "Tech Selection", [
       `- agent: ${agentName}`,
       `- categories: ${(payload?.categories || []).length}`,
       `- stack: ${payload?.stack?.summary || "unknown"}`,
     ]);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
