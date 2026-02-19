@@ -1,24 +1,19 @@
-import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
 import { loadState } from "../../state/workflow-state.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
-function readActivityFile(workspaceDir) {
+async function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
     return null;
-  }
-}
-
-async function readMcpHealth(workspaceDir) {
-  const p = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (!existsSync(p)) return null;
   try {
     return JSON.parse(await readFile(p, "utf8"));
   } catch {
@@ -26,11 +21,33 @@ async function readMcpHealth(workspaceDir) {
   }
 }
 
-function readResearchState(workspaceDir) {
-  const statePath = path.join(workspaceDir, ".coder", "research-state.json");
-  if (!existsSync(statePath)) return null;
+async function readMcpHealth(workspaceDir) {
+  const p = path.join(workspaceDir, ".coder", "mcp-health.json");
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function readResearchState(workspaceDir) {
+  const statePath = path.join(workspaceDir, ".coder", "research-state.json");
+  if (
+    !(await access(statePath).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
+  try {
+    const state = JSON.parse(await readFile(statePath, "utf8"));
     const runId = state.runId;
     if (!runId) return { runId: null, pipeline: null };
     const pipelinePath = path.join(
@@ -41,9 +58,14 @@ function readResearchState(workspaceDir) {
       "pipeline.json",
     );
     let pipeline = null;
-    if (existsSync(pipelinePath)) {
+    if (
+      await access(pipelinePath).then(
+        () => true,
+        () => false,
+      )
+    ) {
       try {
-        pipeline = JSON.parse(readFileSync(pipelinePath, "utf8"));
+        pipeline = JSON.parse(await readFile(pipelinePath, "utf8"));
       } catch {
         // ignore corrupt pipeline
       }
@@ -63,6 +85,27 @@ async function getStatus(workspaceDir) {
   const scratchpadPath = state.scratchpadPath
     ? path.resolve(workspaceDir, state.scratchpadPath)
     : null;
+
+  const [issueExists, planExists, critiqueExists] = await Promise.all([
+    access(path.join(artifactsDir, "ISSUE.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLAN.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLANREVIEW.md")).then(
+      () => true,
+      () => false,
+    ),
+  ]);
+  const currentExists = scratchpadPath
+    ? await access(scratchpadPath).then(
+        () => true,
+        () => false,
+      )
+    : false;
 
   return {
     selected: state.selected || null,
@@ -84,26 +127,26 @@ async function getStatus(workspaceDir) {
       lastPushedAt: state.lastWipPushAt || null,
     },
     artifacts: {
-      issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
-      planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
-      critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+      issueExists,
+      planExists,
+      critiqueExists,
     },
     scratchpad: {
       dir: scratchpadDir,
       current: state.scratchpadPath || null,
-      currentExists: scratchpadPath ? existsSync(scratchpadPath) : false,
+      currentExists,
       sqlite: {
         enabled: config.workflow.scratchpad.sqliteSync,
         path: config.workflow.scratchpad.sqlitePath,
       },
     },
-    agentActivity: readActivityFile(workspaceDir),
+    agentActivity: await readActivityFile(workspaceDir),
     currentStage: null,
     currentStageStartedAt: null,
     lastHeartbeatAt: null,
     activeAgent: null,
     mcpHealth: await readMcpHealth(workspaceDir),
-    researchWorkflow: readResearchState(workspaceDir),
+    researchWorkflow: await readResearchState(workspaceDir),
   };
 }
 
