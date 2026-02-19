@@ -111,19 +111,23 @@ export class CliAgent extends AgentAdapter {
     // This allows individual machine calls to succeed even when MCP health is degraded
   }
 
-  _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
+  _buildCommand(
+    prompt,
+    { structured = false, sessionId, resumeId, modelOverride } = {},
+  ) {
     if (this.name === "gemini") {
       if (structured) {
-        return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
+        const model = modelOverride || this.config.models.gemini;
+        return geminiJsonPipeWithModel(prompt, model);
       }
-      const model = this.config.models.gemini?.model;
+      const model = modelOverride || this.config.models.gemini?.model;
       const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      const claudeModel = this.config.models.claude?.model;
+      const claudeModel = modelOverride || this.config.models.claude?.model;
       if (claudeModel) {
         flags += ` --model ${claudeModel}`;
       }
@@ -168,8 +172,9 @@ export class CliAgent extends AgentAdapter {
   }
 
   async executeWithRetry(prompt, opts = {}) {
-    const retries = opts.retries ?? 1;
+    const retries = opts.retries ?? 5;
     const backoffMs = opts.backoffMs ?? 5000;
+    const maxTimeout = opts.maxTimeoutMs ?? 60000;
     const retryOnRateLimit = opts.retryOnRateLimit ?? false;
 
     const isRateLimited = (txt) =>
@@ -191,6 +196,7 @@ export class CliAgent extends AgentAdapter {
       {
         retries,
         minTimeout: backoffMs,
+        maxTimeout,
         factor: 2,
         shouldRetry: (ctx) => {
           const err = ctx.error;
@@ -210,6 +216,32 @@ export class CliAgent extends AgentAdapter {
         },
       },
     );
+  }
+
+  async executeWithFallback(prompt, opts = {}) {
+    try {
+      return await this.executeWithRetry(prompt, {
+        ...opts,
+        retryOnRateLimit: true,
+      });
+    } catch (err) {
+      if (err.name === "RateLimitError") {
+        const fallback = this.config.models[this.name]?.fallbackModel;
+        if (fallback) {
+          this._log({
+            event: "rate_limit_fallback",
+            agent: this.name,
+            fallback,
+          });
+          return this.executeWithRetry(prompt, {
+            ...opts,
+            modelOverride: fallback,
+            retryOnRateLimit: true,
+          });
+        }
+      }
+      throw err;
+    }
   }
 
   async kill() {
