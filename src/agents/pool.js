@@ -148,12 +148,13 @@ export class AgentPool {
     // Invalidate repo-scoped agents since cwd changed — kill before removing
     const stale = [];
     for (const [key, agent] of this._agents) {
-      const parts = key.split(":");
+      const secondColonIndex = key.indexOf(":", key.indexOf(":") + 1);
+      const extractedCwd = secondColonIndex === -1 ? "" : key.substring(secondColonIndex + 1);
       // cli agents keyed as cli:name:cwd — kill those pointing at a different repo root
       if (
-        parts[0] === "cli" &&
-        parts[2] !== repoRoot &&
-        parts[2] !== this.workspaceDir
+        key.startsWith("cli:") &&
+        extractedCwd !== repoRoot &&
+        extractedCwd !== this.workspaceDir
       ) {
         stale.push({ key, agent });
       }
