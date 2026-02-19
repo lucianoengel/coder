@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
@@ -197,7 +196,7 @@ async function readWorkflowStatus(workspaceDir) {
 
   let agentActivity = null;
   const activityPath = path.join(workspaceDir, ".coder", "activity.json");
-  if (existsSync(activityPath)) {
+  if (await access(activityPath).then(() => true, () => false)) {
     try {
       agentActivity = JSON.parse(await readFile(activityPath, "utf8"));
     } catch {
@@ -207,7 +206,7 @@ async function readWorkflowStatus(workspaceDir) {
 
   let mcpHealth = null;
   const healthPath = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (existsSync(healthPath)) {
+  if (await access(healthPath).then(() => true, () => false)) {
     try {
       mcpHealth = JSON.parse(await readFile(healthPath, "utf8"));
     } catch {
@@ -235,7 +234,7 @@ async function readWorkflowStatus(workspaceDir) {
   };
 }
 
-function readWorkflowEvents(
+async function readWorkflowEvents(
   workspaceDir,
   workflowName,
   afterSeq = 0,
@@ -247,9 +246,9 @@ function readWorkflowEvents(
     "logs",
     `${workflowName}.jsonl`,
   );
-  if (!existsSync(logPath)) return { events: [], nextSeq: 0, totalLines: 0 };
+  if (!(await access(logPath).then(() => true, () => false))) return { events: [], nextSeq: 0, totalLines: 0 };
 
-  const content = readFileSync(logPath, "utf8");
+  const content = await readFile(logPath, "utf8");
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];
@@ -496,7 +495,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "events") {
-          const result = readWorkflowEvents(
+          const result = await readWorkflowEvents(
             ws,
             workflow,
             params.afterSeq,
@@ -595,9 +594,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           });
           const artifactsDir = path.join(ws, ".coder", "artifacts");
           const scratchpadDir = path.join(ws, ".coder", "scratchpad");
-          mkdirSync(path.join(ws, ".coder"), { recursive: true });
-          mkdirSync(artifactsDir, { recursive: true });
-          mkdirSync(scratchpadDir, { recursive: true });
+          await mkdir(path.join(ws, ".coder"), { recursive: true });
+          await mkdir(artifactsDir, { recursive: true });
+          await mkdir(scratchpadDir, { recursive: true });
           ensureLogsDir(ws);
 
           const log = makeJsonlLogger(ws, workflow);
