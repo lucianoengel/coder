@@ -201,6 +201,7 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
   const outcomes = {};
   let failCount = 0;
+  let resolvedDepCount = 0;
   let baseBranch = null;
 
   for (const depId of deps) {
@@ -209,6 +210,7 @@ function resolveDependencyBranch(issue, outcomeMap) {
       outcomes[depId] = "pending";
       continue;
     }
+    resolvedDepCount++;
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
       if (!baseBranch) baseBranch = outcome.branch;
@@ -219,7 +221,7 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
   return {
     baseBranch,
-    allDepsFailed: deps.length > 0 && failCount === deps.length,
+    allDepsFailed: resolvedDepCount > 0 && resolvedDepCount === failCount,
     depOutcomes: outcomes,
   };
 }
