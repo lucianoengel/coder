@@ -564,6 +564,35 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             };
           }
 
+          // Also guard against runs started by a different MCP process (not in
+          // activeRuns) by checking the on-disk loop state directly.
+          const diskLoopState = await loadLoopState(ws);
+          if (
+            ["running", "paused", "cancelling"].includes(diskLoopState.status)
+          ) {
+            const staleCheck = detectStaleness(diskLoopState);
+            if (!staleCheck.isStale) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      error: `Workspace already has an active run on disk: ${diskLoopState.runId} (status: ${diskLoopState.status})`,
+                    }),
+                  },
+                ],
+                isError: true,
+              };
+            }
+            // Stale disk run — mark it terminal before starting fresh.
+            await markRunTerminalOnDisk(
+              ws,
+              diskLoopState.runId,
+              workflow,
+              "cancelled",
+            );
+          }
+
           const nextRunId = randomUUID().slice(0, 8);
           const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
