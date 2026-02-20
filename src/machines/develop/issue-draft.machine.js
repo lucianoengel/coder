@@ -194,6 +194,9 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
     requireExitZero(agentName, "ISSUE.md drafting failed", res);
 
     // Prefer on-disk file if agent wrote it via tool use
+    // Accept markdown with either # headings or **bold** section headers.
+    const looksLikeMd = (s) =>
+      s.length > 40 && (s.startsWith("#") || s.startsWith("**") || s.includes("\n#") || s.includes("\n**"));
     let issueMd;
     if (
       await access(paths.issue)
@@ -201,7 +204,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         .catch(() => false)
     ) {
       const onDisk = sanitizeIssueMarkdown(await readFile(paths.issue, "utf8"));
-      if (onDisk.length > 40 && onDisk.startsWith("#")) {
+      if (looksLikeMd(onDisk)) {
         issueMd = onDisk + "\n";
         if (issueMd !== (await readFile(paths.issue, "utf8"))) {
           await writeFile(paths.issue, issueMd);
@@ -210,11 +213,11 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
     }
     if (!issueMd) {
       issueMd = sanitizeIssueMarkdown(res.stdout.trimEnd()) + "\n";
-      if (!issueMd.trim().startsWith("#")) {
+      if (!looksLikeMd(issueMd.trim())) {
         const fallback = stripAgentNoise(res.stdout || "", {
           dropLeadingOnly: true,
         }).trim();
-        if (!fallback.startsWith("#")) {
+        if (!looksLikeMd(fallback)) {
           const rawPreview = (res.stdout || "")
             .slice(0, 300)
             .replace(/\n/g, "\\n");
