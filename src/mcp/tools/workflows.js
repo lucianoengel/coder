@@ -564,35 +564,24 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             };
           }
 
-          // Also check disk state — guards against restarts where activeRuns was cleared
-          {
-            const diskLoopState = loadLoopState(ws);
-            if (
-              diskLoopState.status === "running" ||
-              diskLoopState.status === "paused"
-            ) {
-              const { isStale } = detectStaleness(diskLoopState);
-              if (!isStale) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: JSON.stringify({
-                        error: `Workspace already has active run on disk: ${diskLoopState.runId}`,
-                      }),
-                    },
-                  ],
-                  isError: true,
-                };
-              }
-              // Stale run (dead process) — clean it up so the new run can start
-              markRunTerminalOnDisk(
-                ws,
-                diskLoopState.runId,
-                workflow,
-                "failed",
-              );
+          // Disk-based guard: catches parallel runs from different MCP processes
+          const diskLoopState = await loadLoopState(ws);
+          if (["running", "paused", "cancelling"].includes(diskLoopState.status)) {
+            const staleCheck = detectStaleness(diskLoopState);
+            if (!staleCheck.isStale) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      error: `Workspace already has an active run on disk: ${diskLoopState.runId} (status: ${diskLoopState.status})`,
+                    }),
+                  },
+                ],
+                isError: true,
+              };
             }
+            await markRunTerminalOnDisk(ws, diskLoopState.runId, workflow, "cancelled");
           }
 
           const nextRunId = randomUUID().slice(0, 8);

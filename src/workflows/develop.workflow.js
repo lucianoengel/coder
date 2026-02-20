@@ -199,7 +199,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
   }
 
   const outcomes = {};
-  let _successCount = 0;
   let failCount = 0;
   let baseBranch = null;
 
@@ -211,7 +210,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
-      _successCount++;
       // Use the first successful dependency branch as base
       if (!baseBranch) baseBranch = outcome.branch;
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
@@ -283,22 +281,43 @@ export async function runDevelopLoop(opts, ctx) {
 
   // Initialize loop state
   const loopState = loadLoopState(ctx.workspaceDir);
+  const priorIssueQueueById = new Map(
+    (loopState.issueQueue || []).map((iss) => [iss.id, iss]),
+  );
   loopState.status = "running";
-  loopState.issueQueue = issues.map((iss) => ({
-    ...iss,
-    dependsOn: iss.dependsOn || iss.depends_on || [],
-    status: "pending",
-    branch: null,
-    prUrl: null,
-    error: null,
-    baseBranch: null,
-  }));
+  loopState.issueQueue = issues.map((iss) => {
+    const prior = priorIssueQueueById.get(iss.id);
+    return {
+      ...iss,
+      dependsOn: iss.dependsOn || iss.depends_on || [],
+      status: prior?.status || "pending",
+      branch: prior?.branch || null,
+      prUrl: prior?.prUrl || null,
+      error: prior?.error || null,
+      baseBranch: prior?.baseBranch || null,
+    };
+  });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
   saveLoopState(ctx.workspaceDir, loopState);
 
   /** @type {Map<string, { status: string, branch?: string }>} */
-  const outcomeMap = new Map();
+  const outcomeMap = new Map(
+    loopState.issueQueue
+      .filter(
+        (iss) =>
+          iss.status === "completed" ||
+          iss.status === "failed" ||
+          iss.status === "skipped",
+      )
+      .map((iss) => [
+        iss.id,
+        {
+          status: iss.status,
+          ...(iss.branch ? { branch: iss.branch } : {}),
+        },
+      ]),
+  );
   const results = [];
   let completed = 0;
   let failed = 0;

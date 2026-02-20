@@ -196,7 +196,11 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
     // Prefer on-disk file if agent wrote it via tool use
     // Accept markdown with either # headings or **bold** section headers.
     const looksLikeMd = (s) =>
-      s.length > 40 && (s.startsWith("#") || s.startsWith("**") || s.includes("\n#") || s.includes("\n**"));
+      s.length > 40 &&
+      (s.startsWith("#") ||
+        s.startsWith("**") ||
+        s.includes("\n#") ||
+        s.includes("\n**"));
     let issueMd;
     if (
       await access(paths.issue)

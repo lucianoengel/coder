@@ -194,7 +194,10 @@ export default defineMachine({
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
-      pr = await spawnAsync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
+      pr = await spawnAsync("glab", mrArgs, {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
       cliLabel = "glab mr create";
     } else {
       const prArgs = [

@@ -57,11 +57,7 @@ export async function saveWorkflowSnapshot(
   };
   const statePath = workflowStatePathFor(workspaceDir);
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(
-    statePath,
-    JSON.stringify(payload, null, 2) + "\n",
-    "utf8",
-  );
+  await writeFile(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
@@ -81,11 +77,7 @@ export async function saveWorkflowTerminalState(
   };
   const statePath = workflowStatePathFor(workspaceDir);
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(
-    statePath,
-    JSON.stringify(payload, null, 2) + "\n",
-    "utf8",
-  );
+  await writeFile(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
