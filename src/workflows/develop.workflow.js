@@ -25,6 +25,7 @@ import { WorkflowRunner } from "./_base.js";
 
 // Re-export machines for direct use
 export {
+  resolveDependencyBranch,
   issueListMachine,
   issueDraftMachine,
   planningMachine,
@@ -200,6 +201,7 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
   const outcomes = {};
   let failCount = 0;
+  let resolvedDepCount = 0;
   let baseBranch = null;
 
   for (const depId of deps) {
@@ -208,6 +210,7 @@ function resolveDependencyBranch(issue, outcomeMap) {
       outcomes[depId] = "pending";
       continue;
     }
+    resolvedDepCount++;
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
       // Use the first successful dependency branch as base
@@ -217,10 +220,11 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
   }
 
-  const knownDeps = deps.filter((d) => outcomeMap.has(d));
-  const allDepsFailed = knownDeps.length > 0 && failCount === knownDeps.length;
-
-  return { baseBranch, allDepsFailed, depOutcomes: outcomes };
+  return {
+    baseBranch,
+    allDepsFailed: resolvedDepCount > 0 && resolvedDepCount === failCount,
+    depOutcomes: outcomes,
+  };
 }
 
 const isRateLimitError = (text) =>
