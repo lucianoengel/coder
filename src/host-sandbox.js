@@ -334,9 +334,10 @@ class HostSandboxInstance extends EventEmitter {
     }
   }
   _launch(command, { background, timeoutMs }) {
-    // Strip CLAUDECODE so nested claude invocations are not blocked by the
-    // "cannot launch inside another Claude Code session" check added in 2.1.x.
-    const { CLAUDECODE: _cc, ...env } = this.env;
+    // Strip CLAUDECODE and CLAUDE_CODE_ENTRYPOINT so nested claude invocations
+    // are not blocked by the "cannot launch inside another Claude Code session"
+    // check added in 2.1.x.
+    const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...env } = this.env;
 
     if (this.useSystemdRun) {
       const unitName = makeSystemdUnitName("coder-agent");

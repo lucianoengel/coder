@@ -172,7 +172,7 @@ export class CliAgent extends AgentAdapter {
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p";
+      let flags = "claude -p --no-session-persistence";
       const claudeModel = validateShellArg(
         modelOverride || this.config.models.claude?.model,
         "model",
