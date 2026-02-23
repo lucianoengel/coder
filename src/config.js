@@ -130,6 +130,14 @@ export const GithubConfigSchema = z.object({
   epicAsMilestone: z.boolean().default(true),
 });
 
+export const AgentRetrySchema = z.object({
+  maxRetries: z.number().int().min(0).default(1),
+  retryDelayMs: z.number().int().min(0).default(5000),
+  retryOnRateLimit: z.boolean().default(true),
+});
+
+export const AgentFallbackSchema = z.record(AgentNameSchema).default({});
+
 export const CoderConfigSchema = z.object({
   models: z
     .object({
@@ -172,6 +180,14 @@ export const CoderConfigSchema = z.object({
     .default({}),
   design: DesignConfigSchema.default({}),
   github: GithubConfigSchema.default({}),
+  agents: z
+    .object({
+      geminiApiEndpoint: z.string().optional(),
+      anthropicApiEndpoint: z.string().optional(),
+      retry: AgentRetrySchema.default({}),
+      fallback: AgentFallbackSchema,
+    })
+    .default({}),
   verbose: z.boolean().default(false),
 });
 
@@ -268,7 +284,7 @@ export function migrateConfig(raw) {
     out.models = m;
   }
 
-  // Migrate agents endpoints into models
+  // Migrate agents endpoints into models; preserve retry/fallback keys
   if (out.agents && typeof out.agents === "object") {
     out.models = out.models || {};
     if (out.agents.geminiApiEndpoint) {
@@ -287,7 +303,9 @@ export function migrateConfig(raw) {
         out.models.claude = { apiEndpoint: out.agents.anthropicApiEndpoint };
       }
     }
-    delete out.agents;
+    const { geminiApiEndpoint: _g, anthropicApiEndpoint: _a, ...rest } =
+      out.agents;
+    out.agents = Object.keys(rest).length ? rest : undefined;
   }
 
   // Migrate ppcommit flat LLM fields to llmModelRef

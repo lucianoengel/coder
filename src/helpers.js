@@ -260,6 +260,10 @@ export function resolveModelName(entry) {
   return entry;
 }
 
+export function isRateLimitError(text) {
+  return /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+}
+
 export function geminiJsonPipeWithModel(prompt, model) {
   const modelArg = String(resolveModelName(model) || "").trim();
   const cmd = modelArg
