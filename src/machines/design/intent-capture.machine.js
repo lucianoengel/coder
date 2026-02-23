@@ -74,7 +74,7 @@ Return ONLY valid JSON in this schema:
 }`;
 
     const res = await agent.execute(parsePrompt, {
-      timeoutMs: 1000 * 60 * 5,
+      timeoutMs: ctx.config.workflow.timeouts.designStep,
     });
     if (res.exitCode !== 0) {
       throw new Error(

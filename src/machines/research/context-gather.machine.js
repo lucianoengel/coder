@@ -128,7 +128,7 @@ Return ONLY valid JSON in this schema:
         artifactName: `analyze-chunk-${String(i + 1).padStart(2, "0")}`,
         role: "issueSelector",
         prompt: chunkPrompt,
-        timeoutMs: 1000 * 60 * 6,
+        timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
       });
       chunkSummaries.push(chunkRes.payload);
@@ -157,7 +157,7 @@ Return ONLY valid JSON in this schema:
       artifactName: "analysis-brief",
       role: "issueSelector",
       prompt: analysisPrompt,
-      timeoutMs: 1000 * 60 * 8,
+      timeoutMs: ctx.config.workflow.timeouts.researchStep,
       ...stepOpts,
     });
     const analysisBrief = analysisRes.payload || {};

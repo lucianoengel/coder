@@ -145,7 +145,7 @@ Return ONLY valid JSON in this schema:
 }`;
         const projRes = await agent.executeWithRetry(projPrompt, {
           structured: true,
-          timeoutMs: 1000 * 60 * 5,
+          timeoutMs: ctx.config.workflow.timeouts.issueSelection,
           hangTimeoutMs: HANG_TIMEOUT_MS,
           retries: 2,
           retryOnRateLimit: true,
@@ -213,7 +213,7 @@ Return ONLY valid JSON in this schema:
 
     const res = await agent.executeWithRetry(listPrompt, {
       structured: true,
-      timeoutMs: 1000 * 60 * 10,
+      timeoutMs: ctx.config.workflow.timeouts.issueSelection,
       hangTimeoutMs: HANG_TIMEOUT_MS,
       retries: 2,
       retryOnRateLimit: true,

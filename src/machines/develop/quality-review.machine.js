@@ -278,7 +278,7 @@ export default defineMachine({
 
           const reviewRes = await reviewerAgent.execute(reviewPrompt, {
             ...reviewSessionOpts,
-            timeoutMs: 1000 * 60 * 30,
+            timeoutMs: ctx.config.workflow.timeouts.reviewRound,
           });
           requireExitZero(reviewerName, `review round ${round}`, reviewRes);
 
@@ -317,7 +317,7 @@ export default defineMachine({
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
         const fixRes = await programmerAgent.execute(fixPrompt, {
           resumeId: state.claudeSessionId || undefined,
-          timeoutMs: 1000 * 60 * 45,
+          timeoutMs: ctx.config.workflow.timeouts.programmerFix,
         });
         requireExitZero(programmerName, `fix round ${round}`, fixRes);
 
@@ -349,7 +349,7 @@ export default defineMachine({
           ppSection,
         );
         const escalationRes = await committerAgent.execute(escalationPrompt, {
-          timeoutMs: 1000 * 60 * 60,
+          timeoutMs: ctx.config.workflow.timeouts.committerEscalation,
         });
         requireExitZero(committerName, "committer escalation", escalationRes);
       }
@@ -387,7 +387,7 @@ Hard constraints:
 - Remove ALL unnecessary code, comments, and abstractions`;
 
       const res = await agent.execute(prompt, {
-        timeoutMs: 1000 * 60 * 90,
+        timeoutMs: ctx.config.workflow.timeouts.finalGate,
       });
       requireExitZero(agentName, label, res);
     };

@@ -145,7 +145,7 @@ Constraints:
     try {
       res = await plannerAgent.execute(planPrompt, {
         sessionId: state.claudeSessionId || undefined,
-        timeoutMs: 1000 * 60 * 40,
+        timeoutMs: ctx.config.workflow.timeouts.planning,
       });
       requireExitZero(plannerName, "plan generation failed", res);
     } catch (err) {

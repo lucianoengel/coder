@@ -181,7 +181,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 `;
 
     const res = await agent.execute(issuePrompt, {
-      timeoutMs: 1000 * 60 * 10,
+      timeoutMs: ctx.config.workflow.timeouts.issueDraft,
     });
     requireExitZero(agentName, "ISSUE.md drafting failed", res);
 

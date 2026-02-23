@@ -100,6 +100,22 @@ export const WorkflowScratchpadSchema = z.object({
   sqlitePath: z.string().default(".coder/state.db"),
 });
 
+export const WorkflowTimeoutsSchema = z.object({
+  researchStep: z.number().int().positive().default(600_000),
+  webSearch: z.number().int().positive().default(900_000),
+  pocValidation: z.number().int().positive().default(720_000),
+  issueSelection: z.number().int().positive().default(600_000),
+  issueDraft: z.number().int().positive().default(600_000),
+  planning: z.number().int().positive().default(2_400_000),
+  planReview: z.number().int().positive().default(2_400_000),
+  implementation: z.number().int().positive().default(3_600_000),
+  reviewRound: z.number().int().positive().default(1_800_000),
+  programmerFix: z.number().int().positive().default(2_700_000),
+  committerEscalation: z.number().int().positive().default(3_600_000),
+  finalGate: z.number().int().positive().default(5_400_000),
+  designStep: z.number().int().positive().default(600_000),
+});
+
 /** Optional per-step agent overrides (all fields optional, for MCP tool inputs). */
 export const AgentRolesInputSchema = z.object({
   issueSelector: AgentNameSchema.optional(),
@@ -167,6 +183,7 @@ export const CoderConfigSchema = z.object({
       agentRoles: WorkflowAgentRolesSchema.default({}),
       wip: WorkflowWipSchema.default({}),
       scratchpad: WorkflowScratchpadSchema.default({}),
+      timeouts: WorkflowTimeoutsSchema.default({}),
       localIssuesDir: z.string().default(""),
     })
     .default({}),

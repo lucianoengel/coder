@@ -66,7 +66,7 @@ Constraints:
 - Write markdown content directly to ${paths.critique}.`;
 
       const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-        timeoutMs: 1000 * 60 * 40,
+        timeoutMs: ctx.config.workflow.timeouts.planReview,
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 

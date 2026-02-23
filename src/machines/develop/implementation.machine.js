@@ -133,7 +133,7 @@ FORBIDDEN patterns:
     try {
       res = await programmerAgent.execute(implPrompt, {
         resumeId: state.claudeSessionId || undefined,
-        timeoutMs: 1000 * 60 * 60,
+        timeoutMs: ctx.config.workflow.timeouts.implementation,
       });
       requireExitZero(programmerName, "implementation failed", res);
     } catch (err) {
