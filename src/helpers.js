@@ -260,6 +260,10 @@ export function resolveModelName(entry) {
   return entry;
 }
 
+export function shellEscape(arg) {
+  return "'" + String(arg).replace(/'/g, "'\\''") + "'";
+}
+
 export function geminiJsonPipeWithModel(prompt, model) {
   const modelArg = String(resolveModelName(model) || "").trim();
   const cmd = modelArg
