@@ -6,6 +6,7 @@ import {
   geminiJsonPipeWithModel,
   heredocPipe,
   resolveModelName,
+  shellEscape,
 } from "../helpers.js";
 import { HostSandboxProvider } from "../host-sandbox.js";
 import { makeJsonlLogger, sanitizeLogEvent } from "../logging.js";
@@ -118,9 +119,11 @@ export class CliAgent extends AgentAdapter {
       if (structured) {
         return geminiJsonPipeWithModel(prompt, modelName);
       }
-      let cmd = modelName ? `gemini --yolo -m ${modelName}` : "gemini --yolo";
-      if (sessionId) cmd += ` --sandbox-id ${sessionId}`;
-      if (resumeId) cmd += ` --sandbox-id ${resumeId}`;
+      let cmd = modelName
+        ? `gemini --yolo -m ${shellEscape(modelName)}`
+        : "gemini --yolo";
+      if (sessionId) cmd += ` --sandbox-id ${shellEscape(sessionId)}`;
+      if (resumeId) cmd += ` --sandbox-id ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, cmd);
     }
 
@@ -128,19 +131,19 @@ export class CliAgent extends AgentAdapter {
       let flags = "claude -p";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
-        flags += ` --model ${claudeModel}`;
+        flags += ` --model ${shellEscape(claudeModel)}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
       }
-      if (sessionId) flags += ` --session-id ${sessionId}`;
-      if (resumeId) flags += ` --resume ${resumeId}`;
+      if (sessionId) flags += ` --session-id ${shellEscape(sessionId)}`;
+      if (resumeId) flags += ` --resume ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, flags);
     }
 
     // codex
     let codexCmd = "codex exec --full-auto --skip-git-repo-check";
-    if (resumeId) codexCmd += ` --resume ${resumeId}`;
+    if (resumeId) codexCmd += ` --resume ${shellEscape(resumeId)}`;
     codexCmd += ` ${JSON.stringify(prompt)}`;
     return codexCmd;
   }
