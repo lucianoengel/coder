@@ -119,7 +119,9 @@ export class CliAgent extends AgentAdapter {
       if (structured) {
         return geminiJsonPipeWithModel(prompt, modelName);
       }
-      let cmd = modelName ? `gemini --yolo -m ${shellEscape(modelName)}` : "gemini --yolo";
+      let cmd = modelName
+        ? `gemini --yolo -m ${shellEscape(modelName)}`
+        : "gemini --yolo";
       if (sessionId) cmd += ` --sandbox-id ${shellEscape(sessionId)}`;
       if (resumeId) cmd += ` --sandbox-id ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, cmd);
