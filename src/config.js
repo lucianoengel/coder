@@ -303,8 +303,9 @@ export function migrateConfig(raw) {
         out.models.claude = { apiEndpoint: out.agents.anthropicApiEndpoint };
       }
     }
-    const { geminiApiEndpoint: _g, anthropicApiEndpoint: _a, ...rest } =
-      out.agents;
+    const rest = { ...out.agents };
+    delete rest.geminiApiEndpoint;
+    delete rest.anthropicApiEndpoint;
     out.agents = Object.keys(rest).length ? rest : undefined;
   }
 

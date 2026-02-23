@@ -1,12 +1,19 @@
 import pRetry from "p-retry";
-import { buildSecrets, DEFAULT_PASS_ENV, isRateLimitError } from "../helpers.js";
+import {
+  buildSecrets,
+  DEFAULT_PASS_ENV,
+  isRateLimitError,
+} from "../helpers.js";
+import { AgentAdapter } from "./_base.js";
 import { createApiAgent } from "./api-agent.js";
 import { CliAgent, resolveAgentName } from "./cli-agent.js";
 import { McpAgent } from "./mcp-agent.js";
-import { AgentAdapter } from "./_base.js";
 
 class RetryFallbackWrapper extends AgentAdapter {
-  constructor(primary, { fallback, maxRetries, retryDelayMs, retryOnRateLimit }) {
+  constructor(
+    primary,
+    { fallback, maxRetries, retryDelayMs, retryOnRateLimit },
+  ) {
     super();
     this._primary = primary;
     this._fallback = fallback;
@@ -29,7 +36,9 @@ class RetryFallbackWrapper extends AgentAdapter {
 
   async _runWithFallback(method, prompt, opts) {
     try {
-      return await this._callWithRetry(() => this._primary[method](prompt, opts));
+      return await this._callWithRetry(() =>
+        this._primary[method](prompt, opts),
+      );
     } catch (err) {
       if (this._fallback) {
         return await this._callWithRetry(() =>
@@ -52,7 +61,9 @@ class RetryFallbackWrapper extends AgentAdapter {
             rateErr.name = "RateLimitError";
             throw rateErr;
           }
-          const err = new Error(details.slice(0, 300) || "Agent execution failed");
+          const err = new Error(
+            details.slice(0, 300) || "Agent execution failed",
+          );
           err.exitCode = res.exitCode;
           throw err;
         }
@@ -79,10 +90,7 @@ class RetryFallbackWrapper extends AgentAdapter {
   }
 
   async kill() {
-    await Promise.allSettled([
-      this._primary.kill(),
-      this._fallback?.kill(),
-    ]);
+    await Promise.allSettled([this._primary.kill(), this._fallback?.kill()]);
   }
 }
 
