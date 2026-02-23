@@ -138,9 +138,11 @@ export class CliAgent extends AgentAdapter {
       return heredocPipe(prompt, flags);
     }
 
-    // codex (no session/resume support)
-    const codexCmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
-    return codexCmd;
+    // codex: resume is a subcommand, not a flag
+    if (resumeId) {
+      return `codex exec resume ${resumeId} --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    }
+    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
