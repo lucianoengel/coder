@@ -8,7 +8,6 @@ import { AgentPool } from "../../agents/pool.js";
 import { AgentRolesInputSchema, resolveConfig } from "../../config.js";
 import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
-import { loadSteeringContext } from "../../steering.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
@@ -17,6 +16,7 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
 } from "../../state/workflow-state.js";
+import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";

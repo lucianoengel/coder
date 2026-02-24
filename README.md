@@ -84,7 +84,7 @@ coder serve               # start MCP server (delegates to coder-mcp)
 Picks up GitHub/Linear issues, implements code, pushes PRs:
 
 ```
-issue-list → issue-draft → planning → plan-review → implementation → quality-review → pr-creation
+issue-list → issue-draft → planning ⇄ plan-review → implementation → quality-review → pr-creation
 ```
 
 ```
@@ -171,8 +171,9 @@ All state lives under `.coder/` (gitignored):
 | `workflow-state.json` | Per-issue step completion |
 | `loop-state.json` | Multi-issue develop queue |
 | `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
+| `steering/` | Persistent project context (`product.md`, `structure.md`, `tech.md`) |
 | `scratchpad/` | Research pipeline checkpoints |
-| `logs/*.jsonl` | Structured event logs |
+| `logs/*.jsonl` | Structured event logs (tagged with `runId`) |
 | `state.db` | Optional SQLite mirror |
 
 ## Configuration
@@ -197,7 +198,11 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
       "reviewer": "codex",
       "committer": "codex"
     },
-    "wip": { "push": true, "autoCommit": true }
+    "wip": { "push": true, "autoCommit": true },
+    // Post-step hooks (shell commands triggered on workflow events)
+    "hooks": [
+      { "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
+    ]
   },
 
   // Commit hygiene (tree-sitter AST-based)
@@ -236,6 +241,29 @@ Built-in commit hygiene checker using tree-sitter AST analysis. Blocks:
 - New markdown files outside allowed directories
 
 Optional LLM-assisted checks via Gemini API for deeper analysis.
+
+## Steering context
+
+Persistent project knowledge in `.coder/steering/` that agents receive automatically:
+
+```bash
+coder_steering_generate   # scan repo, create product.md / structure.md / tech.md
+coder_steering_update     # refresh after significant changes
+```
+
+Also available as the `coder://steering` MCP resource.
+
+## Hooks
+
+User-defined shell commands triggered on workflow events. Configure in `config.workflow.hooks[]`:
+
+```jsonc
+{ "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
+```
+
+Events: `workflow_start`, `workflow_complete`, `workflow_failed`, `machine_start`, `machine_complete`, `machine_error`, `loop_start`, `loop_complete`, `issue_start`, `issue_complete`, `issue_failed`, `issue_skipped`, `issue_deferred`.
+
+Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATUS`, `CODER_HOOK_DATA`, and `CODER_HOOK_RUN_ID` environment variables. Failures are logged but never break the workflow.
 
 ## Safety
 

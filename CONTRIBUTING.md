@@ -13,7 +13,7 @@ npm install
 ```bash
 npm run lint          # biome check
 npm run format:check  # biome format
-npm test              # node --test (101 tests)
+npm test              # node --test (162 tests)
 npm audit --audit-level=high
 ```
 
