@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   CoderConfigSchema,
   deepMerge,
+  HookSchema,
   loadConfig,
   resolveConfig,
   userConfigDir,
@@ -237,4 +238,78 @@ test("CoderConfigSchema accepts model names with slashes and dots", () => {
     models: { gemini: { model: "models/gemini-2.5-flash-preview" } },
   });
   assert.equal(parsed.models.gemini.model, "models/gemini-2.5-flash-preview");
+});
+
+test("HookSchema: valid hook parses correctly", () => {
+  const hook = HookSchema.parse({
+    on: "machine_complete",
+    machine: "issue-draft",
+    run: "echo done",
+  });
+  assert.equal(hook.on, "machine_complete");
+  assert.equal(hook.machine, "issue-draft");
+  assert.equal(hook.run, "echo done");
+});
+
+test("HookSchema: machine field is optional", () => {
+  const hook = HookSchema.parse({ on: "machine_start", run: "echo start" });
+  assert.equal(hook.machine, undefined);
+});
+
+test("HookSchema: invalid regex machine pattern is rejected", () => {
+  assert.throws(
+    () =>
+      HookSchema.parse({ on: "machine_complete", machine: "(", run: "echo x" }),
+    /Invalid regex/,
+  );
+});
+
+test("CoderConfigSchema: workflow.hooks defaults to empty array", () => {
+  const config = CoderConfigSchema.parse({});
+  assert.deepEqual(config.workflow.hooks, []);
+});
+
+test("HookSchema: accepts workflow_complete event type", () => {
+  const hook = HookSchema.parse({ on: "workflow_complete", run: "echo done" });
+  assert.equal(hook.on, "workflow_complete");
+});
+
+test("HookSchema: accepts workflow_start and workflow_failed event types", () => {
+  assert.doesNotThrow(() =>
+    HookSchema.parse({ on: "workflow_start", run: "echo s" }),
+  );
+  assert.doesNotThrow(() =>
+    HookSchema.parse({ on: "workflow_failed", run: "echo f" }),
+  );
+});
+
+test("HookSchema: accepts loop_start and loop_complete event types", () => {
+  assert.doesNotThrow(() =>
+    HookSchema.parse({ on: "loop_start", run: "echo s" }),
+  );
+  assert.doesNotThrow(() =>
+    HookSchema.parse({ on: "loop_complete", run: "echo c" }),
+  );
+});
+
+test("HookSchema: accepts all issue event types", () => {
+  for (const ev of [
+    "issue_start",
+    "issue_complete",
+    "issue_failed",
+    "issue_skipped",
+    "issue_deferred",
+  ]) {
+    assert.doesNotThrow(
+      () => HookSchema.parse({ on: ev, run: "echo x" }),
+      `should accept ${ev}`,
+    );
+  }
+});
+
+test("HookSchema: rejects unknown event type", () => {
+  assert.throws(
+    () => HookSchema.parse({ on: "bad_event", run: "echo x" }),
+    /Invalid/,
+  );
 });

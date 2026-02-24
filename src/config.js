@@ -140,6 +140,40 @@ export const DesignConfigSchema = z.object({
   specDir: z.string().default("spec/UI"),
 });
 
+export const HookSchema = z.object({
+  on: z.enum([
+    "machine_start",
+    "machine_complete",
+    "machine_error",
+    "workflow_start",
+    "workflow_complete",
+    "workflow_failed",
+    "loop_start",
+    "loop_complete",
+    "issue_start",
+    "issue_complete",
+    "issue_failed",
+    "issue_skipped",
+    "issue_deferred",
+  ]),
+  machine: z
+    .string()
+    .optional()
+    .refine(
+      (s) => {
+        if (s === undefined) return true;
+        try {
+          new RegExp(s);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Invalid regex pattern" },
+    ),
+  run: z.string().min(1),
+});
+
 export const GithubConfigSchema = z.object({
   useProjects: z.boolean().default(false),
   defaultLabels: z.array(z.string()).default([]),
@@ -185,6 +219,7 @@ export const CoderConfigSchema = z.object({
       scratchpad: WorkflowScratchpadSchema.default({}),
       timeouts: WorkflowTimeoutsSchema.default({}),
       localIssuesDir: z.string().default(""),
+      hooks: z.array(HookSchema).default([]),
     })
     .default({}),
   design: DesignConfigSchema.default({}),
