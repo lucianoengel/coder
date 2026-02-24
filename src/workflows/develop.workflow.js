@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
@@ -24,7 +25,7 @@ import {
   statePathFor,
 } from "../state/workflow-state.js";
 import { buildIssueBranchName } from "../worktrees.js";
-import { WorkflowRunner } from "./_base.js";
+import { runHooks, WorkflowRunner } from "./_base.js";
 
 // Re-export machines for direct use
 export {
@@ -409,6 +410,13 @@ export async function runDevelopLoop(opts, ctx) {
   loopState.startedAt = new Date().toISOString();
   saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
+  const loopRunId = randomUUID().slice(0, 8);
+  runHooks(ctx, loopRunId, "loop_start", "", {
+    status: "running",
+    total: issues.length,
+    method: rationale.method,
+  });
+
   /** @type {Map<string, { status: string, branch?: string }>} */
   const outcomeMap = new Map();
   const results = [];
@@ -422,6 +430,12 @@ export async function runDevelopLoop(opts, ctx) {
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();
     saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
+
+    const issueEnv = {
+      CODER_HOOK_ISSUE_ID: String(issue.id || ""),
+      CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
+    };
+    runHooks(ctx, loopRunId, "issue_start", "", {}, issueEnv);
 
     const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
       issue,
@@ -447,6 +461,14 @@ export async function runDevelopLoop(opts, ctx) {
       saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
       });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        { status: "skipped", reason: "all_dependencies_failed" },
+        issueEnv,
+      );
       return "skipped";
     }
 
@@ -460,6 +482,14 @@ export async function runDevelopLoop(opts, ctx) {
       saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
       });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_deferred",
+        "",
+        { status: "deferred" },
+        issueEnv,
+      );
       return "deferred";
     }
 
@@ -507,6 +537,14 @@ export async function runDevelopLoop(opts, ctx) {
           prUrl: prResult?.data?.prUrl,
           branch,
         });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_complete",
+          "",
+          { status: "completed", prUrl: prResult?.data?.prUrl, branch },
+          issueEnv,
+        );
       } else {
         const errText = pipelineResult.error || "";
         if (isRateLimitError(errText) && !isRetry) {
@@ -516,6 +554,14 @@ export async function runDevelopLoop(opts, ctx) {
           saveLoopState(ctx.workspaceDir, loopState, {
             guardRunId: loopState.runId,
           });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_deferred",
+            "",
+            { status: "deferred" },
+            issueEnv,
+          );
           return "deferred";
         }
         loopState.issueQueue[i].status = "failed";
@@ -527,6 +573,14 @@ export async function runDevelopLoop(opts, ctx) {
           status: "failed",
           error: errText,
         });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_failed",
+          "",
+          { status: "failed", error: errText },
+          issueEnv,
+        );
       }
     } catch (err) {
       if (isRateLimitError(err.message) && !isRetry) {
@@ -536,6 +590,14 @@ export async function runDevelopLoop(opts, ctx) {
         saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred" },
+          issueEnv,
+        );
         return "deferred";
       }
       loopState.issueQueue[i].status = "failed";
@@ -543,6 +605,14 @@ export async function runDevelopLoop(opts, ctx) {
       outcomeMap.set(issue.id, { status: "failed" });
       failed++;
       results.push({ ...issue, status: "failed", error: err.message });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: err.message },
+        issueEnv,
+      );
     }
 
     saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
@@ -716,6 +786,14 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
   loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
   loopState.completedAt = new Date().toISOString();
   saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
+
+  runHooks(ctx, loopRunId, "loop_complete", "", {
+    status: loopState.status,
+    completed,
+    failed,
+    skipped,
+    deferred: stillDeferred,
+  });
 
   return {
     status: loopState.status,

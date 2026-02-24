@@ -1,4 +1,62 @@
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+
+export function runHooks(
+  ctx,
+  runId,
+  event,
+  machineName = "",
+  data = {},
+  extraEnv = {},
+) {
+  const hooks = ctx.config?.workflow?.hooks ?? [];
+  for (const hook of hooks) {
+    if (hook.on !== event) continue;
+    if (hook.machine && !new RegExp(hook.machine).test(machineName)) continue;
+
+    let hookData = "{}";
+    try {
+      hookData = JSON.stringify(data);
+    } catch {}
+
+    const env = {
+      ...process.env,
+      CODER_HOOK_EVENT: event,
+      CODER_HOOK_MACHINE: machineName,
+      CODER_HOOK_STATUS: String(data.status ?? ""),
+      CODER_HOOK_DATA: hookData,
+      CODER_HOOK_RUN_ID: runId,
+      ...extraEnv,
+    };
+
+    try {
+      execSync(hook.run, {
+        env,
+        shell: true,
+        stdio: "pipe",
+        encoding: "utf8",
+        timeout: 30000,
+      });
+      ctx.log({
+        event: "hook_run",
+        hook: hook.run,
+        hookEvent: event,
+        machine: machineName,
+      });
+    } catch (err) {
+      ctx.log({
+        event: "hook_error",
+        hook: hook.run,
+        hookEvent: event,
+        machine: machineName,
+        error: err.message,
+        stderr: (err.stderr ?? "").slice(0, 500),
+        exitCode: err.status ?? null,
+        signal: err.signal ?? null,
+      });
+    }
+  }
+}
 
 /**
  * WorkflowRunner — composes machines into sequential pipelines.
@@ -52,6 +110,7 @@ export class WorkflowRunner {
     }, 2000);
 
     try {
+      this._runHooks("workflow_start", this.name);
       let prevResult = initialInput;
 
       for (let i = 0; i < steps.length; i++) {
@@ -95,6 +154,7 @@ export class WorkflowRunner {
           machine: machineName,
           stepIndex: i,
         });
+        this._runHooks("machine_start", machineName);
 
         const input = step.inputMapper(prevResult, {
           results: this.results,
@@ -115,32 +175,51 @@ export class WorkflowRunner {
           durationMs: result.durationMs,
           error: result.error || null,
         });
+        this._runHooks(
+          result.status === "error" ? "machine_error" : "machine_complete",
+          machineName,
+          result,
+        );
 
         if (result.status === "error" && !step.optional) {
-          return {
+          const failedResult = {
             status: "failed",
             results: this.results,
             runId: this.runId,
             durationMs: Date.now() - start,
             error: result.error,
           };
+          this._runHooks("workflow_failed", this.name, failedResult);
+          return failedResult;
         }
 
         prevResult = result;
       }
 
-      return {
+      const completedResult = {
         status: "completed",
         results: this.results,
         runId: this.runId,
         durationMs: Date.now() - start,
       };
+      this._runHooks("workflow_complete", this.name, completedResult);
+      return completedResult;
+    } catch (err) {
+      this._runHooks("workflow_failed", this.name, {
+        status: "failed",
+        error: err.message,
+      });
+      throw err;
     } finally {
       if (this._heartbeatInterval) {
         clearInterval(this._heartbeatInterval);
         this._heartbeatInterval = null;
       }
     }
+  }
+
+  _runHooks(event, machineName, data = {}) {
+    runHooks(this.ctx, this.runId, event, machineName, data);
   }
 
   async _waitForResume() {
