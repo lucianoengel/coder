@@ -175,9 +175,15 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 ## Required Sections (in order)
 1. **Metadata**: Source, Issue ID, Repo Root (relative path)
 2. **Problem**: What's wrong or missing — reference specific files/functions
-3. **Changes**: Exactly which files need to change and how
-4. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-5. **Out of Scope**: What this does NOT include
+3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
+   - Ubiquitous: The <system> shall <behavior>.
+   - Event-driven: WHEN <trigger>, the <system> shall <behavior>.
+   - State-driven: WHILE <state>, the <system> shall <behavior>.
+   - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
+   - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
+4. **Changes**: Exactly which files need to change and how
+5. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
+6. **Out of Scope**: What this does NOT include
 `;
 
     const res = await agent.execute(issuePrompt, {
