@@ -36,9 +36,18 @@ test("deepMerge: undefined values are skipped", () => {
 
 test("loadConfig: no files returns all defaults", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
-  const config = loadConfig(dir);
-  const defaults = CoderConfigSchema.parse({});
-  assert.deepEqual(config, defaults);
+  const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
+
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = xdg;
+  try {
+    const config = loadConfig(dir);
+    const defaults = CoderConfigSchema.parse({});
+    assert.deepEqual(config, defaults);
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
 });
 
 test("loadConfig: user config only merges with defaults", () => {
