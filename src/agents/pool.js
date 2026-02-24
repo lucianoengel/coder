@@ -1,7 +1,98 @@
-import { buildSecrets, DEFAULT_PASS_ENV } from "../helpers.js";
+import pRetry from "p-retry";
+import {
+  buildSecrets,
+  DEFAULT_PASS_ENV,
+  isRateLimitError,
+} from "../helpers.js";
+import { AgentAdapter } from "./_base.js";
 import { createApiAgent } from "./api-agent.js";
 import { CliAgent, resolveAgentName } from "./cli-agent.js";
 import { McpAgent } from "./mcp-agent.js";
+
+class RetryFallbackWrapper extends AgentAdapter {
+  constructor(
+    primary,
+    { fallback, maxRetries, retryDelayMs, retryOnRateLimit },
+  ) {
+    super();
+    this._primary = primary;
+    this._fallback = fallback;
+    this._maxRetries = maxRetries;
+    this._retryDelayMs = retryDelayMs;
+    this._retryOnRateLimit = retryOnRateLimit;
+  }
+
+  async execute(prompt, opts) {
+    return this._runWithFallback("execute", prompt, opts);
+  }
+
+  async executeStructured(prompt, opts) {
+    return this._runWithFallback("executeStructured", prompt, opts);
+  }
+
+  async executeWithRetry(prompt, opts) {
+    return this.execute(prompt, opts);
+  }
+
+  async _runWithFallback(method, prompt, opts) {
+    try {
+      return await this._callWithRetry(() =>
+        this._primary[method](prompt, opts),
+      );
+    } catch (err) {
+      if (this._fallback) {
+        return await this._callWithRetry(() =>
+          this._fallback[method](prompt, opts),
+        );
+      }
+      throw err;
+    }
+  }
+
+  async _callWithRetry(fn) {
+    const retryOnRateLimit = this._retryOnRateLimit;
+    return pRetry(
+      async () => {
+        const res = await fn();
+        if (res.exitCode !== 0) {
+          const details = `${res.stderr || ""}\n${res.stdout || ""}`.trim();
+          if (retryOnRateLimit && isRateLimitError(details)) {
+            const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
+            rateErr.name = "RateLimitError";
+            throw rateErr;
+          }
+          const err = new Error(
+            details.slice(0, 300) || "Agent execution failed",
+          );
+          err.exitCode = res.exitCode;
+          throw err;
+        }
+        return res;
+      },
+      {
+        retries: this._maxRetries,
+        minTimeout: this._retryDelayMs,
+        factor: 2,
+        shouldRetry: (ctx) => {
+          const name = ctx.error.name;
+          if (name === "CommandTimeoutError") return false;
+          if (name === "CommandAuthError") return false;
+          if (name === "McpStartupError") return false;
+          return true;
+        },
+        onFailedAttempt: (err) => {
+          process.stderr.write(
+            `[retry-wrapper] attempt=${err.attemptNumber} left=${err.retriesLeft} error=${err.message?.slice(0, 200)}\n`,
+          );
+        },
+      },
+    );
+  }
+
+  async kill() {
+    await Promise.allSettled([this._primary.kill(), this._fallback?.kill()]);
+  }
+}
 
 /**
  * AgentPool — manages agent instances by (name, scope) key.
@@ -41,6 +132,7 @@ export class AgentPool {
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
+    let rawAgent;
     if (mode === "cli") {
       const key = `cli:${agentName}:${cwd}`;
       if (!this._agents.has(key)) {
@@ -55,18 +147,39 @@ export class AgentPool {
           }),
         );
       }
-      return { agentName, agent: this._agents.get(key) };
+      rawAgent = this._agents.get(key);
+    } else if (mode === "api") {
+      return this._getApiAgent(role, { scope });
+    } else if (mode === "mcp") {
+      return this._getMcpAgent(role, { scope });
+    } else {
+      throw new Error(`Agent mode "${mode}" is not supported`);
     }
 
-    if (mode === "api") {
-      return this._getApiAgent(role, opts);
+    const retryConfig = this.config.agents?.retry;
+    const fallbackName = this.config.agents?.fallback?.[role];
+    if (retryConfig?.maxRetries > 0 || fallbackName) {
+      const fallbackAgent = fallbackName
+        ? new CliAgent(fallbackName, {
+            cwd,
+            secrets: this.secrets,
+            config: this.config,
+            workspaceDir: this.workspaceDir,
+            verbose: this.verbose,
+          })
+        : null;
+      return {
+        agentName,
+        agent: new RetryFallbackWrapper(rawAgent, {
+          fallback: fallbackAgent,
+          maxRetries: retryConfig?.maxRetries ?? 1,
+          retryDelayMs: retryConfig?.retryDelayMs ?? 5000,
+          retryOnRateLimit: retryConfig?.retryOnRateLimit ?? true,
+        }),
+      };
     }
 
-    if (mode === "mcp") {
-      return this._getMcpAgent(role, opts);
-    }
-
-    throw new Error(`Agent mode "${mode}" is not supported`);
+    return { agentName, agent: rawAgent };
   }
 
   /**
