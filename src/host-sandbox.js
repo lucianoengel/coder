@@ -299,16 +299,46 @@ class HostSandboxInstance extends EventEmitter {
       stopSystemdUnit(this.currentUnit);
       this.currentUnit = null;
     }
-    if (this.currentChild) {
-      try {
-        if (this.currentChild.pid)
-          process.kill(-this.currentChild.pid, "SIGTERM");
-      } catch {
-        this.currentChild.kill("SIGTERM");
-      }
-      this.currentChild = null;
+    const child = this.currentChild;
+    if (!child) {
       this.currentCommand = null;
+      return;
     }
+    this.currentChild = null;
+    this.currentCommand = null;
+
+    // SIGTERM to process group
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGTERM");
+    } catch {
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+    }
+
+    // Wait for exit with SIGKILL escalation
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (!done) {
+          done = true;
+          resolve();
+        }
+      };
+      child.once("close", finish);
+      child.once("exit", finish);
+      setTimeout(() => {
+        if (done) return;
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+        setTimeout(finish, 2000);
+      }, 5000);
+    });
   }
   _launch(command, { background, timeoutMs }) {
     if (this.useSystemdRun) {

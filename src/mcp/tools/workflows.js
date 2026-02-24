@@ -25,7 +25,7 @@ const HEARTBEAT_STALE_MS = 30_000;
 
 /** @type {Map<string, { actor: ReturnType<typeof createActor>, workspace: string, sqlitePath: string }>} */
 const workflowActors = new Map();
-/** @type {Map<string, { cancelToken: { cancelled: boolean, paused: boolean }, workspace: string, promise: Promise, startedAt: string }>} */
+/** @type {Map<string, { cancelToken: { cancelled: boolean, paused: boolean }, agentPool?: import("../../agents/pool.js").AgentPool, workspace: string, promise: Promise, startedAt: string }>} */
 export const activeRuns = new Map();
 
 function workflowSqlitePath(workspaceDir) {
@@ -239,6 +239,7 @@ function readWorkflowEvents(
   workflowName,
   afterSeq = 0,
   limit = 50,
+  { filterRunId = "" } = {},
 ) {
   const logPath = path.join(
     workspaceDir,
@@ -256,7 +257,9 @@ function readWorkflowEvents(
   const end = Math.min(start + limit, totalLines);
   for (let i = start; i < end; i++) {
     try {
-      events.push({ seq: i + 1, ...JSON.parse(allLines[i]) });
+      const parsed = JSON.parse(allLines[i]);
+      if (filterRunId && parsed.runId && parsed.runId !== filterRunId) continue;
+      events.push({ seq: i + 1, ...parsed });
     } catch {
       events.push({ seq: i + 1, raw: allLines[i] });
     }
@@ -495,11 +498,13 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "events") {
+          const currentStatus = readWorkflowStatus(ws);
           const result = readWorkflowEvents(
             ws,
             workflow,
             params.afterSeq,
             params.limit,
+            { filterRunId: currentStatus.runId || "" },
           );
           return {
             content: [
@@ -516,7 +521,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "start") {
-          // Check for active runs (in-memory — current process)
+          // Cancel any active in-memory runs for this workspace
           for (const [id, run] of activeRuns) {
             if (run.workspace !== ws) continue;
             const diskState = loadLoopState(ws);
@@ -527,25 +532,23 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               workflowActors.delete(id);
               continue;
             }
-            // Check if the run is stale before blocking
-            const staleCheck = detectStaleness(diskState);
-            if (staleCheck.isStale) {
-              markRunTerminalOnDisk(ws, id, workflow, "cancelled");
-              activeRuns.delete(id);
-              workflowActors.delete(id);
-              continue;
+            // Force-cancel the old run: set flag, kill agents, await exit
+            run.cancelToken.cancelled = true;
+            run.agentPool?.killAll().catch(() => {});
+            const actorEntry = workflowActors.get(id);
+            if (actorEntry?.workspace === ws) {
+              actorEntry.actor.send({
+                type: "CANCEL",
+                at: new Date().toISOString(),
+              });
             }
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    error: `Workspace already has active run: ${id}`,
-                  }),
-                },
-              ],
-              isError: true,
-            };
+            await Promise.race([
+              run.promise,
+              new Promise((r) => setTimeout(r, 10_000)),
+            ]);
+            markRunTerminalOnDisk(ws, id, workflow, "cancelled");
+            activeRuns.delete(id);
+            workflowActors.delete(id);
           }
 
           // Also check disk state — guards against restarts where activeRuns was cleared
@@ -555,21 +558,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               diskLoopState.status === "running" ||
               diskLoopState.status === "paused"
             ) {
-              const { isStale } = detectStaleness(diskLoopState);
-              if (!isStale) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: JSON.stringify({
-                        error: `Workspace already has active run on disk: ${diskLoopState.runId}`,
-                      }),
-                    },
-                  ],
-                  isError: true,
-                };
-              }
-              // Stale run (dead process) — clean it up so the new run can start
+              // Mark stale or orphaned disk runs as failed so the new run can start
               markRunTerminalOnDisk(
                 ws,
                 diskLoopState.runId,
@@ -610,14 +599,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             currentStage: `${workflow}_starting`,
           });
 
-          // Store cancel token for this run
           const cancelToken = { cancelled: false, paused: false };
-          activeRuns.set(nextRunId, {
-            cancelToken,
-            workspace: ws,
-            promise: Promise.resolve(),
-            startedAt: new Date().toISOString(),
-          });
 
           // Build workflow context — agentRoles must be nested under workflow
           const overrides = {};
@@ -632,12 +614,32 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           mkdirSync(scratchpadDir, { recursive: true });
           ensureLogsDir(ws);
 
-          const log = makeJsonlLogger(ws, workflow);
+          const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });
           const secrets = buildSecrets(DEFAULT_PASS_ENV);
+          const steeringPath = path.join(ws, ".coder", "steering.md");
+          let steeringContext;
+          if (existsSync(steeringPath)) {
+            try {
+              const raw = readFileSync(steeringPath, "utf8").trim();
+              if (raw) steeringContext = raw;
+            } catch {
+              /* best-effort — proceed without steering */
+            }
+          }
           const agentPool = new AgentPool({
             config,
             workspaceDir: ws,
             verbose: config.verbose,
+            steeringContext,
+          });
+
+          // Store run entry with agentPool so cancel can kill agents
+          activeRuns.set(nextRunId, {
+            cancelToken,
+            agentPool,
+            workspace: ws,
+            promise: Promise.resolve(),
+            startedAt: new Date().toISOString(),
           });
 
           const workflowCtx = {
@@ -650,6 +652,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             secrets,
             artifactsDir,
             scratchpadDir,
+            steeringContext,
           };
 
           // Fire and forget — run in background
@@ -777,6 +780,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           const run = activeRuns.get(runId);
           if (run) {
             run.cancelToken.cancelled = true;
+            run.agentPool?.killAll().catch(() => {});
             const actorEntry = workflowActors.get(runId);
             if (actorEntry?.workspace === ws) {
               actorEntry.actor.send({

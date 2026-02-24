@@ -295,7 +295,7 @@ export async function runDevelopLoop(opts, ctx) {
   }));
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
   /** @type {Map<string, { status: string, branch?: string }>} */
   const outcomeMap = new Map();
@@ -309,7 +309,7 @@ export async function runDevelopLoop(opts, ctx) {
     loopState.currentIndex = i;
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();
-    saveLoopState(ctx.workspaceDir, loopState);
+    saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
     const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
       issue,
@@ -332,7 +332,9 @@ export async function runDevelopLoop(opts, ctx) {
         status: "skipped",
         error: "All dependencies failed",
       });
-      saveLoopState(ctx.workspaceDir, loopState);
+      saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
       return "skipped";
     }
 
@@ -343,7 +345,9 @@ export async function runDevelopLoop(opts, ctx) {
     if (hasUnresolvedDeps && !isRetry) {
       ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
       loopState.issueQueue[i].status = "deferred";
-      saveLoopState(ctx.workspaceDir, loopState);
+      saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
       return "deferred";
     }
 
@@ -397,7 +401,9 @@ export async function runDevelopLoop(opts, ctx) {
           ctx.log({ event: "issue_rate_limited", issueId: issue.id });
           loopState.issueQueue[i].status = "deferred";
           loopState.issueQueue[i].error = errText;
-          saveLoopState(ctx.workspaceDir, loopState);
+          saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
           return "deferred";
         }
         loopState.issueQueue[i].status = "failed";
@@ -415,7 +421,9 @@ export async function runDevelopLoop(opts, ctx) {
         ctx.log({ event: "issue_rate_limited", issueId: issue.id });
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = err.message;
-        saveLoopState(ctx.workspaceDir, loopState);
+        saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
         return "deferred";
       }
       loopState.issueQueue[i].status = "failed";
@@ -425,7 +433,7 @@ export async function runDevelopLoop(opts, ctx) {
       results.push({ ...issue, status: "failed", error: err.message });
     }
 
-    saveLoopState(ctx.workspaceDir, loopState);
+    saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
     // Reset between issues
     const issueStatus = loopState.issueQueue[i].status;
@@ -595,7 +603,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 
   loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
   loopState.completedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
   return {
     status: loopState.status,

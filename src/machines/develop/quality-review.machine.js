@@ -431,9 +431,7 @@ Hard constraints:
       );
     }
     state.steps.testsPassed = true;
-    state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
     state.reviewedAt = new Date().toISOString();
-    saveState(ctx.workspaceDir, state);
 
     upsertIssueCompletionBlock(paths.issue, {
       ppcommitClean: true,
@@ -441,12 +439,16 @@ Hard constraints:
       note: "Review + ppcommit + tests completed. Ready to create PR.",
     });
 
+    // WIP checkpoint BEFORE fingerprint so pr_creation sees post-commit state
     maybeCheckpointWip(
       repoRoot,
       state.branch,
       ctx.config.workflow.wip,
       ctx.log,
     );
+
+    state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
+    saveState(ctx.workspaceDir, state);
     return {
       status: "ok",
       data: {

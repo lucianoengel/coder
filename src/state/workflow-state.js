@@ -44,9 +44,19 @@ export function workflowStatePathFor(workspaceDir) {
 
 export function saveWorkflowSnapshot(
   workspaceDir,
-  { runId, workflow = "develop", snapshot, sqlitePath = "" },
+  { runId, workflow = "develop", snapshot, sqlitePath = "", guardRunId = "" },
 ) {
   if (!runId || !snapshot) return null;
+  // Guard: skip write if a newer run owns the state file
+  if (guardRunId) {
+    const statePath = workflowStatePathFor(workspaceDir);
+    if (existsSync(statePath)) {
+      try {
+        const existing = JSON.parse(readFileSync(statePath, "utf8"));
+        if (existing.runId && existing.runId !== guardRunId) return null;
+      } catch {}
+    }
+  }
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -262,8 +272,21 @@ export function loadLoopState(workspaceDir) {
   }
 }
 
-export function saveLoopState(workspaceDir, loopState) {
+export function saveLoopState(
+  workspaceDir,
+  loopState,
+  { guardRunId = "" } = {},
+) {
   const p = loopStatePathFor(workspaceDir);
+  // Guard: skip write if a newer run owns the state file
+  if (guardRunId) {
+    if (existsSync(p)) {
+      try {
+        const existing = JSON.parse(readFileSync(p, "utf8"));
+        if (existing.runId && existing.runId !== guardRunId) return;
+      } catch {}
+    }
+  }
   mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
 }

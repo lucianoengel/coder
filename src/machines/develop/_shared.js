@@ -174,7 +174,13 @@ export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
       }
     }
 
-    const push = runGit(["push", "-u", remote, `HEAD:${branch}`]);
+    const push = runGit([
+      "push",
+      "--force-with-lease",
+      "-u",
+      remote,
+      `HEAD:${branch}`,
+    ]);
     if (push.status !== 0)
       throw new Error(`git push failed: ${push.stderr || push.stdout}`);
 

@@ -81,7 +81,7 @@ export const AgentNameSchema = z.enum(["gemini", "claude", "codex"]);
 export const WorkflowAgentRolesSchema = z.object({
   issueSelector: AgentNameSchema.default("gemini"),
   planner: AgentNameSchema.default("claude"),
-  planReviewer: AgentNameSchema.default("codex"),
+  planReviewer: AgentNameSchema.default("gemini"),
   programmer: AgentNameSchema.default("claude"),
   reviewer: AgentNameSchema.default("codex"),
   committer: AgentNameSchema.default("gemini"),

@@ -114,7 +114,7 @@ export default defineMachine({
     // Push to remote
     const push = spawnSync(
       "git",
-      ["push", "-u", "origin", `HEAD:${remoteBranch}`],
+      ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, encoding: "utf8" },
     );
     if (push.status !== 0) throw new Error(`git push failed: ${push.stderr}`);
