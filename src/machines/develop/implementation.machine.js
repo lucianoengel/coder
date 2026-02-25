@@ -129,20 +129,11 @@ FORBIDDEN patterns:
 - Do not bypass tests
 - Use the repo's normal commands (lint, format, test)`;
 
-    let res;
-    try {
-      res = await programmerAgent.execute(implPrompt, {
-        resumeId: state.claudeSessionId || undefined,
-        timeoutMs: ctx.config.workflow.timeouts.implementation,
-      });
-      requireExitZero(programmerName, "implementation failed", res);
-    } catch (err) {
-      if (state.claudeSessionId) {
-        state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
-      }
-      throw err;
-    }
+    const res = await programmerAgent.execute(implPrompt, {
+      resumeId: state.claudeSessionId || undefined,
+      timeoutMs: ctx.config.workflow.timeouts.implementation,
+    });
+    requireExitZero(programmerName, "implementation failed", res);
 
     state.steps.implemented = true;
     saveState(ctx.workspaceDir, state);

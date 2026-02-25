@@ -15,7 +15,6 @@ import {
   loadSteeringContext,
   parseSteeringResponse,
   steeringDirFor,
-  steeringFilePath,
   writeSteeringFiles,
 } from "../src/steering.js";
 
@@ -43,25 +42,10 @@ test("loadSteeringContext: reads from .coder/steering/ directory", () => {
   assert.ok(result.includes("---")); // separator between sections
 });
 
-test("loadSteeringContext: falls back to .coder/steering.md", () => {
+test("loadSteeringContext: returns undefined when directory exists but is empty", () => {
   const ws = makeTmpWorkspace();
-  mkdirSync(path.join(ws, ".coder"), { recursive: true });
-  writeFileSync(steeringFilePath(ws), "# Combined steering\nFallback content");
-
-  const result = loadSteeringContext(ws);
-  assert.ok(result.includes("Fallback content"));
-});
-
-test("loadSteeringContext: directory takes priority over single file", () => {
-  const ws = makeTmpWorkspace();
-  const dir = steeringDirFor(ws);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "product.md"), "# Product from dir");
-  writeFileSync(steeringFilePath(ws), "# Old single file");
-
-  const result = loadSteeringContext(ws);
-  assert.ok(result.includes("Product from dir"));
-  assert.ok(!result.includes("Old single file"));
+  mkdirSync(steeringDirFor(ws), { recursive: true });
+  assert.equal(loadSteeringContext(ws), undefined);
 });
 
 test("loadSteeringContext: skips missing files in directory", () => {
@@ -95,9 +79,6 @@ test("writeSteeringFiles: creates directory and writes files", () => {
     readFileSync(path.join(dir, "product.md"), "utf8"),
     "# Product\nGenerated product",
   );
-
-  // Also writes combined steering.md
-  assert.ok(existsSync(steeringFilePath(ws)));
 });
 
 test("writeSteeringFiles: skips empty/null content", () => {
