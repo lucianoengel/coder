@@ -138,7 +138,7 @@ export const DesignConfigSchema = z.object({
       apiKeyEnv: z.string().default("GOOGLE_STITCH_API_KEY"),
       authHeader: z.string().default("X-Goog-Api-Key"),
     })
-    .default({}),
+    .prefault({}),
   specDir: z.string().default("spec/UI"),
 });
 
@@ -188,7 +188,9 @@ export const AgentRetrySchema = z.object({
   retryOnRateLimit: z.boolean().default(true),
 });
 
-export const AgentFallbackSchema = z.record(AgentNameSchema).default({});
+export const AgentFallbackSchema = z
+  .record(z.string(), AgentNameSchema)
+  .prefault({});
 
 export const CoderConfigSchema = z.object({
   models: z
@@ -209,40 +211,40 @@ export const CoderConfigSchema = z.object({
         apiKeyEnv: "OPENAI_API_KEY",
       }),
     })
-    .default({}),
-  ppcommit: PpcommitConfigSchema.default({}),
-  test: TestSectionSchema.default({}),
+    .prefault({}),
+  ppcommit: PpcommitConfigSchema.prefault({}),
+  test: TestSectionSchema.prefault({}),
   claude: z
     .object({
       skipPermissions: z.boolean().default(true),
     })
-    .default({}),
+    .prefault({}),
   mcp: z
     .object({
       strictStartup: z.boolean().default(false),
     })
-    .default({}),
+    .prefault({}),
   workflow: z
     .object({
-      agentRoles: WorkflowAgentRolesSchema.default({}),
-      wip: WorkflowWipSchema.default({}),
-      scratchpad: WorkflowScratchpadSchema.default({}),
-      timeouts: WorkflowTimeoutsSchema.default({}),
+      agentRoles: WorkflowAgentRolesSchema.prefault({}),
+      wip: WorkflowWipSchema.prefault({}),
+      scratchpad: WorkflowScratchpadSchema.prefault({}),
+      timeouts: WorkflowTimeoutsSchema.prefault({}),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
     })
-    .default({}),
-  design: DesignConfigSchema.default({}),
-  github: GithubConfigSchema.default({}),
+    .prefault({}),
+  design: DesignConfigSchema.prefault({}),
+  github: GithubConfigSchema.prefault({}),
   agents: z
     .object({
-      retry: AgentRetrySchema.default({}),
+      retry: AgentRetrySchema.prefault({}),
       fallback: AgentFallbackSchema,
     })
-    .default({}),
+    .prefault({}),
   verbose: z.boolean().default(false),
 });
 
