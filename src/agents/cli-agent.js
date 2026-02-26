@@ -17,6 +17,14 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   "rejected stored OAuth token",
   "Please re-authenticate using: /mcp auth",
 ];
+const CLAUDE_RESUME_FAILURE_PATTERNS = [
+  "No conversation found with session ID",
+  "Conversation not found",
+  "Session not found",
+  "Invalid session ID",
+  "Conversation has expired",
+  "Session has expired",
+];
 const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
 export function resolveAgentName(name) {
@@ -160,9 +168,13 @@ export class CliAgent extends AgentAdapter {
     const isGemini = this.name === "gemini";
     const hangTimeoutMs = opts.hangTimeoutMs ?? 0;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
-    const killOnStderrPatterns =
-      opts.killOnStderrPatterns ??
-      (isGemini ? GEMINI_AUTH_FAILURE_PATTERNS : []);
+    const isClaude = this.name === "claude";
+    const defaultPatterns = isGemini
+      ? GEMINI_AUTH_FAILURE_PATTERNS
+      : isClaude && (opts.resumeId || opts.sessionId)
+        ? CLAUDE_RESUME_FAILURE_PATTERNS
+        : [];
+    const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
     return sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
