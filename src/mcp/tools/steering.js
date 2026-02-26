@@ -65,7 +65,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
         });
 
         const prompt = buildSteeringGenerationPrompt(ws);
-        const agent = pool.getAgent("gemini");
+        const { agent } = pool.getAgent("gemini");
         const result = await agent.execute(prompt, {
           timeoutMs: 120_000,
           env: secrets,
@@ -155,7 +155,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
         });
 
         const prompt = buildSteeringGenerationPrompt(ws);
-        const agent = pool.getAgent("gemini");
+        const { agent } = pool.getAgent("gemini");
         const result = await agent.execute(prompt, {
           timeoutMs: 120_000,
           env: secrets,

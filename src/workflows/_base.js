@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { pollControlSignal } from "../state/workflow-state.js";
 
 export function runHooks(
   ctx,
@@ -107,6 +108,12 @@ export class WorkflowRunner {
 
     this._heartbeatInterval = setInterval(() => {
       this.onHeartbeat();
+      // Poll for file-based control signals (CLI cancel/pause/resume)
+      pollControlSignal(
+        this.ctx.workspaceDir,
+        this.ctx.cancelToken,
+        this.runId,
+      );
     }, 2000);
 
     try {
@@ -234,6 +241,11 @@ export class WorkflowRunner {
       }
       await new Promise((r) => setTimeout(r, CHECK_INTERVAL_MS));
       this.onHeartbeat();
+      pollControlSignal(
+        this.ctx.workspaceDir,
+        this.ctx.cancelToken,
+        this.runId,
+      );
     }
   }
 }

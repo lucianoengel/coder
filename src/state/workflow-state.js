@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -327,6 +328,56 @@ export function saveLoopState(
     }
   }
   atomicWriteJson(p, loopState);
+}
+
+// --- CLI control signals (file-based cancel/pause/resume) ---
+
+export function controlSignalPath(workspaceDir) {
+  return path.join(workspaceDir, ".coder", "control.json");
+}
+
+export function writeControlSignal(workspaceDir, signal) {
+  const p = controlSignalPath(workspaceDir);
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify({ ...signal, ts: nowIso() }), "utf8");
+}
+
+/**
+ * Poll for a file-based control signal and apply it to the cancelToken.
+ * Returns the action name if a signal was consumed, otherwise null.
+ */
+export function pollControlSignal(workspaceDir, cancelToken, runId) {
+  const p = controlSignalPath(workspaceDir);
+  if (!existsSync(p)) return null;
+  try {
+    const signal = JSON.parse(readFileSync(p, "utf8"));
+    // Only consume if runId matches (or no runId specified in signal)
+    if (signal.runId && signal.runId !== runId) return null;
+    if (signal.action === "cancel") {
+      cancelToken.cancelled = true;
+      try {
+        unlinkSync(p);
+      } catch {}
+      return "cancel";
+    }
+    if (signal.action === "pause") {
+      cancelToken.paused = true;
+      try {
+        unlinkSync(p);
+      } catch {}
+      return "pause";
+    }
+    if (signal.action === "resume") {
+      cancelToken.paused = false;
+      try {
+        unlinkSync(p);
+      } catch {}
+      return "resume";
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Per-issue state ---

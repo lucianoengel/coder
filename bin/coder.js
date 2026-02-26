@@ -5,6 +5,7 @@ import {
   existsSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   statSync,
   watch,
@@ -14,9 +15,15 @@ import process from "node:process";
 import { parseArgs as nodeParseArgs } from "node:util";
 
 import { loadConfig, resolveConfig } from "../src/config.js";
+import { buildSecrets, DEFAULT_PASS_ENV } from "../src/helpers.js";
 import { logsDir } from "../src/logging.js";
 import { runPpcommitAll, runPpcommitBranch } from "../src/ppcommit.js";
-import { loadLoopState, loadState } from "../src/state/workflow-state.js";
+import {
+  loadLoopState,
+  loadState,
+  loadWorkflowSnapshot,
+  writeControlSignal,
+} from "../src/state/workflow-state.js";
 
 function usage() {
   return `coder — management CLI for the coder MCP server
@@ -37,22 +44,68 @@ Subcommands:
         --run     Filter by runId.
         --json    Output raw JSONL.
 
+  coder cancel [--workspace <path>] [--run <runId>]
+        Request cancellation of the current workflow run.
+
+  coder pause [--workspace <path>] [--run <runId>]
+        Request pause of the current workflow run.
+
+  coder resume [--workspace <path>] [--run <runId>]
+        Resume a paused workflow run.
+
+  coder steering <generate|update> [--workspace <path>] [--force]
+        Generate or update .coder/steering/ context files.
+        generate  Scan the repo and create product.md, structure.md, tech.md.
+        update    Re-scan and overwrite existing steering files.
+        --force   Overwrite existing files (for generate).
+
   coder config [--workspace <path>]
         Show resolved configuration.
 
   coder ppcommit [--base <branch>]
         Run ppcommit checks on the repository.
-        Without --base: checks all files in the repo.
-        With --base: checks only files changed since the given branch.
 
   coder serve [--transport stdio|http] [--port <port>]
         Start the MCP server (delegates to coder-mcp).
-
-Workflows are orchestrated through the MCP server tools:
-  - coder_workflow { action: "start", workflow: "develop|research|design" }
-  - Individual machine tools: coder_develop_*, coder_research_*, coder_design_*
-  - Status: coder_status, coder_workflow { action: "status" }
 `;
+}
+
+// --- Helpers ---
+
+function resolveWorkspace(args) {
+  const { values } = nodeParseArgs({
+    args,
+    strict: false,
+    options: {
+      workspace: { type: "string", default: "." },
+    },
+  });
+  const workspaceDir = path.resolve(values.workspace);
+  if (!existsSync(workspaceDir)) {
+    process.stderr.write(`Workspace does not exist: ${workspaceDir}\n`);
+    process.exit(1);
+  }
+  return workspaceDir;
+}
+
+function readJsonFile(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
 }
 
 // --- coder status ---
@@ -72,9 +125,15 @@ function formatStatusHuman(status) {
   }
 
   lines.push(`Repo: ${status.repoPath || "(not set)"}`);
-  lines.push(`Branch: ${status.branch || "(not set)"}\n`);
+  lines.push(`Branch: ${status.branch || "(not set)"}`);
+  if (status.lastError) {
+    lines.push(`Last Error: ${String(status.lastError).slice(0, 120)}`);
+  }
+  if (status.prUrl) {
+    lines.push(`PR: ${status.prUrl}`);
+  }
 
-  lines.push("Workflow:");
+  lines.push("\nWorkflow:");
   lines.push(`  Run ID: ${status.workflow.runId || "(none)"}`);
   lines.push(`  Status: ${status.workflow.status}`);
   if (status.workflow.currentStage) {
@@ -83,12 +142,17 @@ function formatStatusHuman(status) {
   if (status.workflow.activeAgent) {
     lines.push(`  Agent:  ${status.workflow.activeAgent}`);
   }
+  if (status.workflow.runnerPid != null) {
+    const alive = isPidAlive(status.workflow.runnerPid);
+    const tag = alive === true ? "alive" : alive === false ? "dead" : "unknown";
+    lines.push(`  Runner: PID ${status.workflow.runnerPid} (${tag})`);
+  }
   if (status.workflow.lastHeartbeatAt) {
     const ago = Math.round(
       (Date.now() - new Date(status.workflow.lastHeartbeatAt)) / 1000,
     );
     lines.push(
-      `  Last heartbeat: ${ago}s ago (${status.workflow.lastHeartbeatAt.slice(11, 19)} UTC)`,
+      `  Heartbeat: ${ago}s ago (${status.workflow.lastHeartbeatAt.slice(11, 19)} UTC)`,
     );
   }
 
@@ -110,14 +174,59 @@ function formatStatusHuman(status) {
 
   lines.push("\nArtifacts:");
   lines.push(
-    `  ISSUE.md:      ${status.artifacts.issueExists ? "exists" : "missing"}`,
+    `  ISSUE.md:         ${status.artifacts.issueExists ? "exists" : "missing"}`,
   );
   lines.push(
-    `  PLAN.md:       ${status.artifacts.planExists ? "exists" : "missing"}`,
+    `  PLAN.md:          ${status.artifacts.planExists ? "exists" : "missing"}`,
   );
   lines.push(
-    `  PLANREVIEW.md: ${status.artifacts.critiqueExists ? "exists" : "missing"}`,
+    `  PLANREVIEW.md:    ${status.artifacts.critiqueExists ? "exists" : "missing"}`,
   );
+  lines.push(
+    `  REVIEW_FINDINGS:  ${status.artifacts.reviewFindingsExists ? "exists" : "missing"}`,
+  );
+
+  if (status.wip?.enabled) {
+    lines.push("\nWIP Push:");
+    lines.push(`  Remote: ${status.wip.remote}`);
+    lines.push(`  Auto-commit: ${status.wip.autoCommit}`);
+    if (status.wip.lastPushedAt)
+      lines.push(`  Last pushed: ${status.wip.lastPushedAt}`);
+  }
+
+  if (status.research) {
+    lines.push("\nResearch:");
+    lines.push(`  Run ID: ${status.research.runId || "(none)"}`);
+    if (status.research.pipeline) {
+      const p = status.research.pipeline;
+      lines.push(
+        `  Stages: ${Object.keys(p).length} (${Object.keys(p).join(", ")})`,
+      );
+    }
+  }
+
+  if (status.agentActivity) {
+    lines.push("\nAgent Activity:");
+    const act = status.agentActivity;
+    if (act.lastActivityTs) {
+      const ago = Math.round((Date.now() - act.lastActivityTs) / 1000);
+      lines.push(`  Last activity: ${ago}s ago`);
+    }
+    if (act.currentCommand)
+      lines.push(`  Command: ${String(act.currentCommand).slice(0, 80)}`);
+  }
+
+  if (status.mcpHealth) {
+    const h = status.mcpHealth;
+    const servers = Object.entries(h);
+    if (servers.length > 0) {
+      lines.push("\nMCP Servers:");
+      for (const [name, info] of servers) {
+        const st = info?.status || "unknown";
+        lines.push(`  ${name}: ${st}`);
+      }
+    }
+  }
 
   const steps = Object.entries(status.steps);
   if (steps.length > 0) {
@@ -133,21 +242,55 @@ function formatStatusHuman(status) {
 function buildStatus(workspaceDir) {
   const state = loadState(workspaceDir);
   const loopState = loadLoopState(workspaceDir);
+  const wfSnapshot = loadWorkflowSnapshot(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  const config = resolveConfig(workspaceDir);
+
+  const activity = readJsonFile(
+    path.join(workspaceDir, ".coder", "activity.json"),
+  );
+  const mcpHealth = readJsonFile(
+    path.join(workspaceDir, ".coder", "mcp-health.json"),
+  );
+  const researchState = readJsonFile(
+    path.join(workspaceDir, ".coder", "research-state.json"),
+  );
+
+  let research = null;
+  if (researchState?.runId) {
+    const pipelinePath = path.join(
+      workspaceDir,
+      ".coder",
+      "scratchpad",
+      researchState.runId,
+      "pipeline.json",
+    );
+    research = {
+      runId: researchState.runId,
+      pipeline: readJsonFile(pipelinePath),
+    };
+  }
 
   return {
     workspace: workspaceDir,
     selected: state.selected || null,
     repoPath: state.repoPath || null,
+    baseBranch: state.baseBranch || null,
     branch: state.branch || null,
+    lastError: state.lastError || null,
+    prUrl: state.prUrl || null,
+    prBranch: state.prBranch || null,
+    prBase: state.prBase || null,
     steps: state.steps || {},
     workflow: {
-      runId: loopState.runId || null,
+      runId: loopState.runId || wfSnapshot?.runId || null,
       status: loopState.status || "idle",
       goal: loopState.goal || null,
-      currentStage: loopState.currentStage || null,
+      currentStage:
+        loopState.currentStage || wfSnapshot?.value?.currentStage || null,
       activeAgent: loopState.activeAgent || null,
       lastHeartbeatAt: loopState.lastHeartbeatAt || null,
+      runnerPid: loopState.runnerPid || null,
       issueQueue: (loopState.issueQueue || []).map((e) => ({
         source: e.source,
         id: e.id,
@@ -158,11 +301,23 @@ function buildStatus(workspaceDir) {
         error: e.error || null,
       })),
     },
+    wip: {
+      enabled: config.workflow?.wip?.push || false,
+      remote: config.workflow?.wip?.remote || "origin",
+      autoCommit: config.workflow?.wip?.autoCommit || false,
+      lastPushedAt: state.lastWipPushAt || null,
+    },
     artifacts: {
       issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
       planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
       critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+      reviewFindingsExists: existsSync(
+        path.join(artifactsDir, "REVIEW_FINDINGS.md"),
+      ),
     },
+    agentActivity: activity,
+    mcpHealth,
+    research,
   };
 }
 
@@ -193,9 +348,8 @@ function runStatusCli() {
   };
 
   if (values.watch) {
-    // Clear screen and redraw every 3s
     const redraw = () => {
-      process.stdout.write("\x1b[2J\x1b[H"); // clear screen, move cursor to top
+      process.stdout.write("\x1b[2J\x1b[H");
       printStatus();
       process.stdout.write("\n\x1b[2m[watch mode — Ctrl+C to stop]\x1b[0m\n");
     };
@@ -213,18 +367,15 @@ function runStatusCli() {
 
 // --- coder events ---
 
-/** Detect whether a log name is an agent output log (stream+data fields). */
 function isAgentLog(logName) {
   return ["claude", "gemini", "codex", "openai"].includes(logName);
 }
 
-/** Format a single develop/machines JSONL event as a human-readable line. */
 function formatEventLine(d) {
-  const ts = (d.ts || "").slice(11, 19); // HH:MM:SS
+  const ts = (d.ts || "").slice(11, 19);
   const event = String(d.event || "?").padEnd(26);
   const runId = d.runId ? `[${String(d.runId).slice(0, 8)}] ` : "";
 
-  // Build a compact details string from interesting fields
   const parts = [];
   if (d.stage) parts.push(d.stage);
   if (d.machine) parts.push(d.machine);
@@ -241,17 +392,14 @@ function formatEventLine(d) {
   if (d.message) parts.push(String(d.message).slice(0, 80));
   if (d.error) parts.push(`ERROR: ${String(d.error).slice(0, 80)}`);
 
-  const details = parts.join("  ") || "";
-  return `${ts}  ${event}  ${runId}${details}`;
+  return `${ts}  ${event}  ${runId}${parts.join("  ")}`;
 }
 
-/** Format a single agent log line (stream + data fields). */
 function formatAgentLine(d) {
   const ts = (d.ts || "").slice(11, 19);
   if (d.stream) {
     const tag = d.stream === "stderr" ? "[stderr]" : "[stdout]";
     const text = String(d.data || "").replace(/\n$/, "");
-    // Indent continuation lines
     const indent = `${ts}          `;
     return text
       .split("\n")
@@ -260,38 +408,31 @@ function formatAgentLine(d) {
       )
       .join("\n");
   }
-  // Fallback: event-style
   return formatEventLine(d);
 }
 
-/** Read the last N JSONL lines from a file, filtered optionally by runId. */
 function readLastLines(filePath, n, runIdFilter) {
   if (!existsSync(filePath)) return [];
-
-  // Read the whole file — for typical log sizes this is fine
   const size = statSync(filePath).size;
   if (size === 0) return [];
 
-  // Read up to 512KB from the tail to avoid loading huge files entirely
   const maxRead = Math.min(size, 512 * 1024);
   const buf = Buffer.allocUnsafe(maxRead);
   const fd = openSync(filePath, "r");
   readSync(fd, buf, 0, maxRead, size - maxRead);
   closeSync(fd);
 
-  const text = buf.toString("utf8");
-  const rawLines = text.split("\n").filter((l) => l.trim());
-
+  const rawLines = buf
+    .toString("utf8")
+    .split("\n")
+    .filter((l) => l.trim());
   const parsed = [];
   for (const line of rawLines) {
     try {
       const d = JSON.parse(line);
       if (!runIdFilter || d.runId === runIdFilter) parsed.push(d);
-    } catch {
-      // skip malformed lines
-    }
+    } catch {}
   }
-
   return parsed.slice(-n);
 }
 
@@ -322,7 +463,6 @@ async function runEventsCli() {
   const runIdFilter = values.run || "";
   const logDir = logsDir(workspaceDir);
 
-  // If no specific log given, list available logs when run with --log ''
   if (logName === "" || logName === "list") {
     if (existsSync(logDir)) {
       const files = readdirSync(logDir)
@@ -347,7 +487,6 @@ async function runEventsCli() {
     }
   };
 
-  // Initial display
   const initial = readLastLines(logFile, count, runIdFilter);
   if (initial.length === 0 && !doFollow) {
     process.stdout.write(
@@ -359,14 +498,12 @@ async function runEventsCli() {
 
   if (!doFollow) return;
 
-  // Follow mode: watch for new lines
   process.stdout.write(
     `\x1b[2m--- following ${logName}.jsonl (Ctrl+C to stop) ---\x1b[0m\n`,
   );
 
-  // Track byte position to only read new content
   let position = existsSync(logFile) ? statSync(logFile).size : 0;
-  let partial = ""; // incomplete line buffer
+  let partial = "";
 
   const readNew = () => {
     if (!existsSync(logFile)) return;
@@ -382,23 +519,17 @@ async function runEventsCli() {
 
     const text = partial + buf.subarray(0, bytesRead).toString("utf8");
     const lines = text.split("\n");
-    // Last element may be incomplete
     partial = lines.pop() || "";
 
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
         const d = JSON.parse(line);
-        if (!runIdFilter || d.runId === runIdFilter) {
-          printLines([d]);
-        }
-      } catch {
-        // skip malformed
-      }
+        if (!runIdFilter || d.runId === runIdFilter) printLines([d]);
+      } catch {}
     }
   };
 
-  // Watch the logs directory (file may not exist yet)
   const watchTarget = existsSync(logFile) ? logFile : logDir;
   const watcher = watch(watchTarget, { persistent: true }, (eventType) => {
     if (eventType === "change" || eventType === "rename") readNew();
@@ -411,14 +542,15 @@ async function runEventsCli() {
   });
 }
 
-// --- coder config ---
+// --- coder cancel / pause / resume ---
 
-function runConfigCli() {
+function runControlCli(action) {
   const { values } = nodeParseArgs({
     args: process.argv.slice(3),
     strict: true,
     options: {
       workspace: { type: "string", default: "." },
+      run: { type: "string", default: "" },
     },
   });
 
@@ -428,6 +560,146 @@ function runConfigCli() {
     process.exit(1);
   }
 
+  const loopState = loadLoopState(workspaceDir);
+  const runId = values.run || loopState.runId;
+
+  if (!runId) {
+    process.stderr.write(
+      "No active run found. Use --run <runId> to specify.\n",
+    );
+    process.exit(1);
+  }
+
+  if (
+    action === "cancel" &&
+    !["running", "paused"].includes(loopState.status)
+  ) {
+    process.stderr.write(
+      `Run ${runId} is ${loopState.status}, not running/paused.\n`,
+    );
+    process.exit(1);
+  }
+  if (action === "pause" && loopState.status !== "running") {
+    process.stderr.write(`Run ${runId} is ${loopState.status}, not running.\n`);
+    process.exit(1);
+  }
+  if (action === "resume" && loopState.status !== "paused") {
+    process.stderr.write(`Run ${runId} is ${loopState.status}, not paused.\n`);
+    process.exit(1);
+  }
+
+  writeControlSignal(workspaceDir, { action, runId });
+  process.stdout.write(`${action} signal written for run ${runId}\n`);
+
+  // For cancel, also check if runner is alive and send SIGTERM
+  if (action === "cancel" && loopState.runnerPid) {
+    const alive = isPidAlive(loopState.runnerPid);
+    if (alive) {
+      process.stdout.write(
+        `Runner PID ${loopState.runnerPid} is alive — signal file will be picked up within ~2s.\n`,
+      );
+    } else {
+      process.stdout.write(
+        `Runner PID ${loopState.runnerPid} is not alive — run may already be dead.\n`,
+      );
+    }
+  }
+}
+
+// --- coder steering ---
+
+async function runSteeringCli() {
+  const subAction = process.argv[3];
+  if (!subAction || !["generate", "update"].includes(subAction)) {
+    process.stderr.write(
+      "Usage: coder steering <generate|update> [--workspace <path>] [--force]\n",
+    );
+    process.exit(1);
+  }
+
+  const { values } = nodeParseArgs({
+    args: process.argv.slice(4),
+    strict: true,
+    options: {
+      workspace: { type: "string", default: "." },
+      force: { type: "boolean", default: false },
+    },
+  });
+
+  const workspaceDir = path.resolve(values.workspace);
+  if (!existsSync(workspaceDir)) {
+    process.stderr.write(`Workspace does not exist: ${workspaceDir}\n`);
+    process.exit(1);
+  }
+
+  // Dynamic imports to avoid loading heavy deps for other subcommands
+  const { AgentPool } = await import("../src/agents/pool.js");
+  const {
+    buildSteeringGenerationPrompt,
+    loadSteeringContext,
+    parseSteeringResponse,
+    steeringDirFor,
+    writeSteeringFiles,
+  } = await import("../src/steering.js");
+
+  const config = resolveConfig(workspaceDir);
+
+  if (subAction === "generate" && !values.force) {
+    const existing = loadSteeringContext(workspaceDir);
+    if (existing) {
+      process.stdout.write(
+        `Steering files already exist at ${steeringDirFor(workspaceDir)}.\nUse --force to regenerate.\n`,
+      );
+      return;
+    }
+  }
+
+  process.stdout.write(
+    `${subAction === "generate" ? "Generating" : "Updating"} steering context...\n`,
+  );
+
+  const secrets = buildSecrets(DEFAULT_PASS_ENV);
+  const pool = new AgentPool({
+    config,
+    workspaceDir,
+    verbose: false,
+  });
+
+  try {
+    const prompt = buildSteeringGenerationPrompt(workspaceDir);
+    const { agent } = pool.getAgent("gemini");
+    const result = await agent.execute(prompt, {
+      timeoutMs: 120_000,
+      env: secrets,
+    });
+
+    if (!result?.stdout) {
+      process.stderr.write("Steering generation failed: no agent output.\n");
+      process.exit(1);
+    }
+
+    const parsed = parseSteeringResponse(result.stdout);
+    const sections = Object.keys(parsed);
+    if (sections.length === 0) {
+      process.stderr.write(
+        "Steering generation failed: could not parse output into sections.\n",
+      );
+      process.exit(1);
+    }
+
+    const written = writeSteeringFiles(workspaceDir, parsed);
+    process.stdout.write(
+      `${subAction === "generate" ? "Generated" : "Updated"} ${written.length} steering files in ${steeringDirFor(workspaceDir)}: ${written.join(", ")}\n`,
+    );
+  } finally {
+    await pool.killAll();
+  }
+}
+
+// --- coder config ---
+
+function runConfigCli() {
+  const workspaceDir = resolveWorkspace(process.argv.slice(3));
   const config = resolveConfig(workspaceDir);
   process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
 }
@@ -500,6 +772,21 @@ switch (subcommand) {
     break;
   case "events":
     runEventsCli().catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
+    break;
+  case "cancel":
+    runControlCli("cancel");
+    break;
+  case "pause":
+    runControlCli("pause");
+    break;
+  case "resume":
+    runControlCli("resume");
+    break;
+  case "steering":
+    runSteeringCli().catch((err) => {
       process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
       process.exitCode = 1;
     });
