@@ -38,3 +38,4 @@ coder ppcommit --base main  # check branch diff only
 - Add or update tests when behavior changes
 - Update README.md if user-facing behavior or config changes
 - Never commit secrets or local config (`.env`, `.mcp.json`, `.claude/settings.local.json`)
+- Never commit local workflow artifacts (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`, `REVIEW.md`)

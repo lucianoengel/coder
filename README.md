@@ -20,7 +20,7 @@ Agent role assignments are configurable — any role can use any of the three ba
 ## Install
 
 ```bash
-npm install -g @canesin/coder-mcp
+npm install -g @canesin/coder
 ```
 
 Or from source:
@@ -277,6 +277,7 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 - Health-check URLs restricted to localhost
 - One active run per workspace
 - Session TTL with automatic cleanup (HTTP mode)
+- Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
 
