@@ -388,16 +388,44 @@ export function migrateConfig(raw) {
   return out;
 }
 
+function formatZodError(err, label) {
+  const lines = [`Invalid configuration (${label}):`];
+  for (const issue of err.issues ?? []) {
+    const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    lines.push(`  ${path}: ${issue.message}`);
+  }
+  return lines.join("\n");
+}
+
 export function loadConfig(workspaceDir) {
   const userRaw = readJson(userConfigPath());
   const repoRaw = readJson(repoConfigPath(workspaceDir));
   const merged = deepMerge(userRaw, repoRaw);
-  return CoderConfigSchema.parse(migrateConfig(merged));
+  try {
+    return CoderConfigSchema.parse(migrateConfig(merged));
+  } catch (err) {
+    if (err.issues) {
+      throw new Error(
+        formatZodError(
+          err,
+          `${userConfigPath()} + ${repoConfigPath(workspaceDir)}`,
+        ),
+      );
+    }
+    throw err;
+  }
 }
 
 export function resolveConfig(workspaceDir, overrides) {
   const base = loadConfig(workspaceDir);
   if (!overrides) return base;
   const raw = deepMerge(structuredClone(base), overrides);
-  return CoderConfigSchema.parse(raw);
+  try {
+    return CoderConfigSchema.parse(raw);
+  } catch (err) {
+    if (err.issues) {
+      throw new Error(formatZodError(err, "runtime overrides"));
+    }
+    throw err;
+  }
 }

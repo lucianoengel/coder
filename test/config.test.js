@@ -350,3 +350,39 @@ test("CoderConfigSchema: custom agent names in fallback", () => {
   });
   assert.equal(parsed.agents.fallback.planner, "cursor");
 });
+
+test("loadConfig: invalid field throws readable Error, not raw ZodError", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  writeFileSync(
+    path.join(dir, "coder.json"),
+    JSON.stringify({ workflow: { agentRoles: { planner: 99 } } }),
+  );
+  assert.throws(
+    () => loadConfig(dir),
+    (err) => {
+      assert.ok(err instanceof Error, "should throw an Error");
+      assert.ok(
+        err.message.includes("Invalid configuration"),
+        `message should start with 'Invalid configuration', got: ${err.message}`,
+      );
+      assert.ok(
+        err.message.includes("workflow.agentRoles.planner"),
+        `message should include field path, got: ${err.message}`,
+      );
+      return true;
+    },
+  );
+});
+
+test("resolveConfig: invalid override throws readable Error", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  assert.throws(
+    () => resolveConfig(dir, { verbose: "not-a-bool" }),
+    (err) => {
+      assert.ok(err instanceof Error, "should throw an Error");
+      assert.ok(err.message.includes("Invalid configuration"));
+      assert.ok(err.message.includes("verbose"));
+      return true;
+    },
+  );
+});
