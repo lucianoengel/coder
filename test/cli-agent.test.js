@@ -77,6 +77,24 @@ test("claude: malicious model name is shell-escaped", () => {
   assert.ok(!cmd.includes(`--model '; touch`));
 });
 
+test("codex: default command uses bypass flag and skips full-auto", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.startsWith("codex exec "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.ok(cmd.includes("--skip-git-repo-check"));
+  assert.ok(!cmd.includes("--full-auto"));
+});
+
+test("codex: resume command uses subcommand with bypass flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { resumeId: "resume-123" });
+  assert.ok(cmd.startsWith("codex exec resume 'resume-123' "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.ok(cmd.includes("--skip-git-repo-check"));
+  assert.ok(!cmd.includes("--full-auto"));
+});
+
 test("resolveAgentName: known agents resolve", () => {
   assert.equal(resolveAgentName("gemini"), "gemini");
   assert.equal(resolveAgentName("claude"), "claude");

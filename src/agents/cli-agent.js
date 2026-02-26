@@ -155,10 +155,13 @@ export class CliAgent extends AgentAdapter {
     }
 
     // codex: resume is a subcommand, not a flag
+    // --full-auto forces sandbox=workspace-write which blocks /bin/bash via Landlock
+    // on Linux 6.2+. Use --dangerously-bypass-approvals-and-sandbox instead — outer
+    // isolation (systemd-run with NoNewPrivileges + PrivateTmp) still applies.
     if (resumeId) {
-      return `codex exec resume ${shellEscape(resumeId)} --full-auto --skip-git-repo-check ${shellEscape(prompt)}`;
+      return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
-    return `codex exec --full-auto --skip-git-repo-check ${shellEscape(prompt)}`;
+    return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {

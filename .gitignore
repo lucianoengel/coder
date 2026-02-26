@@ -16,6 +16,10 @@ issues/
 # Workflow artifacts
 .coder/
 .coder-worktrees/
+ISSUE.md
+PLAN.md
+PLANREVIEW.md
+REVIEW.md
 
 # IDE
 .idea/
