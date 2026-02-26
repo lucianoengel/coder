@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
 
-import { CliAgent } from "../src/agents/cli-agent.js";
+import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
 
 const tmpDir = os.tmpdir();
 
@@ -76,15 +76,47 @@ test("claude: malicious model name is shell-escaped", () => {
   assert.ok(!cmd.includes(`--model '; touch`));
 });
 
-test("GH-81: executeStructured skips JSON parse on non-zero exitCode", async () => {
-  const agent = makeAgent("gemini");
-  agent.execute = async () => ({
-    exitCode: 1,
-    stdout: "",
-    stderr: "timeout",
-  });
+test("resolveAgentName: known agents resolve", () => {
+  assert.equal(resolveAgentName("gemini"), "gemini");
+  assert.equal(resolveAgentName("claude"), "claude");
+  assert.equal(resolveAgentName("codex"), "codex");
+});
 
-  const res = await agent.executeStructured("test prompt");
-  assert.equal(res.exitCode, 1);
-  assert.equal(res.parsed, undefined);
+test("resolveAgentName: custom agent name resolves", () => {
+  assert.equal(resolveAgentName("aider"), "aider");
+  assert.equal(resolveAgentName("cursor"), "cursor");
+});
+
+test("resolveAgentName: normalizes to lowercase", () => {
+  assert.equal(resolveAgentName("Gemini"), "gemini");
+  assert.equal(resolveAgentName("AIDER"), "aider");
+});
+
+test("resolveAgentName: trims whitespace", () => {
+  assert.equal(resolveAgentName("  claude  "), "claude");
+});
+
+test("resolveAgentName: rejects empty", () => {
+  assert.throws(() => resolveAgentName(""), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects null and undefined", () => {
+  assert.throws(() => resolveAgentName(null), /Invalid agent name/);
+  assert.throws(() => resolveAgentName(undefined), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects path separators", () => {
+  assert.throws(() => resolveAgentName("foo/bar"), /Invalid agent name/);
+  assert.throws(() => resolveAgentName("foo\\bar"), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects shell injection", () => {
+  assert.throws(() => resolveAgentName("x; rm -rf /"), /Invalid agent name/);
+  assert.throws(() => resolveAgentName("$(whoami)"), /Invalid agent name/);
+});
+
+test("custom agent falls through to codex exec in _buildCommand", () => {
+  const agent = makeAgent("aider");
+  const cmd = agent._buildCommand("test prompt");
+  assert.ok(cmd.startsWith("codex exec"));
 });

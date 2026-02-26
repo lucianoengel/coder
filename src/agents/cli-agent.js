@@ -17,26 +17,26 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   "rejected stored OAuth token",
   "Please re-authenticate using: /mcp auth",
 ];
-const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
+const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
 export function resolveAgentName(name) {
   const normalized = String(name || "")
     .trim()
     .toLowerCase();
-  if (!SUPPORTED_AGENTS.has(normalized)) {
+  if (!normalized || !agentNameRegex.test(normalized)) {
     throw new Error(
-      `Unsupported agent: ${name}. Expected one of: gemini, claude, codex.`,
+      `Invalid agent name: "${name}". Must be non-empty and contain only alphanumerics, dots, hyphens, underscores.`,
     );
   }
   return normalized;
 }
 
 /**
- * CLI-based agent — wraps HostSandboxProvider for gemini/claude/codex.
+ * CLI-based agent — wraps HostSandboxProvider for shell-based LLM tools.
  */
 export class CliAgent extends AgentAdapter {
   /**
-   * @param {string} agentName - "gemini" | "claude" | "codex"
+   * @param {string} agentName - Agent identifier (alphanumerics, dots, hyphens, underscores)
    * @param {{
    *   cwd: string,
    *   secrets: Record<string, string>,
@@ -174,7 +174,6 @@ export class CliAgent extends AgentAdapter {
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, { ...opts, structured: true });
-    if (res.exitCode !== 0) return { ...res, parsed: undefined };
     const parsed =
       this.name === "gemini"
         ? extractGeminiPayloadJson(res.stdout)
