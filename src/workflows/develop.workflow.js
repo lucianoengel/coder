@@ -356,11 +356,17 @@ export async function runDevelopLoop(opts, ctx) {
     issueSource = "",
     localIssuesDir = "",
     ppcommitPreset = "",
+    issueIds = [],
   } = opts;
 
   // List issues (local or remote)
   const listResult = await issueListMachine.run(
-    { projectFilter, issueSource: issueSource || undefined, localIssuesDir },
+    {
+      projectFilter,
+      issueSource: issueSource || undefined,
+      localIssuesDir,
+      issueIds: issueIds.length > 0 ? issueIds : undefined,
+    },
     ctx,
   );
   if (listResult.status !== "ok") {

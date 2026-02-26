@@ -151,6 +151,12 @@ export default defineMachine({
       .describe(
         "Path to local issues directory with manifest.json (absolute or relative to workspace)",
       ),
+    issueIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Force specific issue IDs to be processed (e.g. ["#84", "#82"] for GitHub). Skips AI selection.',
+      ),
   }),
   mcpAnnotations: {
     readOnlyHint: true,
@@ -161,6 +167,8 @@ export default defineMachine({
 
   async execute(input, ctx) {
     const issueSource = input.issueSource || ctx.config.workflow.issueSource;
+    const issueIds =
+      input.issueIds && input.issueIds.length > 0 ? input.issueIds : null;
 
     // Local issues — no agent needed
     if (issueSource === "local") {
@@ -178,18 +186,69 @@ export default defineMachine({
           `issueSource is "local" but no valid manifest found at ${resolvedDir}`,
         );
       }
+
+      const filtered = issueIds
+        ? local.issues.filter((iss) =>
+            issueIds.some(
+              (id) => id.toLowerCase() === String(iss.id).toLowerCase(),
+            ),
+          )
+        : local.issues;
+
       ctx.log({
         event: "step1_local_issues",
-        count: local.issues.length,
+        count: filtered.length,
         dir: resolvedDir,
+        issueIds: issueIds || undefined,
       });
       return {
         status: "ok",
         data: {
-          issues: local.issues,
-          recommended_index: local.recommended_index,
+          issues: filtered,
+          recommended_index: 0,
           source: "local",
         },
+      };
+    }
+
+    // Forced issue IDs for github/gitlab — fetch and filter without AI
+    if (issueIds && (issueSource === "github" || issueSource === "gitlab")) {
+      const fetchFn =
+        issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
+      const raw = fetchFn(ctx.workspaceDir);
+      if (!raw) {
+        throw new Error(
+          `${issueSource} CLI returned null — check auth and binary`,
+        );
+      }
+      const idSet = new Set(issueIds.map((id) => id.toLowerCase()));
+      const matched = raw
+        .filter((issue) => {
+          const id = `#${issue.number ?? issue.iid}`;
+          return idSet.has(id.toLowerCase());
+        })
+        .map((issue) => {
+          const parsed = IssueItemSchema.safeParse({
+            source: issueSource,
+            id: `#${issue.number ?? issue.iid}`,
+            title: issue.title,
+            repo_path: "",
+            difficulty: 3,
+            reason: "Forced by issueIds parameter",
+            depends_on: [],
+          });
+          return parsed.success ? parsed.data : null;
+        })
+        .filter(Boolean);
+      ctx.log({
+        event: "step1_forced_ids",
+        source: issueSource,
+        count: matched.length,
+        issueIds,
+      });
+      return {
+        status: "ok",
+        data: { issues: matched, recommended_index: 0, source: "forced" },
       };
     }
 

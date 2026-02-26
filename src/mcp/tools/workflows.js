@@ -396,6 +396,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           .describe(
             "Develop start-only: path to local issues directory with manifest.json",
           ),
+        issueIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Develop start-only: force specific issue IDs, skipping AI selection (e.g. ["#84", "#82"] for GitHub)',
+          ),
         destructiveReset: z
           .boolean()
           .default(false)
@@ -672,6 +678,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     localIssuesDir:
                       params.localIssuesDir || config.workflow.localIssuesDir,
                     ppcommitPreset: params.ppcommitPreset,
+                    issueIds: params.issueIds || [],
                   },
                   workflowCtx,
                 );
