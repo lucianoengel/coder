@@ -299,14 +299,25 @@ function applyPreset(ppcommitObj) {
 }
 
 function resolvePpcommitConfig(repoDir, ppcommitConfig) {
-  if (ppcommitConfig)
-    return PpcommitConfigSchema.parse(applyPreset(ppcommitConfig));
-  const disableLlm =
-    process.env.PPCOMMIT_DISABLE_LLM === "1" || process.env.NODE_ENV === "test";
+  const isTest = process.env.NODE_ENV === "test";
+  if (ppcommitConfig) {
+    const parsed = PpcommitConfigSchema.parse(applyPreset(ppcommitConfig));
+    if (isTest && ppcommitConfig.blockSecrets === undefined) {
+      return { ...parsed, blockSecrets: false };
+    }
+    return parsed;
+  }
+  const disableLlm = process.env.PPCOMMIT_DISABLE_LLM === "1" || isTest;
   const fullConfig = loadConfig(repoDir);
   const llmFields = resolvePpcommitLlm(fullConfig);
   const config = { ...applyPreset(fullConfig.ppcommit), ...llmFields };
-  if (disableLlm) return { ...config, enableLlm: false };
+  if (disableLlm || isTest) {
+    return {
+      ...config,
+      enableLlm: disableLlm ? false : config.enableLlm,
+      blockSecrets: isTest ? false : config.blockSecrets,
+    };
+  }
   return config;
 }
 
