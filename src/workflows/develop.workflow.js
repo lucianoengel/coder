@@ -669,23 +669,6 @@ export async function runDevelopLoop(opts, ctx) {
         );
       } else {
         const errText = pipelineResult.error || "";
-        if (isRateLimitError(errText) && !isRetry) {
-          ctx.log({ event: "issue_rate_limited", issueId: issue.id });
-          loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = errText;
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_deferred",
-            "",
-            { status: "deferred" },
-            issueEnv,
-          );
-          return "deferred";
-        }
         loopState.issueQueue[i].status = "failed";
         loopState.issueQueue[i].error = errText;
         outcomeMap.set(issue.id, { status: "failed" });
@@ -705,23 +688,6 @@ export async function runDevelopLoop(opts, ctx) {
         );
       }
     } catch (err) {
-      if (isRateLimitError(err.message) && !isRetry) {
-        ctx.log({ event: "issue_rate_limited", issueId: issue.id });
-        loopState.issueQueue[i].status = "deferred";
-        loopState.issueQueue[i].error = err.message;
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-        runHooks(
-          ctx,
-          loopRunId,
-          "issue_deferred",
-          "",
-          { status: "deferred" },
-          issueEnv,
-        );
-        return "deferred";
-      }
       loopState.issueQueue[i].status = "failed";
       loopState.issueQueue[i].error = err.message;
       outcomeMap.set(issue.id, { status: "failed" });

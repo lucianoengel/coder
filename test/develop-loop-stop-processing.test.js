@@ -125,6 +125,61 @@ test("should stop queue on issue failure: remaining pending issues are skipped",
   }
 });
 
+test("should stop queue when issue fails all machine retries due to rate limit", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2 },
+      { id: "C", title: "Issue C", difficulty: 3 },
+    ]);
+
+    WorkflowRunner.prototype.run = async (steps) => {
+      const name = steps[0]?.machine?.name;
+      if (name === "develop.implementation") {
+        return {
+          status: "failed",
+          error: "rate limit exceeded 429",
+          results: [],
+        };
+      }
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { branch: "feat/issue", prUrl: "http://pr" } },
+        ],
+      };
+    };
+
+    const ctx = makeCtx(ws);
+    ctx.config.workflow.maxMachineRetries = 2;
+    ctx.config.workflow.retryBackoffMs = 0;
+
+    const result = await runDevelopLoop(
+      { issueSource: "local", localIssuesDir: issuesDir },
+      ctx,
+    );
+
+    assert.equal(result.failed, 1);
+    assert.equal(result.skipped, 2);
+    assert.equal(result.completed, 0);
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((issue) => issue.id === "A");
+    const issueB = finalState.issueQueue.find((issue) => issue.id === "B");
+    const issueC = finalState.issueQueue.find((issue) => issue.id === "C");
+    assert.equal(issueA.status, "failed");
+    assert.equal(issueB.status, "skipped");
+    assert.equal(issueB.error, "Skipped: prior issue failed");
+    assert.equal(issueC.status, "skipped");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test("should not stop on issue failure when it is the last issue", async () => {
   const ws = makeTmpWorkspace();
   const originalRun = WorkflowRunner.prototype.run;
