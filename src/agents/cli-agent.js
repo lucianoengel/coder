@@ -67,7 +67,11 @@ export class CliAgent extends AgentAdapter {
     this.workspaceDir = opts.workspaceDir;
 
     this._events = new EventEmitter();
-    const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...filteredSecrets } = opts.secrets || {};
+    const {
+      CLAUDECODE: _cc,
+      CLAUDE_CODE_ENTRYPOINT: _cce,
+      ...filteredSecrets
+    } = opts.secrets || {};
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,
       baseEnv: filteredSecrets,

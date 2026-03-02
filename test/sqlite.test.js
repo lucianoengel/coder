@@ -32,7 +32,8 @@ test("sqliteAvailable returns a boolean and caches result", () => {
   assert.equal(result1, result2);
 });
 
-test("runSqliteAsync resolves valid SQL", async () => {
+test("runSqliteAsync resolves valid SQL", async (t) => {
+  if (!sqliteAvailable()) t.skip("sqlite3 CLI not available in PATH");
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -48,7 +49,8 @@ test("runSqliteAsync resolves valid SQL", async () => {
   }
 });
 
-test("runSqliteAsync rejects on invalid SQL", async () => {
+test("runSqliteAsync rejects on invalid SQL", async (t) => {
+  if (!sqliteAvailable()) t.skip("sqlite3 CLI not available in PATH");
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -60,7 +62,8 @@ test("runSqliteAsync rejects on invalid SQL", async () => {
   }
 });
 
-test("runSqliteAsync times out and throws SqliteTimeoutError", async () => {
+test("runSqliteAsync times out and throws SqliteTimeoutError", async (t) => {
+  if (!sqliteAvailable()) t.skip("sqlite3 CLI not available in PATH");
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
