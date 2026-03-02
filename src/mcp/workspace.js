@@ -1,8 +1,10 @@
+import fs from "node:fs";
 import path from "node:path";
 
 export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
-  const root = path.resolve(defaultWorkspace);
-  const target = path.resolve(workspace || defaultWorkspace);
+  const root = fs.realpathSync(path.resolve(defaultWorkspace));
+  const target = fs.realpathSync(path.resolve(workspace || defaultWorkspace));
+
   if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") return target;
 
   if (target !== root && !target.startsWith(root + path.sep)) {
