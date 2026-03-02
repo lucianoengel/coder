@@ -67,9 +67,10 @@ export class CliAgent extends AgentAdapter {
     this.workspaceDir = opts.workspaceDir;
 
     this._events = new EventEmitter();
+    const { CLAUDECODE: _cc, CLAUDE_CODE_ENTRYPOINT: _cce, ...filteredSecrets } = opts.secrets || {};
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,
-      baseEnv: opts.secrets,
+      baseEnv: filteredSecrets,
     });
     this._sandbox = null;
     this._sandboxPromise = null;
@@ -175,7 +176,7 @@ export class CliAgent extends AgentAdapter {
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p";
+      let flags = "claude -p --no-session-persistence";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${shellEscape(claudeModel)}`;

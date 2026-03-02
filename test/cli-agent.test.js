@@ -78,6 +78,34 @@ test("claude: malicious model name is shell-escaped", () => {
   assert.ok(!cmd.includes(`--model '; touch`));
 });
 
+test("claude: CLAUDECODE and CLAUDE_CODE_ENTRYPOINT are stripped from baseEnv", () => {
+  const config = {
+    models: { gemini: null, claude: null },
+    mcp: { strictStartup: false },
+    claude: { skipPermissions: false },
+    verbose: false,
+  };
+  const agent = new CliAgent("claude", {
+    cwd: tmpDir,
+    workspaceDir: tmpDir,
+    secrets: {
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "some-entry",
+      ANTHROPIC_API_KEY: "key-123",
+    },
+    config,
+  });
+  assert.ok(!("CLAUDECODE" in agent._provider.baseEnv));
+  assert.ok(!("CLAUDE_CODE_ENTRYPOINT" in agent._provider.baseEnv));
+  assert.equal(agent._provider.baseEnv.ANTHROPIC_API_KEY, "key-123");
+});
+
+test("claude: --no-session-persistence flag is included in command", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.includes("--no-session-persistence"));
+});
+
 test("codex: default command uses bypass flag and skips full-auto", () => {
   const agent = makeAgent("codex");
   const cmd = agent._buildCommand("prompt", {});
