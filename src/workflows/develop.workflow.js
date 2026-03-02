@@ -753,7 +753,23 @@ export async function runDevelopLoop(opts, ctx) {
   // Main pass
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
-    await processIssue(issues[i], i);
+    const issueResult = await processIssue(issues[i], i);
+
+    if (issueResult === "failed") {
+      ctx.log({ event: "loop_aborted_on_failure", issueId: issues[i].id });
+      for (const entry of loopState.issueQueue) {
+        if (entry.status === "pending" || entry.status === "deferred") {
+          entry.status = "skipped";
+          entry.error = "Skipped: prior issue failed";
+          outcomeMap.set(entry.id, { status: "skipped" });
+          skipped++;
+        }
+      }
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      break;
+    }
   }
 
   // Retry pass for deferred issues whose dependencies are now resolved
