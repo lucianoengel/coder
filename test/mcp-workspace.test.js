@@ -38,7 +38,11 @@ test("outside symlink pointing inside root succeeds", () => {
     assert.ok(result.startsWith(root));
   } finally {
     import("node:fs").then(({ unlinkSync }) => {
-      try { unlinkSync(link); } catch { /* ignore */ }
+      try {
+        unlinkSync(link);
+      } catch {
+        /* ignore */
+      }
     });
   }
 });
@@ -54,7 +58,11 @@ test("outside symlink pointing inside root resolves to real path", () => {
     assert.equal(result, sub);
   } finally {
     import("node:fs").then(({ unlinkSync }) => {
-      try { unlinkSync(link); } catch { /* ignore */ }
+      try {
+        unlinkSync(link);
+      } catch {
+        /* ignore */
+      }
     });
   }
 });
