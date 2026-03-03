@@ -27,17 +27,31 @@ test("root itself as workspace returns resolved path", () => {
   }
 });
 
-test("outside symlink pointing inside root throws", () => {
+test("outside symlink pointing inside root succeeds", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "coder-ws-"));
   const allowed = path.join(root, "allowed");
   mkdirSync(allowed);
   const link = path.join(os.tmpdir(), `coder-outside-link-${process.pid}`);
   symlinkSync(allowed, link);
   try {
-    assert.throws(
-      () => resolveWorkspaceForMcp(link, root),
-      /Workspace must be within server root/,
-    );
+    const result = resolveWorkspaceForMcp(link, root);
+    assert.ok(result.startsWith(root));
+  } finally {
+    import("node:fs").then(({ unlinkSync }) => {
+      try { unlinkSync(link); } catch { /* ignore */ }
+    });
+  }
+});
+
+test("outside symlink pointing inside root resolves to real path", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "coder-ws-"));
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  const link = path.join(os.tmpdir(), `coder-outside-link2-${process.pid}`);
+  symlinkSync(sub, link);
+  try {
+    const result = resolveWorkspaceForMcp(link, root);
+    assert.equal(result, sub);
   } finally {
     import("node:fs").then(({ unlinkSync }) => {
       try { unlinkSync(link); } catch { /* ignore */ }
