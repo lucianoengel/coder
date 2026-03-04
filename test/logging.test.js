@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +32,28 @@ test("makeJsonlLogger writes redacted payloads", async () => {
   const content = readFileSync(path.join(logsDir(ws), "gemini.jsonl"), "utf8");
   assert.match(content, /\[REDACTED\]/);
   assert.doesNotMatch(content, /topsecret|alsosecret/);
+});
+
+test("makeJsonlLogger reuses stream on repeated calls — no fd leak", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-leak-"));
+  const fdsBefore = readdirSync("/proc/self/fd").length;
+  const logger1 = makeJsonlLogger(ws, "leak-check");
+  const logger2 = makeJsonlLogger(ws, "leak-check");
+  // WriteStream fds open asynchronously; yield to let them appear in /proc/self/fd.
+  await new Promise((r) => setImmediate(r));
+  const fdsAfter = readdirSync("/proc/self/fd").length;
+  // Both loggers should share one stream; only 1 extra fd should appear.
+  assert.ok(fdsAfter - fdsBefore <= 1, `fd leak: opened ${fdsAfter - fdsBefore} extra fds`);
+  logger1({ msg: "a" });
+  logger2({ msg: "b" });
+  await closeAllLoggers();
+  const lines = readFileSync(path.join(logsDir(ws), "leak-check.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map(JSON.parse);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].msg, "a");
+  assert.equal(lines[1].msg, "b");
 });
 
 test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => {
