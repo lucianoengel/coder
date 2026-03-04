@@ -67,21 +67,24 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
   ensureLogsDir(workspaceDir);
   const p = path.join(logsDir(workspaceDir), `${name}.jsonl`);
 
-  let stream = openStreams.get(p);
-  if (!stream) {
-    stream = createWriteStream(p, { flags: "a" });
-    stream.on("error", (err) => {
-      process.stderr.write(`Logger error (${name}): ${err.message}\n`);
-    });
-    openStreams.set(p, stream);
+  const existingStream = openStreams.get(p);
+  if (existingStream) {
+    existingStream.end();
   }
+  const stream = createWriteStream(p, { flags: "a" });
+  stream.on("error", (err) => {
+    process.stderr.write(`Logger error (${name}): ${err.message}\n`);
+  });
+  openStreams.set(p, stream);
 
   return (event) => {
     const safeEvent = sanitizeLogEvent(event);
     const entry = { ts: new Date().toISOString(), ...safeEvent };
     if (runId) entry.runId = runId;
     const line = JSON.stringify(entry);
-    stream.write(line + "\n");
+    const activeStream = openStreams.get(p);
+    if (!activeStream) return;
+    activeStream.write(line + "\n");
   };
 }
 
