@@ -192,6 +192,7 @@ function assertGitleaksInstalled() {
     );
   }
   if (res.error) {
+    if (res.status === 0) return;
     throw new Error(`gitleaks version check failed: ${res.error.message}`);
   }
   if (res.status !== 0) {

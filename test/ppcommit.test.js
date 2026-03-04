@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -259,25 +259,29 @@ test("ppcommit all: clean repo passes", async () => {
 test("ppcommit: gitleaks missing from PATH produces actionable error", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+  const outDir = mkdtempSync(path.join(os.tmpdir(), "coder-ppcommit-out-"));
+  const outPath = path.join(outDir, "out.txt");
   const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
   const script = `
+    import { writeFileSync } from "node:fs";
     import { runPpcommitNative } from ${JSON.stringify("file://" + srcPath)};
+    const outPath = ${JSON.stringify(outPath)};
     try {
       await runPpcommitNative(${JSON.stringify(repo)}, { blockSecrets: true });
-      process.stdout.write("NO_ERROR");
+      writeFileSync(outPath, "NO_ERROR", "utf8");
     } catch (e) {
-      process.stdout.write(e.message);
+      writeFileSync(outPath, e.message, "utf8");
     }
   `;
   // Include node + git dirs but exclude gitleaks
   const nodeBin = path.dirname(process.execPath);
   const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
-  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+  spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
     timeout: 15000,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
-  const out = r.stdout || "";
+  const out = readFileSync(outPath, "utf8");
   assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
   assert.match(out, /gitleaks binary not found in PATH/);
   assert.match(out, /gitleaks\/gitleaks/);
