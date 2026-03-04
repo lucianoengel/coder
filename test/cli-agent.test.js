@@ -336,13 +336,19 @@ test("activeRuns stores the actual runPromise, not eager Promise.resolve()", asy
   };
   registerWorkflowTools(stubServer, ws);
 
-  await handlers["coder_workflow"]({ action: "start", workflow: "develop" });
+  await handlers.coder_workflow({ action: "start", workflow: "develop" });
 
-  assert.ok(capturedPromise instanceof Promise, "activeRuns.set was called with a promise");
+  assert.ok(
+    capturedPromise instanceof Promise,
+    "activeRuns.set was called with a promise",
+  );
 
   // The promise stored at set time must be the IIFE (pending), not eager Promise.resolve()
   const SENTINEL = Symbol("pending");
-  const raced = await Promise.race([capturedPromise, Promise.resolve(SENTINEL)]);
+  const raced = await Promise.race([
+    capturedPromise,
+    Promise.resolve(SENTINEL),
+  ]);
   assert.equal(
     raced,
     SENTINEL,
