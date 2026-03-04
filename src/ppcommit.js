@@ -191,6 +191,10 @@ function assertGitleaksInstalled() {
         `  To disable: set "blockSecrets": false in ppcommit config (coder.json)`,
     );
   }
+  if (res.error && res.status === 0) {
+    _gitleaksChecked = true;
+    return;
+  }
   if (res.error) {
     throw new Error(`gitleaks version check failed: ${res.error.message}`);
   }
