@@ -124,6 +124,22 @@ test("resolveWorkspaceForMcp bypasses boundary check when env override is set", 
   }
 });
 
+test("resolveWorkspaceForMcp resolves symlink to real path when env override is set", () => {
+  const root = makeDir("coder-mcp-root-");
+  const externalTarget = makeDir("coder-mcp-external-");
+  const symlinkPath = path.join(root, "link-to-external");
+  symlinkSync(externalTarget, symlinkPath, "dir");
+  try {
+    withEnv("CODER_ALLOW_ANY_WORKSPACE", "1", () => {
+      const resolved = resolveWorkspaceForMcp(symlinkPath, root);
+      assert.equal(resolved, realpathSync(externalTarget));
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(externalTarget, { recursive: true, force: true });
+  }
+});
+
 test("resolveWorkspaceForMcp returns real path for symlink within root", () => {
   const root = makeDir("coder-mcp-root-");
   const realDir = path.join(root, "real-target");
