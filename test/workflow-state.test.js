@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createActor } from "xstate";
+import { loadCheckpoint, saveCheckpoint } from "../src/state/machine-state.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
@@ -16,11 +17,6 @@ import {
   saveWorkflowTerminalState,
   statePathFor,
 } from "../src/state/workflow-state.js";
-import {
-  checkpointPathFor,
-  loadCheckpoint,
-  saveCheckpoint,
-} from "../src/state/machine-state.js";
 
 function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-wf-state-"));
