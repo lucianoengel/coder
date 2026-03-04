@@ -182,6 +182,25 @@ test("LOCK_DEFAULTS exports expected keys", () => {
   assert.ok(LOCK_DEFAULTS.corruptFileMinAgeMs > 0);
 });
 
+test("stale lock eviction by PID reuse (start time mismatch)", async () => {
+  const ws = makeTmpDir();
+  const lp = lockPathFor(ws);
+  writeFileSync(
+    lp,
+    JSON.stringify({
+      token: "reused-pid-token",
+      pid: process.pid,
+      pidStartTime: 1,
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  if (process.platform === "linux") {
+    const result = await withStartLock(ws, async () => "evicted-reuse");
+    assert.equal(result, "evicted-reuse");
+  }
+  rmSync(ws, { recursive: true, force: true });
+});
+
 test("lockPathFor uses namespaced workflow start lock path", () => {
   const ws = makeTmpDir();
   assert.equal(
