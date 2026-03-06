@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
 import { detectDefaultBranch } from "../helpers.js";
@@ -153,7 +154,7 @@ export async function runPlanLoop(
  */
 export async function runWithMachineRetry(
   fn,
-  { maxRetries, backoffMs = 5000, ctx },
+  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt },
 ) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
@@ -171,8 +172,32 @@ export async function runWithMachineRetry(
       maxRetries,
       error: result.error,
     });
+    if (typeof onFailedAttempt === "function") {
+      await onFailedAttempt({ attempt, maxRetries, result });
+    }
     if (attempt === maxRetries) return result;
   }
+}
+
+function findFailedMachineResult(result) {
+  const results = Array.isArray(result?.results) ? result.results : [];
+  for (let i = results.length - 1; i >= 0; i--) {
+    const step = results[i];
+    if (step?.status === "error" || step?.status === "failed") return step;
+  }
+  return null;
+}
+
+async function injectRetryFeedback(ctx, failedMachine, error) {
+  const message = String(error || "").trim();
+  if (!message) return;
+  const paths = artifactPaths(ctx.artifactsDir);
+  const note =
+    "\n\n---\n## Retry Feedback\n\n" +
+    `**${failedMachine} failed — fix these issues before re-submitting:**\n\n` +
+    `\`\`\`\n${message}\n\`\`\`\n`;
+  await appendFile(paths.critique, note, "utf8");
+  ctx.log({ event: "retry_feedback_injected", machine: failedMachine });
 }
 
 /**
@@ -302,7 +327,21 @@ export async function runDevelopPipeline(opts, ctx) {
         ],
         {},
       ),
-    { maxRetries: maxMachineRetries, backoffMs: retryBackoffMs, ctx },
+    {
+      maxRetries: maxMachineRetries,
+      backoffMs: retryBackoffMs,
+      ctx,
+      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
+        if (attempt >= maxRetries) return;
+        const failed = findFailedMachineResult(result);
+        if (failed?.machine !== "develop.quality_review") return;
+        await injectRetryFeedback(
+          ctx,
+          failed.machine,
+          failed.error || result.error || "",
+        );
+      },
+    },
   );
   allResults.push(...phase3.results);
 
@@ -380,7 +419,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
   }
 
   const outcomes = {};
-  let _successCount = 0;
   let failCount = 0;
   let baseBranch = null;
 
@@ -392,7 +430,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
-      _successCount++;
       // Use the first successful dependency branch as base
       if (!baseBranch) baseBranch = outcome.branch;
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
@@ -753,7 +790,60 @@ export async function runDevelopLoop(opts, ctx) {
   // Main pass
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
-    await processIssue(issues[i], i);
+    const issueStatus = await processIssue(issues[i], i);
+    if (issueStatus !== "failed") continue;
+
+    const failedIssueId = issues[i]?.id;
+    ctx.log({
+      event: "loop_aborted_on_failure",
+      issueId: failedIssueId,
+      reason: "issue_failed",
+    });
+
+    for (let j = 0; j < loopState.issueQueue.length; j++) {
+      const entry = loopState.issueQueue[j];
+      if (entry.status !== "pending" && entry.status !== "deferred") continue;
+
+      entry.status = "skipped";
+      entry.error = "Skipped: prior issue failed";
+      entry.completedAt = new Date().toISOString();
+      outcomeMap.set(entry.id, { status: "skipped" });
+      skipped++;
+
+      const issueEnv = {
+        CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+        CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+      };
+      ctx.log({
+        event: "issue_skipped",
+        issueId: entry.id,
+        reason: "aborted_after_failure",
+        failedIssueId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        {
+          status: "skipped",
+          reason: "aborted_after_failure",
+          failedIssueId,
+        },
+        issueEnv,
+      );
+
+      results.push({
+        ...issues[j],
+        status: "skipped",
+        error: entry.error,
+      });
+    }
+
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+    break;
   }
 
   // Retry pass for deferred issues whose dependencies are now resolved
