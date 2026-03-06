@@ -114,7 +114,8 @@ export function runShellSync(
 ) {
   if (preferSystemd && canUseSystemdRun()) {
     const unitName = makeSystemdUnitName(unitPrefix);
-    const resolvedEnv = env || process.env;
+    const resolvedEnv = { ...(env || process.env) };
+    delete resolvedEnv.CLAUDECODE;
     const args = buildSystemdRunArgs(command, {
       unitName,
       cwd,
@@ -140,9 +141,11 @@ export function runShellSync(
     };
   }
 
+  const fallbackEnv = { ...(env || process.env) };
+  delete fallbackEnv.CLAUDECODE;
   const res = spawnSync("bash", ["-lc", command], {
     cwd,
-    env,
+    env: fallbackEnv,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: timeoutMs > 0 ? timeoutMs : undefined,
