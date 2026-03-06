@@ -10,7 +10,7 @@ import {
 import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
-import { detectDefaultBranch } from "../helpers.js";
+import { detectDefaultBranch, detectRemoteType } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
   artifactPaths,
@@ -302,12 +302,13 @@ export async function runDevelopPipeline(opts, ctx) {
     };
   }
 
-  // Check for conflicts with active branches detected during planning
+  // Check for conflicts with active branches detected during planning.
+  // Normalize line endings and tolerate minor formatting variance from the AI.
   const planPath = artifactPaths(ctx.artifactsDir).plan;
   if (existsSync(planPath)) {
-    const planMd = readFileSync(planPath, "utf8");
+    const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
     const conflictMatch = planMd.match(
-      /## CONFLICT_DETECTED\n- branch:\s*(.+)\n- reason:\s*(.+)/,
+      /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
     );
     if (conflictMatch) {
       return {
@@ -473,6 +474,85 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
 const isRateLimitError = (text) =>
   /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+
+/**
+ * Fetch open PR/MR branches and their diff stats from the hosting platform.
+ * Returns an array of { branch, issueId, title, diffStat } suitable for
+ * activeBranches. Best-effort: returns [] on failure.
+ *
+ * @param {string} repoRoot
+ * @param {string} defaultBranch
+ * @param {(e: object) => void} log
+ * @returns {Array<{ branch: string, issueId: string, title: string, diffStat: string }>}
+ */
+export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
+  try {
+    const platform = detectRemoteType(repoRoot);
+    let prs;
+
+    if (platform === "gitlab") {
+      const res = spawnSync(
+        "glab",
+        ["mr", "list", "--state", "opened", "--output", "json"],
+        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+      );
+      if (res.status !== 0 || !res.stdout) {
+        if (log) log({ event: "open_prs_fetch_failed", error: (res.stderr || "glab failed").trim() });
+        return [];
+      }
+      const mrs = JSON.parse(res.stdout);
+      prs = (Array.isArray(mrs) ? mrs : []).map((mr) => ({
+        branch: mr.source_branch,
+        id: `!${mr.iid}`,
+        title: mr.title || "",
+      }));
+    } else {
+      const res = spawnSync(
+        "gh",
+        ["pr", "list", "--state", "open", "--json", "headRefName,title,number", "--limit", "50"],
+        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+      );
+      if (res.status !== 0 || !res.stdout) {
+        if (log) log({ event: "open_prs_fetch_failed", error: (res.stderr || "gh failed").trim() });
+        return [];
+      }
+      const items = JSON.parse(res.stdout);
+      prs = (Array.isArray(items) ? items : []).map((pr) => ({
+        branch: pr.headRefName,
+        id: `#${pr.number}`,
+        title: pr.title || "",
+      }));
+    }
+
+    const result = [];
+    for (const pr of prs) {
+      const stat = spawnSync(
+        "git",
+        ["diff", "--stat", `${defaultBranch}...${pr.branch}`],
+        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      );
+      if (stat.status !== 0) continue;
+      const diffStat = (stat.stdout || "").trim();
+      if (!diffStat) continue;
+      result.push({
+        branch: pr.branch,
+        issueId: pr.id,
+        title: pr.title,
+        diffStat,
+      });
+    }
+
+    if (log) {
+      log({ event: "open_prs_fetched", platform, count: result.length });
+    }
+    return result;
+  } catch (err) {
+    if (log) {
+      log({ event: "open_prs_fetch_failed", error: err.message });
+    }
+    return [];
+  }
+}
 
 /**
  * Run the autonomous develop loop — process multiple issues.
@@ -699,24 +779,47 @@ export async function runDevelopLoop(opts, ctx) {
 
     // Pull latest default branch to pick up any PRs merged while
     // earlier issues were being processed.
-    spawnSync("git", ["pull", "--ff-only"], {
+    const pullResult = spawnSync("git", ["pull", "--ff-only"], {
       cwd: issueRepoRoot,
       encoding: "utf8",
     });
+    if (pullResult.status !== 0) {
+      ctx.log({
+        event: "git_pull_failed",
+        issueId: issue.id,
+        stderr: (pullResult.stderr || "").trim().slice(0, 200),
+      });
+    }
 
-    // Build active branch context for the planner to detect conflicts
-    const activeBranches = [];
+    // Build active branch context from all open PRs on the repo,
+    // supplemented by completed branches from this run that may not
+    // have PRs yet (or whose PRs aren't visible to the CLI).
+    const openPrBranches = fetchOpenPrBranches(
+      issueRepoRoot,
+      defaultBranch,
+      ctx.log,
+    );
+    const seenBranches = new Set(openPrBranches.map((b) => b.branch));
+
+    // Add current-run completed branches not already covered by open PRs
     for (const [id, outcome] of outcomeMap) {
-      if (outcome.status === "completed" && outcome.branch && outcome.diffSummary) {
+      if (
+        outcome.status === "completed" &&
+        outcome.branch &&
+        outcome.diffSummary &&
+        !seenBranches.has(outcome.branch)
+      ) {
         const entry = loopState.issueQueue.find((q) => q.id === id);
-        activeBranches.push({
+        openPrBranches.push({
           branch: outcome.branch,
           issueId: id,
           title: entry?.title || "",
           diffStat: outcome.diffSummary,
         });
+        seenBranches.add(outcome.branch);
       }
     }
+    const activeBranches = openPrBranches;
 
     try {
       const pipelineResult = await runDevelopPipeline(

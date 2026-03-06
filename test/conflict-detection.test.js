@@ -11,6 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
+  fetchOpenPrBranches,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -501,4 +502,232 @@ test("planning machine: inputSchema defaults activeBranches to empty array", asy
 
   const parsed = planningMachine.inputSchema.parse({});
   assert.deepEqual(parsed.activeBranches, []);
+});
+
+// ---------------------------------------------------------------------------
+// CONFLICT_DETECTED: CRLF and format variant handling
+// ---------------------------------------------------------------------------
+
+test("runDevelopPipeline: detects CONFLICT_DETECTED with CRLF line endings", async () => {
+  const tmp = makeTmp();
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-CRLF", title: "CRLF test" },
+    repoPath: "/tmp/repo",
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      writeFileSync(
+        path.join(artifactsDir, "PLAN.md"),
+        "# Plan\r\n\r\n## CONFLICT_DETECTED\r\n- branch: feat/auth\r\n- reason: Both modify auth module\r\n",
+        "utf8",
+      );
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "written" } }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error("Phase 3 should not be reached");
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.conflictBranch, "feat/auth");
+    assert.match(result.error, /auth module/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDevelopPipeline: detects CONFLICT_DETECTED with asterisk bullets", async () => {
+  const tmp = makeTmp();
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-STAR", title: "Asterisk test" },
+    repoPath: "/tmp/repo",
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      writeFileSync(
+        path.join(artifactsDir, "PLAN.md"),
+        "# Plan\n\n## CONFLICT_DETECTED\n* branch: feat/users\n* reason: Overlapping user model changes\n",
+        "utf8",
+      );
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "written" } }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error("Phase 3 should not be reached");
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.conflictBranch, "feat/users");
+    assert.match(result.error, /user model/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bullets", async () => {
+  const tmp = makeTmp();
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-BLANK", title: "Blank line test" },
+    repoPath: "/tmp/repo",
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      writeFileSync(
+        path.join(artifactsDir, "PLAN.md"),
+        "# Plan\n\n## CONFLICT_DETECTED\n\n- branch: feat/api\n\n- reason: Same endpoint handler\n",
+        "utf8",
+      );
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "written" } }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error("Phase 3 should not be reached");
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.conflictBranch, "feat/api");
+    assert.match(result.error, /endpoint handler/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// fetchOpenPrBranches: graceful fallback
+// ---------------------------------------------------------------------------
+
+test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () => {
+  const logEvents = [];
+  const result = fetchOpenPrBranches(
+    "/nonexistent/repo",
+    "main",
+    (e) => logEvents.push(e),
+  );
+
+  assert.deepEqual(result, []);
+  assert.ok(
+    logEvents.some(
+      (e) =>
+        e.event === "open_prs_fetch_failed" ||
+        e.event === "open_prs_fetched",
+    ),
+    "Should log fetch attempt or failure",
+  );
 });
