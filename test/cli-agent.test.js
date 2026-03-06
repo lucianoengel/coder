@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
@@ -62,6 +64,12 @@ test("claude: malicious sessionId is shell-escaped", () => {
   const cmd = agent._buildCommand("prompt", { sessionId: MALICIOUS });
   assert.ok(cmd.includes(`--session-id ${ESCAPED_MALICIOUS}`));
   assert.ok(!cmd.includes(`--session-id '; touch`));
+});
+
+test("claude: command includes --no-session-persistence", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.includes("--no-session-persistence"));
 });
 
 test("claude: malicious resumeId is shell-escaped", () => {
@@ -253,4 +261,101 @@ test("_ensureSandbox: rejected first creation does not wipe second in-flight pro
   const result = await p2;
   assert.equal(result, sandbox2);
   assert.equal(agent._sandbox, sandbox2);
+});
+
+test("executeWithRetry retries when isTransientResult flags a successful response", async () => {
+  const agent = makeAgent("gemini");
+  let calls = 0;
+  agent.execute = async () => {
+    calls++;
+    if (calls === 1) {
+      return {
+        exitCode: 0,
+        stdout: "Resources updated for server: github",
+        stderr: "",
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: '{"issues":[],"recommended_index":0}',
+      stderr: "",
+    };
+  };
+
+  const res = await agent.executeWithRetry("prompt", {
+    retries: 1,
+    backoffMs: 0,
+    isTransientResult: (result) =>
+      /updated for server/i.test(result.stdout || "") ? "noise-only" : "",
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(res.exitCode, 0);
+  assert.match(res.stdout, /recommended_index/);
+});
+
+test("activeRuns stores the actual runPromise, not eager Promise.resolve()", async (t) => {
+  let resolveDevelop;
+  const blockingPromise = new Promise((r) => {
+    resolveDevelop = r;
+  });
+
+  t.mock.module("../src/workflows/develop.workflow.js", {
+    namedExports: { runDevelopLoop: () => blockingPromise },
+  });
+  t.mock.module("../src/workflows/research.workflow.js", {
+    namedExports: {
+      runResearchPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+  t.mock.module("../src/workflows/design.workflow.js", {
+    namedExports: {
+      runDesignPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+
+  const { activeRuns, registerWorkflowTools } = await import(
+    "../src/mcp/tools/workflows.js"
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-activeRuns-"));
+
+  // Capture the promise value stored at activeRuns.set call time (before any mutation)
+  let capturedPromise = null;
+  t.mock.method(activeRuns, "set", function (key, value) {
+    if (value?.startedAt !== undefined) {
+      capturedPromise = value.promise;
+    }
+    return Map.prototype.set.call(this, key, value);
+  });
+
+  const handlers = {};
+  const stubServer = {
+    registerTool: (name, _opts, fn) => {
+      handlers[name] = fn;
+    },
+  };
+  registerWorkflowTools(stubServer, ws);
+
+  await handlers.coder_workflow({ action: "start", workflow: "develop" });
+
+  assert.ok(
+    capturedPromise instanceof Promise,
+    "activeRuns.set was called with a promise",
+  );
+
+  // The promise stored at set time must be the IIFE (pending), not eager Promise.resolve()
+  const SENTINEL = Symbol("pending");
+  const raced = await Promise.race([
+    capturedPromise,
+    Promise.resolve(SENTINEL),
+  ]);
+  assert.equal(
+    raced,
+    SENTINEL,
+    "promise stored in activeRuns.set should be pending (not the eager Promise.resolve())",
+  );
+
+  resolveDevelop({ status: "completed" });
+  await capturedPromise.catch(() => {});
+  rmSync(ws, { recursive: true, force: true });
 });
