@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";

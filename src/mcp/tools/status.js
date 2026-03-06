@@ -35,7 +35,9 @@ async function readWorkflowRunState(workspaceDir) {
 
   if (
     (loopState.status === "running" || loopState.status === "paused") &&
-    (loopState.currentStage || loopState.activeAgent || loopState.lastHeartbeatAt)
+    (loopState.currentStage ||
+      loopState.activeAgent ||
+      loopState.lastHeartbeatAt)
   ) {
     return {
       runId: loopState.runId || null,
