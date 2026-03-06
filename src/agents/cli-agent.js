@@ -5,35 +5,51 @@ import {
   extractJson,
   geminiJsonPipeWithModel,
   heredocPipe,
+  isRateLimitError,
+  resolveModelName,
+  shellEscape,
 } from "../helpers.js";
 import { HostSandboxProvider } from "../host-sandbox.js";
 import { makeJsonlLogger, sanitizeLogEvent } from "../logging.js";
 import { AgentAdapter } from "./_base.js";
 
 const GEMINI_AUTH_FAILURE_PATTERNS = [
-  "rejected stored OAuth token",
-  "Please re-authenticate using: /mcp auth",
+  { pattern: "rejected stored OAuth token", category: "auth" },
+  { pattern: "Please re-authenticate using: /mcp auth", category: "auth" },
 ];
-const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
+const CLAUDE_RESUME_FAILURE_PATTERNS = [
+  { pattern: "No conversation found with session ID", category: "auth" },
+  { pattern: "Conversation not found", category: "auth" },
+  { pattern: "Session not found", category: "auth" },
+  { pattern: "Invalid session ID", category: "auth" },
+  { pattern: "Conversation has expired", category: "auth" },
+  { pattern: "Session has expired", category: "auth" },
+];
+const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
+  { pattern: "An unexpected critical error occurred", category: "transient" },
+  { pattern: "fetch failed sending request", category: "transient" },
+  { pattern: "Error when talking to Gemini API", category: "transient" },
+];
+const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
 export function resolveAgentName(name) {
   const normalized = String(name || "")
     .trim()
     .toLowerCase();
-  if (!SUPPORTED_AGENTS.has(normalized)) {
+  if (!normalized || !agentNameRegex.test(normalized)) {
     throw new Error(
-      `Unsupported agent: ${name}. Expected one of: gemini, claude, codex.`,
+      `Invalid agent name: "${name}". Must be non-empty and contain only alphanumerics, dots, hyphens, underscores.`,
     );
   }
   return normalized;
 }
 
 /**
- * CLI-based agent — wraps HostSandboxProvider for gemini/claude/codex.
+ * CLI-based agent — wraps HostSandboxProvider for shell-based LLM tools.
  */
 export class CliAgent extends AgentAdapter {
   /**
-   * @param {string} agentName - "gemini" | "claude" | "codex"
+   * @param {string} agentName - Agent identifier (alphanumerics, dots, hyphens, underscores)
    * @param {{
    *   cwd: string,
    *   secrets: Record<string, string>,
@@ -56,8 +72,10 @@ export class CliAgent extends AgentAdapter {
       baseEnv: opts.secrets,
     });
     this._sandbox = null;
+    this._sandboxPromise = null;
     this._log = makeJsonlLogger(opts.workspaceDir, this.name);
 
+    this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;
     this._strictMcpStartup = opts.config.mcp.strictStartup;
   }
@@ -68,26 +86,54 @@ export class CliAgent extends AgentAdapter {
 
   async _ensureSandbox() {
     if (this._sandbox) return this._sandbox;
-    this._sandbox = await this._provider.create();
+    if (this._sandboxPromise) return this._sandboxPromise;
 
-    this._sandbox.on("stdout", (d) => {
-      this._log({ stream: "stdout", data: d });
-      this._events.emit("stdout", d);
-      if (this.verbose) {
-        process.stdout.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
+    const promise = (async () => {
+      try {
+        const sandbox = await this._provider.create();
+
+        // kill() was called or a new promise replaced this one — abort
+        if (this._sandboxPromise !== promise) {
+          sandbox.kill().catch(() => {});
+          const err = new Error("Sandbox creation aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+
+        sandbox.on("stdout", (d) => {
+          this._log({ stream: "stdout", data: d });
+          this._events.emit("stdout", d);
+          if (this.verbose) {
+            process.stdout.write(
+              `[${this.name}] ${sanitizeLogEvent(String(d))}`,
+            );
+          }
+        });
+
+        sandbox.on("stderr", (d) => {
+          this._log({ stream: "stderr", data: d });
+          this._events.emit("stderr", d);
+          if (this.verbose) {
+            process.stderr.write(
+              `[${this.name}] ${sanitizeLogEvent(String(d))}`,
+            );
+          }
+          this._parseMcpHealth(d);
+        });
+
+        this._sandbox = sandbox;
+        this._sandboxPromise = null;
+        return sandbox;
+      } catch (err) {
+        if (this._sandboxPromise === promise) {
+          this._sandboxPromise = null;
+        }
+        throw err;
       }
-    });
+    })();
 
-    this._sandbox.on("stderr", (d) => {
-      this._log({ stream: "stderr", data: d });
-      this._events.emit("stderr", d);
-      if (this.verbose) {
-        process.stderr.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
-      }
-      this._parseMcpHealth(d);
-    });
-
-    return this._sandbox;
+    this._sandboxPromise = promise;
+    return promise;
   }
 
   _parseMcpHealth(data) {
@@ -112,30 +158,44 @@ export class CliAgent extends AgentAdapter {
   }
 
   _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
+    if (this.steeringContext) {
+      prompt = `<steering_context>\n${this.steeringContext}\n</steering_context>\n\n${prompt}`;
+    }
     if (this.name === "gemini") {
+      const modelName = resolveModelName(this.config.models.gemini);
       if (structured) {
-        return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
+        return geminiJsonPipeWithModel(prompt, modelName);
       }
-      const model = this.config.models.gemini;
-      const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
+      let cmd = modelName
+        ? `gemini --yolo -m ${shellEscape(modelName)}`
+        : "gemini --yolo";
+      // Gemini CLI doesn't support named sessions; use --resume for continuation
+      if (resumeId) cmd += " --resume latest";
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p";
-      if (this.config.models.claude) {
-        flags += ` --model ${this.config.models.claude}`;
+      let flags = "claude -p --no-session-persistence";
+      const claudeModel = resolveModelName(this.config.models.claude);
+      if (claudeModel) {
+        flags += ` --model ${shellEscape(claudeModel)}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
       }
-      if (sessionId) flags += ` --session-id ${sessionId}`;
-      if (resumeId) flags += ` --resume ${resumeId}`;
+      if (sessionId) flags += ` --session-id ${shellEscape(sessionId)}`;
+      if (resumeId) flags += ` --resume ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, flags);
     }
 
-    // codex
-    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    // codex: resume is a subcommand, not a flag
+    // --full-auto forces sandbox=workspace-write which blocks /bin/bash via Landlock
+    // on Linux 6.2+. Use --dangerously-bypass-approvals-and-sandbox instead — outer
+    // isolation (systemd-run with NoNewPrivileges + PrivateTmp) still applies.
+    if (resumeId) {
+      return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    }
+    return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
@@ -145,9 +205,13 @@ export class CliAgent extends AgentAdapter {
     const isGemini = this.name === "gemini";
     const hangTimeoutMs = opts.hangTimeoutMs ?? 0;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
-    const killOnStderrPatterns =
-      opts.killOnStderrPatterns ??
-      (isGemini ? GEMINI_AUTH_FAILURE_PATTERNS : []);
+    const isClaude = this.name === "claude";
+    const defaultPatterns = isGemini
+      ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
+      : isClaude && (opts.resumeId || opts.sessionId)
+        ? CLAUDE_RESUME_FAILURE_PATTERNS
+        : [];
+    const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
     return sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
@@ -170,19 +234,27 @@ export class CliAgent extends AgentAdapter {
     const retries = opts.retries ?? 1;
     const backoffMs = opts.backoffMs ?? 5000;
     const retryOnRateLimit = opts.retryOnRateLimit ?? false;
-
-    const isRateLimited = (txt) =>
-      /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));
+    const isTransientResult = opts.isTransientResult;
 
     return pRetry(
       async () => {
         const res = await this.execute(prompt, opts);
         if (retryOnRateLimit && res.exitCode !== 0) {
           const details = `${res.stderr || ""}\n${res.stdout || ""}`;
-          if (isRateLimited(details)) {
+          if (isRateLimitError(details)) {
             const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
             rateErr.name = "RateLimitError";
             throw rateErr;
+          }
+        }
+        if (typeof isTransientResult === "function") {
+          const reason = isTransientResult(res);
+          if (reason) {
+            const transientError = new Error(
+              `Transient result: ${String(reason).slice(0, 300)}`,
+            );
+            transientError.name = "TransientResultError";
+            throw transientError;
           }
         }
         return res;
@@ -193,8 +265,10 @@ export class CliAgent extends AgentAdapter {
         factor: 2,
         shouldRetry: (ctx) => {
           const err = ctx.error;
+          if (err.name === "AbortError") return false;
           if (err.name === "CommandTimeoutError") return false;
-          if (err.name === "CommandAuthError") return false;
+          if (err.name === "CommandFatalStderrError" && err.category === "auth")
+            return false;
           if (err.name === "McpStartupError") return false;
           return true;
         },
@@ -212,6 +286,7 @@ export class CliAgent extends AgentAdapter {
   }
 
   async kill() {
+    this._sandboxPromise = null;
     if (this._sandbox) {
       await this._sandbox.kill();
       this._sandbox = null;

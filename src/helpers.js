@@ -43,7 +43,28 @@ export function detectDefaultBranch(repoDir) {
   return mainCheck.status === 0 ? "main" : "master";
 }
 
-export const DEFAULT_PASS_ENV = [
+/**
+ * Detect repository hosting type from remote URL.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} [remoteName="origin"] - Remote name to inspect
+ * @returns {"github" | "gitlab"}
+ */
+export function detectRemoteType(repoDir, remoteName = "origin") {
+  const origin = spawnSync("git", ["remote", "get-url", remoteName], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (origin.status !== 0) return "github";
+  const url = (origin.stdout || "").trim();
+  const httpsMatch = url.match(/^https?:\/\/([^/:]+)/i);
+  const sshMatch = url.match(/^[^@]+@([^:]+):/);
+  const host = (httpsMatch?.[1] || sshMatch?.[1] || "").toLowerCase();
+  if (host.includes("gitlab")) return "gitlab";
+  return "github";
+}
+
+const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -54,19 +75,32 @@ export const DEFAULT_PASS_ENV = [
   "LINEAR_API_KEY",
 ];
 
-export function detectRemoteType(repoDir) {
-  const res = spawnSync("git", ["remote", "get-url", "origin"], {
-    cwd: repoDir,
-    encoding: "utf8",
+/**
+ * Build the effective passEnv list from config.
+ * Merges `sandbox.passEnv` (explicit names) with any env var names
+ * matching `sandbox.passEnvPatterns` (glob-style, e.g. "AWS_*").
+ *
+ * @param {object} config - Parsed CoderConfigSchema
+ * @param {object} [env] - Environment to scan for pattern matches (defaults to process.env)
+ * @returns {string[]} Deduplicated list of env var names to pass through
+ */
+export function resolvePassEnv(config, env = process.env) {
+  const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  const patterns = config.sandbox?.passEnvPatterns ?? [];
+
+  if (patterns.length === 0) return explicit;
+
+  const regexes = patterns.map((p) => {
+    // Convert simple glob pattern to regex (only * wildcards supported)
+    const escaped = p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`);
   });
-  if (res.status === 0) {
-    const url = (res.stdout || "").trim();
-    const httpsMatch = url.match(/^https?:\/\/([^/:]+)/);
-    const sshMatch = url.match(/^[^@]+@([^:]+):/);
-    const host = (httpsMatch?.[1] || sshMatch?.[1] || "").toLowerCase();
-    if (host.includes("gitlab")) return "gitlab";
-  }
-  return "github";
+
+  const matched = Object.keys(env).filter((key) =>
+    regexes.some((re) => re.test(key)),
+  );
+
+  return [...new Set([...explicit, ...matched])];
 }
 
 const AGENT_NOISE_LINE_PATTERNS = [
@@ -113,7 +147,7 @@ export function requireEnvOneOf(names) {
 export function requireCommandOnPath(name) {
   const res = spawnSync(
     "bash",
-    ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`],
+    ["-lc", `command -v ${shellEscape(name)} >/dev/null 2>&1`],
     {
       encoding: "utf8",
     },
@@ -267,10 +301,27 @@ export function geminiJsonPipe(prompt) {
   return heredocPipe(prompt, "gemini --yolo -o json");
 }
 
+/**
+ * Extract the model name string from a config entry that may be
+ * either a plain string or an object with a `.model` property.
+ */
+export function resolveModelName(entry) {
+  if (typeof entry === "object" && entry) return entry.model;
+  return entry;
+}
+
+export function shellEscape(arg) {
+  return "'" + String(arg).replace(/'/g, "'\\''") + "'";
+}
+
+export function isRateLimitError(text) {
+  return /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+}
+
 export function geminiJsonPipeWithModel(prompt, model) {
-  const modelArg = String(model || "").trim();
+  const modelArg = String(resolveModelName(model) || "").trim();
   const cmd = modelArg
-    ? `gemini --yolo -m ${modelArg} -o json`
+    ? `gemini --yolo -m ${shellEscape(modelArg)} -o json`
     : "gemini --yolo -o json";
   return heredocPipe(prompt, cmd);
 }
@@ -520,13 +571,12 @@ export function computeGitWorktreeFingerprint(repoDir) {
   if (untrackedPaths.length > 0) {
     untrackedHashes = untrackedPaths
       .map((p) => {
-        const abs = path.join(repoDir, p);
         try {
-          const content = readFileSync(abs);
-          const digest = createHash("sha256").update(content).digest("hex");
-          return `${p}\n${digest}\n`;
-        } catch {
-          return `${p}\n<unreadable>\n`;
+          const buf = readFileSync(path.join(repoDir, p));
+          const hashHex = createHash("sha256").update(buf).digest("hex");
+          return `${p}\n${hashHex}\n`;
+        } catch (err) {
+          return `${p}\nERR:${err.code || "UNKNOWN"}\n`;
         }
       })
       .join("");
@@ -584,6 +634,17 @@ export function upsertIssueCompletionBlock(
   return true;
 }
 
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
+}
+
 export async function runHostTests(
   repoDir,
   { testCmd, testConfigPath, allowNoTests } = {},
@@ -638,9 +699,11 @@ export async function runHostTests(
       }
     }
     const res = runShellSync(testCmd, { cwd: repoDir });
+    // pytest exits 5 when no tests collected; treat as success when allowNoTests
+    const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
     return {
       cmd: res.cmd,
-      exitCode: res.exitCode ?? 0,
+      exitCode,
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     };

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -22,13 +22,105 @@ import {
   resolveRepoRoot,
 } from "./_shared.js";
 
+/**
+ * Format an issue body with its comments into a single string.
+ *
+ * @param {string | null | undefined} body - Issue body/description
+ * @param {Array<{author?: {login?: string, name?: string}, body?: string, createdAt?: string}> | null | undefined} comments
+ * @returns {string | null}
+ */
+function formatBodyWithComments(body, comments) {
+  const parts = [];
+  if (body) parts.push(body);
+  if (Array.isArray(comments) && comments.length > 0) {
+    if (parts.length > 0) parts.push("\n---\n");
+    parts.push("## Comments\n");
+    for (const c of comments) {
+      const author = c.author?.login || c.author?.name || "unknown";
+      const date = c.createdAt ? ` (${c.createdAt})` : "";
+      const text = c.body || "";
+      parts.push(`**${author}**${date}:\n${text}\n`);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+/**
+ * Fetch the issue body/description from its source so the agent has full context.
+ * Returns null if unavailable or source doesn't support pre-fetching (linear).
+ *
+ * @param {"github"|"gitlab"|"local"|"linear"} source
+ * @param {string} id - Issue ID (e.g. "#42", "!7", "GH-60")
+ * @param {string} repoRoot - Repo directory for CLI calls
+ * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
+ * @returns {string | null}
+ */
+function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
+  if (source === "github") {
+    const num = id.replace(/^#/, "");
+    const res = spawnSync(
+      "gh",
+      ["issue", "view", num, "--json", "body,comments"],
+      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+    );
+    if (res.status !== 0 || !res.stdout) return null;
+    try {
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.body, data.comments);
+    } catch {
+      return null;
+    }
+  }
+
+  if (source === "gitlab") {
+    const iid = id.replace(/^[#!]/, "");
+    const res = spawnSync("glab", ["issue", "view", iid, "--output", "json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    if (res.status !== 0 || !res.stdout) return null;
+    try {
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.description, data.notes);
+    } catch {
+      return null;
+    }
+  }
+
+  if (source === "local" && localIssuesDir) {
+    // Try manifest first to find the file entry for this id
+    const manifestPath = path.join(localIssuesDir, "manifest.json");
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        const entry = manifest.issues?.find((e) => e.id === id);
+        const file = entry?.file || entry?.filePath;
+        if (file) {
+          const mdPath = path.isAbsolute(file)
+            ? file
+            : path.join(localIssuesDir, file);
+          if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+        }
+      } catch {
+        // fall through to filename heuristic
+      }
+    }
+    // Fallback: look for <id>.md directly
+    const mdPath = path.join(localIssuesDir, `${id}.md`);
+    if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+  }
+
+  return null;
+}
+
 export default defineMachine({
   name: "develop.issue_draft",
   description:
     "Draft ISSUE.md for the selected issue: validate repo, create branch, research codebase, write structured issue spec.",
   inputSchema: z.object({
     issue: z.object({
-      source: z.enum(["github", "gitlab", "linear", "local"]),
+      source: z.enum(["github", "linear", "gitlab", "local"]),
       id: z.string().min(1),
       title: z.string().min(1),
     }),
@@ -41,8 +133,26 @@ export default defineMachine({
   async execute(input, ctx) {
     checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
+
+    // Idempotency: skip if this issue's draft is already on disk
+    if (state.steps.wroteIssue && state.selected?.id === input.issue.id) {
+      const earlyPaths = artifactPaths(ctx.artifactsDir);
+      if (existsSync(earlyPaths.issue)) {
+        const onDisk = sanitizeIssueMarkdown(
+          readFileSync(earlyPaths.issue, "utf8"),
+        );
+        if (onDisk.length > 40 && onDisk.trim().startsWith("#")) {
+          ctx.log({
+            event: "issue_draft_skipped",
+            issue: input.issue,
+            reason: "already_drafted",
+          });
+          return { status: "ok", data: { issueMd: onDisk + "\n" } };
+        }
+      }
+    }
 
     // Stale workflow check
     if (state.selected && !input.force) {
@@ -65,7 +175,7 @@ export default defineMachine({
     state.repoPath = repoPath;
     state.baseBranch = input.baseBranch || null;
     state.branch = buildIssueBranchName(input.issue);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Update pool repo root
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
@@ -89,7 +199,7 @@ export default defineMachine({
       sqliteSync: ctx.config.workflow.scratchpad.sqliteSync,
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
-    scratchpad.restoreFromSqlite(scratchpadPath);
+    await scratchpad.restoreFromSqlite(scratchpadPath);
     if (!existsSync(scratchpadPath)) {
       const header = [
         `# Scratchpad for ${input.issue.source}#${input.issue.id}`,
@@ -100,34 +210,68 @@ export default defineMachine({
         "Use this file for iterative issue research notes and feedback loops.",
         "",
       ].join("\n");
+      mkdirSync(path.dirname(scratchpadPath), { recursive: true });
       writeFileSync(scratchpadPath, header, "utf8");
     }
-    scratchpad.appendSection(scratchpadPath, "Input", [
+    await scratchpad.appendSection(scratchpadPath, "Input", [
       `- clarifications: ${(input.clarifications || "(none provided)").trim()}`,
     ]);
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
-    // Verify clean repo, then set up ignore files
-    gitCleanOrThrow(repoRoot);
+    // When force=true (re-run), reset dirty state before branch operations.
+    // Exclude .coder/ from cleanup to preserve workflow state and artifacts dir.
+    if (input.force) {
+      spawnSync("git", ["checkout", "--", "."], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+    }
+
+    // Ensure .gitignore rules exist AFTER cleanup (checkout -- . reverts .gitignore
+    // to committed version, which may lack .coder/ rules).
     ensureGitignore(ctx.workspaceDir);
+    mkdirSync(ctx.artifactsDir, { recursive: true });
+
+    // Verify clean repo
+    gitCleanOrThrow(repoRoot);
     state.steps.verifiedCleanRepo = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
+      // Fetch the branch in case it only exists on the remote (#108)
+      spawnSync("git", ["fetch", "origin", state.baseBranch], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,
         encoding: "utf8",
       });
       if (baseCheckout.status !== 0) {
-        throw new Error(
-          `Failed to checkout base branch ${state.baseBranch}: ${baseCheckout.stderr || baseCheckout.stdout}`,
+        // Try creating a local tracking branch from the remote
+        const trackCheckout = spawnSync(
+          "git",
+          ["checkout", "-b", state.baseBranch, `origin/${state.baseBranch}`],
+          { cwd: repoRoot, encoding: "utf8" },
         );
+        if (trackCheckout.status !== 0) {
+          throw new Error(
+            `Failed to checkout base branch ${state.baseBranch}: ${baseCheckout.stderr || baseCheckout.stdout}`,
+          );
+        }
       }
     }
 
-    ensureBranch(repoRoot, state.branch);
+    ensureBranch(repoRoot, state.branch, {
+      baseBranch: state.baseBranch || undefined,
+      forceRecreate: input.force,
+    });
 
     // Draft ISSUE.md
     ctx.log({ event: "step2_draft_issue", issue: input.issue });
@@ -136,6 +280,26 @@ export default defineMachine({
       scope: "workspace",
     });
 
+    const rawLocalIssuesDir = ctx.config.workflow.localIssuesDir;
+    const resolvedLocalIssuesDir = rawLocalIssuesDir
+      ? path.isAbsolute(rawLocalIssuesDir)
+        ? rawLocalIssuesDir
+        : path.resolve(ctx.workspaceDir, rawLocalIssuesDir)
+      : null;
+
+    const issueBody = fetchIssueBody(
+      input.issue.source,
+      input.issue.id,
+      repoRoot,
+      resolvedLocalIssuesDir,
+    );
+
+    const issueBodySection = issueBody
+      ? `\nIssue description (from ${input.issue.source}):\n${issueBody}\n`
+      : input.issue.source === "linear"
+        ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
+        : "";
+
     const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
 
 Chosen issue:
@@ -143,7 +307,7 @@ Chosen issue:
 - id: ${input.issue.id}
 - title: ${input.issue.title}
 - repo_root: ${repoRoot}
-
+${issueBodySection}
 Clarifications from user:
 ${input.clarifications || "(none provided)"}
 
@@ -153,17 +317,24 @@ Scratchpad for iterative notes:
 - keep temporary notes in this scratchpad (not in \`issues/\`)
 
 Output ONLY markdown suitable for writing directly to ISSUE.md.
+If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
 
 ## Required Sections (in order)
 1. **Metadata**: Source, Issue ID, Repo Root (relative path)
 2. **Problem**: What's wrong or missing — reference specific files/functions
-3. **Changes**: Exactly which files need to change and how
-4. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-5. **Out of Scope**: What this does NOT include
+3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
+   - Ubiquitous: The <system> shall <behavior>.
+   - Event-driven: WHEN <trigger>, the <system> shall <behavior>.
+   - State-driven: WHILE <state>, the <system> shall <behavior>.
+   - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
+   - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
+4. **Changes**: Exactly which files need to change and how
+5. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
+6. **Out of Scope**: What this does NOT include
 `;
 
     const res = await agent.execute(issuePrompt, {
-      timeoutMs: 1000 * 60 * 10,
+      timeoutMs: ctx.config.workflow.timeouts.issueDraft,
     });
     requireExitZero(agentName, "ISSUE.md drafting failed", res);
 
@@ -185,23 +356,34 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
           dropLeadingOnly: true,
         }).trim();
         if (!fallback.startsWith("#")) {
-          const rawPreview = (res.stdout || "")
-            .slice(0, 300)
-            .replace(/\n/g, "\\n");
-          throw new Error(
-            `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
-              `Raw output preview: "${rawPreview}"`,
-          );
+          // Try extracting markdown that starts after a preamble (find first `# ` line)
+          const lines = (res.stdout || "").split("\n");
+          const mdStart = lines.findIndex((l) => /^#\s/.test(l));
+          if (mdStart >= 0) {
+            issueMd =
+              sanitizeIssueMarkdown(lines.slice(mdStart).join("\n").trimEnd()) +
+              "\n";
+          } else {
+            const rawPreview = (res.stdout || "")
+              .slice(0, 300)
+              .replace(/\n/g, "\\n");
+            throw new Error(
+              `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
+                `Check .coder/artifacts/ISSUE.md — the agent may have written it to disk ` +
+                `without outputting it. Raw output preview: "${rawPreview}"`,
+            );
+          }
+        } else {
+          issueMd = fallback + "\n";
         }
-        issueMd = fallback + "\n";
       }
       writeFileSync(paths.issue, issueMd);
     }
 
     state.steps.wroteIssue = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
-    scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
+    await scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
       `- issue_artifact: ${paths.issue}`,
       "- status: complete",
     ]);
