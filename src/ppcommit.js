@@ -183,10 +183,23 @@ function assertGitleaksInstalled() {
     encoding: "utf8",
     timeout: 5000,
   });
+  if (
+    res.error?.code &&
+    ["ENOENT", "EACCES", "EPERM"].includes(res.error.code)
+  ) {
+    throw new Error(
+      `gitleaks binary not found in PATH.\n` +
+        `  PATH searched: ${process.env.PATH}\n` +
+        `  Install: https://github.com/gitleaks/gitleaks#installing\n` +
+        `  To disable: set "blockSecrets": false in ppcommit config (coder.json)`,
+    );
+  }
+  if (res.error) {
+    throw new Error(`gitleaks version check failed: ${res.error.message}`);
+  }
   if (res.status !== 0) {
     throw new Error(
-      "gitleaks is required for secret detection but was not found in PATH. " +
-        "Install it: https://github.com/gitleaks/gitleaks#installing",
+      `gitleaks version check failed (exit ${res.status}): ${(res.stderr || "").trim()}`,
     );
   }
   _gitleaksChecked = true;
@@ -950,7 +963,11 @@ function extractJsonArray(text) {
   const lastBracket = trimmed.lastIndexOf("]");
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
     const candidate = trimmed.slice(firstBracket, lastBracket + 1);
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch {
+      return [];
+    }
   }
   return [];
 }
@@ -1044,7 +1061,7 @@ Respond with ONLY a JSON array. Each item:
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: config?.llmModel || "gemini-3-flash-preview",
+            model: config?.llmModel || "gemini-3.1-pro-preview",
             messages: [{ role: "user", content: prompt }],
             temperature: 0,
           }),

@@ -10,16 +10,22 @@ import {
 export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
 export const CRITIQUE_FILE = "PLANREVIEW.md";
+export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
 
 export function artifactPaths(artifactsDir) {
   return {
     issue: path.join(artifactsDir, ISSUE_FILE),
     plan: path.join(artifactsDir, PLAN_FILE),
     critique: path.join(artifactsDir, CRITIQUE_FILE),
+    reviewFindings: path.join(artifactsDir, REVIEW_FINDINGS_FILE),
   };
 }
 
-export function ensureBranch(repoRoot, branch) {
+export function ensureBranch(
+  repoRoot,
+  branch,
+  { baseBranch, forceRecreate } = {},
+) {
   if (!branch) throw new Error("No branch set. Run issue-draft first.");
 
   const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -30,6 +36,37 @@ export function ensureBranch(repoRoot, branch) {
     throw new Error("Failed to determine current git branch.");
 
   const currentBranch = (current.stdout || "").trim();
+
+  // Force-recreate: delete existing branch and recreate from baseBranch or HEAD
+  if (forceRecreate) {
+    const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (verify.status === 0) {
+      // Switch off the branch before deleting it
+      if (currentBranch === branch) {
+        spawnSync("git", ["checkout", "--detach"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+      }
+      spawnSync("git", ["branch", "-D", branch], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+    }
+    const startPoint = baseBranch || "HEAD";
+    const create = spawnSync("git", ["checkout", "-b", branch, startPoint], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (create.status !== 0) {
+      throw new Error(`Failed to recreate branch ${branch}: ${create.stderr}`);
+    }
+    return;
+  }
+
   if (currentBranch === branch) return;
 
   const checkout = spawnSync("git", ["checkout", branch], {
@@ -38,7 +75,11 @@ export function ensureBranch(repoRoot, branch) {
   });
   if (checkout.status === 0) return;
 
-  const create = spawnSync("git", ["checkout", "-b", branch], {
+  // Create new branch with optional baseBranch as start-point
+  const createArgs = baseBranch
+    ? ["checkout", "-b", branch, baseBranch]
+    : ["checkout", "-b", branch];
+  const create = spawnSync("git", createArgs, {
     cwd: repoRoot,
     encoding: "utf8",
   });
@@ -61,7 +102,12 @@ export function ensureGitignore(workspaceDir) {
     writeFileSync(gitignorePath, giContent);
   }
 
-  const artifacts = [ISSUE_FILE, PLAN_FILE, CRITIQUE_FILE];
+  const artifacts = [
+    ISSUE_FILE,
+    PLAN_FILE,
+    CRITIQUE_FILE,
+    REVIEW_FINDINGS_FILE,
+  ];
   const geminiIgnorePath = path.join(workspaceDir, ".geminiignore");
   const gmContent = existsSync(geminiIgnorePath)
     ? readFileSync(geminiIgnorePath, "utf8")
@@ -167,7 +213,13 @@ export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
       }
     }
 
-    const push = runGit(["push", "-u", remote, `HEAD:${branch}`]);
+    const push = runGit([
+      "push",
+      "--force-with-lease",
+      "-u",
+      remote,
+      `HEAD:${branch}`,
+    ]);
     if (push.status !== 0)
       throw new Error(`git push failed: ${push.stderr || push.stdout}`);
 

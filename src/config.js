@@ -76,7 +76,15 @@ export const TestSectionSchema = z.object({
   allowNoTests: z.boolean().default(false),
 });
 
-export const AgentNameSchema = z.enum(["gemini", "claude", "codex"]);
+const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
+export const AgentNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(
+    agentNameRegex,
+    "Invalid agent name: only alphanumerics, dots, hyphens, underscores allowed",
+  );
 
 export const WorkflowAgentRolesSchema = z.object({
   issueSelector: AgentNameSchema.default("gemini"),
@@ -84,7 +92,8 @@ export const WorkflowAgentRolesSchema = z.object({
   planReviewer: AgentNameSchema.default("gemini"),
   programmer: AgentNameSchema.default("claude"),
   reviewer: AgentNameSchema.default("codex"),
-  committer: AgentNameSchema.default("codex"),
+  committer: AgentNameSchema.default("gemini"),
+  coalesce: AgentNameSchema.default("codex"),
 });
 
 export const WorkflowWipSchema = z.object({
@@ -100,6 +109,22 @@ export const WorkflowScratchpadSchema = z.object({
   sqlitePath: z.string().default(".coder/state.db"),
 });
 
+export const WorkflowTimeoutsSchema = z.object({
+  researchStep: z.number().int().positive().default(600_000),
+  webSearch: z.number().int().positive().default(900_000),
+  pocValidation: z.number().int().positive().default(720_000),
+  issueSelection: z.number().int().positive().default(600_000),
+  issueDraft: z.number().int().positive().default(600_000),
+  planning: z.number().int().positive().default(2_400_000),
+  planReview: z.number().int().positive().default(2_400_000),
+  implementation: z.number().int().positive().default(3_600_000),
+  reviewRound: z.number().int().positive().default(1_800_000),
+  programmerFix: z.number().int().positive().default(2_700_000),
+  committerEscalation: z.number().int().positive().default(3_600_000),
+  finalGate: z.number().int().positive().default(5_400_000),
+  designStep: z.number().int().positive().default(600_000),
+});
+
 /** Optional per-step agent overrides (all fields optional, for MCP tool inputs). */
 export const AgentRolesInputSchema = z.object({
   issueSelector: AgentNameSchema.optional(),
@@ -108,6 +133,7 @@ export const AgentRolesInputSchema = z.object({
   programmer: AgentNameSchema.optional(),
   reviewer: AgentNameSchema.optional(),
   committer: AgentNameSchema.optional(),
+  coalesce: AgentNameSchema.optional(),
 });
 
 export const DesignConfigSchema = z.object({
@@ -120,14 +146,74 @@ export const DesignConfigSchema = z.object({
       apiKeyEnv: z.string().default("GOOGLE_STITCH_API_KEY"),
       authHeader: z.string().default("X-Goog-Api-Key"),
     })
-    .default({}),
+    .prefault({}),
   specDir: z.string().default("spec/UI"),
+});
+
+export const HookSchema = z.object({
+  on: z.enum([
+    "machine_start",
+    "machine_complete",
+    "machine_error",
+    "workflow_start",
+    "workflow_complete",
+    "workflow_failed",
+    "loop_start",
+    "loop_complete",
+    "issue_start",
+    "issue_complete",
+    "issue_failed",
+    "issue_skipped",
+    "issue_deferred",
+  ]),
+  machine: z
+    .string()
+    .optional()
+    .refine(
+      (s) => {
+        if (s === undefined) return true;
+        try {
+          new RegExp(s);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Invalid regex pattern" },
+    ),
+  run: z.string().min(1),
 });
 
 export const GithubConfigSchema = z.object({
   useProjects: z.boolean().default(false),
   defaultLabels: z.array(z.string()).default([]),
   epicAsMilestone: z.boolean().default(true),
+});
+
+export const AgentRetrySchema = z.object({
+  retries: z.number().int().min(0).default(1),
+  backoffMs: z.number().int().min(0).default(5000),
+  retryOnRateLimit: z.boolean().default(true),
+});
+
+export const AgentFallbackSchema = z
+  .record(z.string(), AgentNameSchema)
+  .prefault({});
+
+export const SandboxConfigSchema = z.object({
+  passEnv: z
+    .array(z.string())
+    .default([
+      "GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "GITHUB_TOKEN",
+      "GITLAB_TOKEN",
+      "LINEAR_API_KEY",
+    ]),
+  passEnvPatterns: z.array(z.string()).default([]),
 });
 
 export const CoderConfigSchema = z.object({
@@ -149,29 +235,42 @@ export const CoderConfigSchema = z.object({
         apiKeyEnv: "OPENAI_API_KEY",
       }),
     })
-    .default({}),
-  ppcommit: PpcommitConfigSchema.default({}),
-  test: TestSectionSchema.default({}),
+    .prefault({}),
+  sandbox: SandboxConfigSchema.prefault({}),
+  ppcommit: PpcommitConfigSchema.prefault({}),
+  test: TestSectionSchema.prefault({}),
   claude: z
     .object({
       skipPermissions: z.boolean().default(true),
     })
-    .default({}),
+    .prefault({}),
   mcp: z
     .object({
       strictStartup: z.boolean().default(false),
     })
-    .default({}),
+    .prefault({}),
   workflow: z
     .object({
-      agentRoles: WorkflowAgentRolesSchema.default({}),
-      wip: WorkflowWipSchema.default({}),
-      scratchpad: WorkflowScratchpadSchema.default({}),
+      agentRoles: WorkflowAgentRolesSchema.prefault({}),
+      wip: WorkflowWipSchema.prefault({}),
+      scratchpad: WorkflowScratchpadSchema.prefault({}),
+      timeouts: WorkflowTimeoutsSchema.prefault({}),
+      maxPlanRevisions: z.number().int().min(1).max(10).default(3),
+      issueSource: z
+        .enum(["github", "linear", "gitlab", "local"])
+        .default("github"),
       localIssuesDir: z.string().default(""),
+      hooks: z.array(HookSchema).default([]),
     })
-    .default({}),
-  design: DesignConfigSchema.default({}),
-  github: GithubConfigSchema.default({}),
+    .prefault({}),
+  design: DesignConfigSchema.prefault({}),
+  github: GithubConfigSchema.prefault({}),
+  agents: z
+    .object({
+      retry: AgentRetrySchema.prefault({}),
+      fallback: AgentFallbackSchema,
+    })
+    .prefault({}),
   verbose: z.boolean().default(false),
 });
 
@@ -268,7 +367,7 @@ export function migrateConfig(raw) {
     out.models = m;
   }
 
-  // Migrate agents endpoints into models
+  // Migrate old agents.*Endpoint keys into models; preserve retry/fallback
   if (out.agents && typeof out.agents === "object") {
     out.models = out.models || {};
     if (out.agents.geminiApiEndpoint) {
@@ -287,7 +386,13 @@ export function migrateConfig(raw) {
         out.models.claude = { apiEndpoint: out.agents.anthropicApiEndpoint };
       }
     }
-    delete out.agents;
+    // Drop migrated endpoint keys; keep retry/fallback for the new schema
+    const {
+      geminiApiEndpoint: _g,
+      anthropicApiEndpoint: _a,
+      ...rest
+    } = out.agents;
+    out.agents = Object.keys(rest).length ? rest : undefined;
   }
 
   // Migrate ppcommit flat LLM fields to llmModelRef
@@ -301,16 +406,44 @@ export function migrateConfig(raw) {
   return out;
 }
 
+function formatZodError(err, label) {
+  const lines = [`Invalid configuration (${label}):`];
+  for (const issue of err.issues ?? []) {
+    const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    lines.push(`  ${path}: ${issue.message}`);
+  }
+  return lines.join("\n");
+}
+
 export function loadConfig(workspaceDir) {
   const userRaw = readJson(userConfigPath());
   const repoRaw = readJson(repoConfigPath(workspaceDir));
   const merged = deepMerge(userRaw, repoRaw);
-  return CoderConfigSchema.parse(migrateConfig(merged));
+  try {
+    return CoderConfigSchema.parse(migrateConfig(merged));
+  } catch (err) {
+    if (err.issues) {
+      throw new Error(
+        formatZodError(
+          err,
+          `${userConfigPath()} + ${repoConfigPath(workspaceDir)}`,
+        ),
+      );
+    }
+    throw err;
+  }
 }
 
 export function resolveConfig(workspaceDir, overrides) {
   const base = loadConfig(workspaceDir);
   if (!overrides) return base;
   const raw = deepMerge(structuredClone(base), overrides);
-  return CoderConfigSchema.parse(raw);
+  try {
+    return CoderConfigSchema.parse(raw);
+  } catch (err) {
+    if (err.issues) {
+      throw new Error(formatZodError(err, "runtime overrides"));
+    }
+    throw err;
+  }
 }

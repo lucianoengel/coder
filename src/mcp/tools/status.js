@@ -56,7 +56,7 @@ function readResearchState(workspaceDir) {
 
 async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
-  const state = loadState(workspaceDir);
+  const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
 
@@ -87,6 +87,9 @@ async function getStatus(workspaceDir) {
       issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
       planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
       critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+      reviewFindingsExists: existsSync(
+        path.join(artifactsDir, "REVIEW_FINDINGS.md"),
+      ),
     },
     scratchpad: {
       dir: scratchpadDir,
