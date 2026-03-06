@@ -4,6 +4,9 @@ import path from "node:path";
 /** @type {Map<string, import("node:fs").WriteStream>} */
 const openStreams = new Map();
 
+/** @type {Set<Promise<void>>} */
+const pendingCloses = new Set();
+
 const REDACTED = "[REDACTED]";
 
 function sanitizeSensitiveText(input) {
@@ -69,7 +72,12 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
 
   const existingStream = openStreams.get(p);
   if (existingStream) {
-    existingStream.end();
+    const closed = new Promise((resolve) => {
+      existingStream.once("close", resolve);
+      existingStream.end();
+    });
+    pendingCloses.add(closed);
+    closed.finally(() => pendingCloses.delete(closed));
   }
   const stream = createWriteStream(p, { flags: "a" });
   stream.on("error", (err) => {
@@ -98,5 +106,5 @@ export function closeAllLoggers() {
     );
     openStreams.delete(key);
   }
-  return Promise.all(promises);
+  return Promise.all([...promises, ...pendingCloses]);
 }
