@@ -1048,24 +1048,22 @@ async function resetForNextIssue(
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
   if (existsSync(repoRoot)) {
-    // For failed/skipped issues, preserve partial work on the issue branch
-    // before switching back to the default branch.
-    const needsPreserve = issueStatus === "failed" || issueStatus === "skipped";
-
-    if (needsPreserve) {
-      const status = spawnSync("git", ["status", "--porcelain"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
-      if ((status.stdout || "").trim()) {
-        // Commit partial work to the current (issue) branch so it's not lost
-        spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
-        spawnSync(
-          "git",
-          ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
-          { cwd: repoRoot, encoding: "utf8" },
-        );
-      }
+    // Preserve any uncommitted work on the current issue branch before
+    // switching back to the default branch (applies to all statuses so
+    // completed issues don't leave stray untracked files behind).
+    const status = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if ((status.stdout || "").trim()) {
+      const label =
+        issueStatus === "completed" ? "stray files" : "partial work";
+      spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
+      spawnSync(
+        "git",
+        ["commit", "-m", `wip: ${label} (issue ${issueStatus})`],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
     }
 
     const defaultBranch = detectDefaultBranch(repoRoot);
@@ -1074,21 +1072,17 @@ async function resetForNextIssue(
       encoding: "utf8",
     });
 
+    // Always clean untracked files after switching branches so the next
+    // issue starts with a pristine working tree.
     if (destructiveReset) {
-      const status = spawnSync("git", ["status", "--porcelain"], {
+      spawnSync("git", ["restore", "--staged", "--worktree", "."], {
         cwd: repoRoot,
         encoding: "utf8",
       });
-      if ((status.stdout || "").trim()) {
-        spawnSync("git", ["restore", "--staged", "--worktree", "."], {
-          cwd: repoRoot,
-          encoding: "utf8",
-        });
-        spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-          cwd: repoRoot,
-          encoding: "utf8",
-        });
-      }
     }
+    spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
   }
 }
