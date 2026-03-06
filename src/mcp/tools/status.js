@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
-import { loadState } from "../../state/workflow-state.js";
+import {
+  loadLoopState,
+  loadState,
+  loadWorkflowSnapshot,
+} from "../../state/workflow-state.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
 function readActivityFile(workspaceDir) {
@@ -23,6 +27,39 @@ function readMcpHealth(workspaceDir) {
   } catch {
     return null;
   }
+}
+
+async function readWorkflowRunState(workspaceDir) {
+  const loopState = await loadLoopState(workspaceDir);
+  const snapshot = await loadWorkflowSnapshot(workspaceDir);
+
+  if (
+    (loopState.status === "running" || loopState.status === "paused") &&
+    (loopState.currentStage || loopState.activeAgent || loopState.lastHeartbeatAt)
+  ) {
+    return {
+      runId: loopState.runId || null,
+      runStatus: loopState.status || null,
+      currentStage: loopState.currentStage || null,
+      currentStageStartedAt: loopState.currentStageStartedAt || null,
+      lastHeartbeatAt: loopState.lastHeartbeatAt || null,
+      activeAgent: loopState.activeAgent || null,
+    };
+  }
+
+  if (snapshot?.context) {
+    const ctx = snapshot.context;
+    return {
+      runId: snapshot.runId || null,
+      runStatus: snapshot.value ?? null,
+      currentStage: ctx.currentStage ?? null,
+      currentStageStartedAt: null,
+      lastHeartbeatAt: ctx.lastHeartbeatAt ?? null,
+      activeAgent: ctx.activeAgent ?? null,
+    };
+  }
+
+  return null;
 }
 
 function readResearchState(workspaceDir) {
@@ -53,7 +90,7 @@ function readResearchState(workspaceDir) {
   }
 }
 
-async function getStatus(workspaceDir) {
+export async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
   const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
@@ -62,6 +99,8 @@ async function getStatus(workspaceDir) {
   const scratchpadPath = state.scratchpadPath
     ? path.resolve(workspaceDir, state.scratchpadPath)
     : null;
+
+  const runState = await readWorkflowRunState(workspaceDir);
 
   return {
     selected: state.selected || null,
@@ -100,10 +139,12 @@ async function getStatus(workspaceDir) {
       },
     },
     agentActivity: readActivityFile(workspaceDir),
-    currentStage: null,
-    currentStageStartedAt: null,
-    lastHeartbeatAt: null,
-    activeAgent: null,
+    currentStage: runState?.currentStage ?? null,
+    currentStageStartedAt: runState?.currentStageStartedAt ?? null,
+    lastHeartbeatAt: runState?.lastHeartbeatAt ?? null,
+    activeAgent: runState?.activeAgent ?? null,
+    runId: runState?.runId ?? null,
+    runStatus: runState?.runStatus ?? null,
     mcpHealth: readMcpHealth(workspaceDir),
     researchWorkflow: readResearchState(workspaceDir),
   };
