@@ -463,6 +463,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           .enum(["auto", "bug_repro", "poc"])
           .default("auto")
           .describe("Research start-only: preferred validation style"),
+        resumeFromRunId: z
+          .string()
+          .optional()
+          .describe(
+            "Start-only: resume a failed research/design pipeline from checkpoint (use runId from prior failed run)",
+          ),
         // Design-specific
         designIntent: z
           .string()
@@ -594,7 +600,11 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                 }
               }
 
-              const nextRunId = randomUUID().slice(0, 8);
+              const nextRunId =
+                (workflow === "research" || workflow === "design") &&
+                params.resumeFromRunId
+                  ? params.resumeFromRunId
+                  : randomUUID().slice(0, 8);
               const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
               // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
@@ -723,6 +733,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     webResearch: params.webResearch,
                     validateIdeas: params.validateIdeas,
                     validationMode: params.validationMode,
+                    resumeFromRunId: params.resumeFromRunId,
                   },
                   workflowCtx,
                 );
@@ -733,6 +744,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     screenshotPaths: [],
                     projectName: "",
                     style: params.clarifications || "",
+                    resumeFromRunId: params.resumeFromRunId,
                   },
                   workflowCtx,
                 );
