@@ -147,7 +147,7 @@ Return ONLY valid JSON in this schema:
         artifactName: `draft-${String(i).padStart(2, "0")}`,
         role: "issueSelector",
         prompt: draftPrompt,
-        timeoutMs: 1000 * 60 * 10,
+        timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
       });
       const draftPayload = draftRes.payload;
@@ -203,7 +203,7 @@ Return ONLY valid JSON in this schema:
         artifactName: `review-${String(i).padStart(2, "0")}`,
         role: "planReviewer",
         prompt: reviewPrompt,
-        timeoutMs: 1000 * 60 * 8,
+        timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
       });
       finalReview = reviewRes.payload;
