@@ -44,6 +44,7 @@ import { registerPrompts } from "../src/mcp/prompts.js";
 import { registerResources } from "../src/mcp/resources.js";
 import { registerMachineTools } from "../src/mcp/tools/machines.js";
 import { registerStatusTools } from "../src/mcp/tools/status.js";
+import { registerSteeringTools } from "../src/mcp/tools/steering.js";
 import { registerWorkflowTools } from "../src/mcp/tools/workflows.js";
 import { registerDesignMachines } from "../src/workflows/design.workflow.js";
 import { registerDevelopMachines } from "../src/workflows/develop.workflow.js";
@@ -119,6 +120,7 @@ function buildServer(defaultWorkspace) {
   registerMachineTools(server, defaultWorkspace);
   registerWorkflowTools(server, defaultWorkspace);
   registerStatusTools(server, defaultWorkspace);
+  registerSteeringTools(server, defaultWorkspace);
   registerResources(server, defaultWorkspace);
   registerPrompts(server);
   return server;
@@ -153,10 +155,30 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
   /** @type {Map<string, number>} */
   const sessionLastSeen = new Map();
 
-  const makeTransport = () =>
-    new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
+  // Workaround: @hono/node-server (used internally by StreamableHTTPServerTransport)
+  // injects Content-Length and buffers SSE responses when Transfer-Encoding: chunked
+  // is not set on the Web Standard Response. This kills the SSE stream prematurely.
+  // Fix: intercept writeHead to force chunked encoding for SSE responses.
+  const fixSseStreaming = (_req, res, next) => {
+    const origWriteHead = res.writeHead.bind(res);
+    res.writeHead = (status, ...args) => {
+      const headers =
+        typeof args[0] === "object" && !Array.isArray(args[0])
+          ? args[0]
+          : args[1];
+      if (headers) {
+        const ct = headers["content-type"] || headers["Content-Type"] || "";
+        if (ct.includes("text/event-stream")) {
+          delete headers["content-length"];
+          delete headers["Content-Length"];
+          headers["transfer-encoding"] = "chunked";
+        }
+      }
+      return origWriteHead(status, ...args);
+    };
+    next();
+  };
+  app.use(routePath, fixSseStreaming);
 
   app.post(routePath, async (req, res) => {
     try {
@@ -189,12 +211,16 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
         }
 
         const mcpServer = buildServer(workspace);
-        transport = makeTransport();
-
-        transport.onsessioninitialized = (newSessionId) => {
-          transports.set(newSessionId, transport);
-          servers.set(newSessionId, mcpServer);
-        };
+        // onsessioninitialized must be a constructor option — the Node.js
+        // StreamableHTTPServerTransport wrapper does not forward property
+        // setters for it (MCP SDK bug).
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            transports.set(newSessionId, transport);
+            servers.set(newSessionId, mcpServer);
+          },
+        });
 
         transport.onclose = async () => {
           const sid = transport.sessionId;

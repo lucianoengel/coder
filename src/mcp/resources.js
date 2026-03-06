@@ -1,6 +1,7 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { loopStatePathFor, statePathFor } from "../state/workflow-state.js";
+import { loadSteeringContext } from "../steering.js";
 
 async function findLatestScratchpadFile(scratchpadDir) {
   if (
@@ -295,6 +296,29 @@ export function registerResources(server, defaultWorkspace) {
             uri: "coder://scratchpad",
             mimeType: "text/markdown",
             text: await readFile(scratchpadPath, "utf8"),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    "steering",
+    "coder://steering",
+    {
+      description:
+        "Combined steering context from .coder/steering/ — project architecture, conventions, and tech stack knowledge",
+    },
+    async () => {
+      const content = loadSteeringContext(defaultWorkspace);
+      return {
+        contents: [
+          {
+            uri: "coder://steering",
+            mimeType: "text/markdown",
+            text:
+              content ||
+              "No steering files exist yet. Run coder_steering_generate to create them.",
           },
         ],
       };

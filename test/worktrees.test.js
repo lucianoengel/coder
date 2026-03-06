@@ -56,7 +56,7 @@ test("buildIssueBranchName uses GL shortcode for gitlab source", () => {
   const branch = buildIssueBranchName({
     source: "gitlab",
     id: "42",
-    title: "Add gitlab support",
+    title: "Add health endpoint",
   });
-  assert.equal(branch, "feat/add-gitlab-support_GL_42");
+  assert.equal(branch, "feat/add-health-endpoint_GL_42");
 });
