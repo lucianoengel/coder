@@ -15,10 +15,12 @@ export default defineMachine({
   name: "develop.planning",
   description:
     "Create PLAN.md: research codebase, evaluate approaches, write structured implementation plan.",
-  inputSchema: z.object({}),
+  inputSchema: z.object({
+    priorCritique: z.string().optional().default(""),
+  }),
 
-  async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+  async execute(input, ctx) {
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -30,7 +32,7 @@ export default defineMachine({
       );
     }
 
-    if (state.steps.wrotePlan) {
+    if (state.steps.wrotePlan && !input.priorCritique) {
       return { status: "ok", data: { planMd: "(cached)" } };
     }
 
@@ -76,17 +78,55 @@ export default defineMachine({
       return entries;
     };
 
+    const revertTrackedDirty = (dirtyEntries) => {
+      const filePaths = dirtyEntries.map((e) => e.path);
+      spawnSync("git", ["restore", "--staged", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      spawnSync("git", ["restore", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+    };
+
+    const cleanUntracked = (untrackedPaths) => {
+      const chunkSize = 100;
+      for (let i = 0; i < untrackedPaths.length; i += chunkSize) {
+        const chunk = untrackedPaths.slice(i, i + chunkSize);
+        spawnSync("git", ["clean", "-fd", "--", ...chunk], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+      }
+    };
+
     const pre = gitPorcelain();
     const preUntracked = new Set(
       pre.filter((e) => e.status === "??").map((e) => e.path),
     );
 
-    // Generate session ID for reuse across steps (planning -> implementation -> fix)
-    if (!state.claudeSessionId) {
+    // Session strategy: the first planning call creates a named session with --session-id.
+    // All subsequent calls in this issue (REVISE rounds, implementation, fix, review) resume
+    // with --resume so the agent retains full conversation context across the workflow.
+    const agentChanged =
+      state.plannerAgentName && state.plannerAgentName !== plannerName;
+    if (agentChanged) {
+      ctx.log({
+        event: "planner_agent_changed",
+        previous: state.plannerAgentName,
+        current: plannerName,
+        action: "creating_fresh_session",
+      });
+    }
+    const creatingSession = !state.claudeSessionId || agentChanged;
+    if (creatingSession) {
       state.claudeSessionId = randomUUID();
-      saveState(ctx.workspaceDir, state);
+      state.plannerAgentName = plannerName;
+      await saveState(ctx.workspaceDir, state);
     }
 
+    // Full prompt used only when creating a fresh session.
     const planPrompt = `You are planning an implementation. Follow this structured approach:
 
 ## Phase 1: Research (MANDATORY)
@@ -141,60 +181,135 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
-    let res;
-    try {
-      res = await plannerAgent.execute(planPrompt, {
-        sessionId: state.claudeSessionId || undefined,
-        timeoutMs: 1000 * 60 * 40,
-      });
-      requireExitZero(plannerName, "plan generation failed", res);
-    } catch (err) {
-      if (state.claudeSessionId) {
+    // Allow one retry when the planner violates the no-source-edit constraint.
+    // Retries resume the existing session so the agent has the violation as context.
+    let constraintNote = "";
+
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      // First call: full prompt to establish context. All subsequent calls (REVISE rounds,
+      // constraint retries) are follow-up messages in the same resumed session.
+      let prompt;
+      if (creatingSession && attempt === 0) {
+        prompt = planPrompt;
+        if (input.priorCritique) {
+          prompt +=
+            `\n\n## Previous Review Critique (MUST ADDRESS)\n\n` +
+            `Your previous plan was rejected. You MUST address ALL issues below before writing the revised plan:\n\n` +
+            input.priorCritique;
+        }
+      } else if (constraintNote) {
+        // Constraint retry: just the violation feedback as a follow-up
+        prompt = constraintNote;
+      } else {
+        // REVISE round: resume session with focused follow-up instead of full prompt
+        prompt =
+          `Your previous plan was rejected by the reviewer. Revise ${paths.plan} addressing ALL of the following:\n\n` +
+          input.priorCritique +
+          `\n\nRemember: only write ${paths.plan}. Do not modify any source files.`;
+      }
+
+      const sessionOpts =
+        creatingSession && attempt === 0
+          ? { sessionId: state.claudeSessionId }
+          : { resumeId: state.claudeSessionId };
+
+      let res;
+      try {
+        try {
+          res = await plannerAgent.execute(prompt, {
+            ...sessionOpts,
+            timeoutMs: ctx.config.workflow.timeouts.planning,
+          });
+        } catch (err) {
+          if (
+            err.name === "CommandFatalStderrError" &&
+            err.category === "auth" &&
+            sessionOpts.resumeId
+          ) {
+            ctx.log({
+              event: "session_resume_failed",
+              sessionId: state.claudeSessionId,
+            });
+            state.claudeSessionId = randomUUID();
+            await saveState(ctx.workspaceDir, state);
+            // Fresh session needs full planPrompt even during REVISE/constraint rounds
+            const retryPrompt =
+              prompt === planPrompt || prompt.startsWith(planPrompt)
+                ? prompt
+                : `${planPrompt}\n\n${prompt}`;
+            res = await plannerAgent.execute(retryPrompt, {
+              sessionId: state.claudeSessionId,
+              timeoutMs: ctx.config.workflow.timeouts.planning,
+            });
+          } else {
+            throw err;
+          }
+        }
+        requireExitZero(plannerName, "plan generation failed", res);
+      } catch (err) {
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
+        throw err;
       }
-      throw err;
-    }
 
-    // Hard gate: planner must not change tracked files
-    const post = gitPorcelain();
-    const postUntracked = post
-      .filter((e) => e.status === "??")
-      .map((e) => e.path);
-    const newUntracked = postUntracked.filter(
-      (p) => !preUntracked.has(p) && !isArtifact(p),
-    );
-
-    const trackedDirty = post
-      .filter((e) => e.status !== "??" && !isArtifact(e.path))
-      .map((e) => `${e.status} ${e.path}`);
-    if (trackedDirty.length > 0) {
-      throw new Error(
-        `Planning step modified tracked files. Aborting.\n${trackedDirty.join("\n")}`,
+      const post = gitPorcelain();
+      const postUntracked = post
+        .filter((e) => e.status === "??")
+        .map((e) => e.path);
+      const newUntracked = postUntracked.filter(
+        (p) => !preUntracked.has(p) && !isArtifact(p),
       );
-    }
+      const trackedDirtyEntries = post.filter(
+        (e) => e.status !== "??" && !isArtifact(e.path),
+      );
 
-    // Clean up new untracked files from planning exploration
-    if (newUntracked.length > 0) {
-      ctx.log({
-        event: "plan_untracked_cleanup",
-        count: newUntracked.length,
-        paths: newUntracked.slice(0, 50),
-      });
-      const chunkSize = 100;
-      for (let i = 0; i < newUntracked.length; i += chunkSize) {
-        const chunk = newUntracked.slice(i, i + chunkSize);
-        spawnSync("git", ["clean", "-fd", "--", ...chunk], {
-          cwd: repoRoot,
-          encoding: "utf8",
-        });
+      if (trackedDirtyEntries.length === 0) {
+        // Clean run — remove any untracked scratch files and finish
+        if (newUntracked.length > 0) {
+          ctx.log({
+            event: "plan_untracked_cleanup",
+            count: newUntracked.length,
+            paths: newUntracked.slice(0, 50),
+          });
+          cleanUntracked(newUntracked);
+        }
+        break;
       }
+
+      // Planner modified tracked source files — revert and either retry or fail
+      revertTrackedDirty(trackedDirtyEntries);
+      if (newUntracked.length > 0) cleanUntracked(newUntracked);
+
+      const listed = trackedDirtyEntries
+        .map((e) => `  ${e.status} ${e.path}`)
+        .join("\n");
+      ctx.log({
+        event: "plan_constraint_violation",
+        attempt,
+        reverted: trackedDirtyEntries.map((e) => e.path),
+      });
+
+      if (attempt === 1) {
+        throw new Error(
+          `Planning agent repeatedly violated constraint: must not modify source files.\n` +
+            `Only ${paths.plan} should be written during planning.\n` +
+            `Modified files (reverted):\n${listed}`,
+        );
+      }
+
+      // Build follow-up message for the constraint retry (resumed in the same session)
+      constraintNote =
+        `CONSTRAINT VIOLATION: You modified source files during planning, which is forbidden.\n` +
+        `Only ${paths.plan} may be written. All other files must remain unchanged.\n` +
+        `Files you modified (they have been reverted — do not touch them again):\n` +
+        `${listed}\n\n` +
+        `Retry now: write ONLY ${paths.plan} and do not edit any source files.`;
     }
 
     if (!existsSync(paths.plan))
       throw new Error(`PLAN.md not found: ${paths.plan}`);
     state.steps.wrotePlan = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return { status: "ok", data: { planMd: "written" } };
   },

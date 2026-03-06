@@ -109,7 +109,7 @@ Return ONLY valid JSON in this schema:
       artifactName: "validation-plan",
       role: "issueSelector",
       prompt: validationPlanPrompt,
-      timeoutMs: 1000 * 60 * 8,
+      timeoutMs: ctx.config.workflow.timeouts.researchStep,
       ...stepOpts,
     });
     validationPlan = validationPlanRes.payload || validationPlan;
@@ -152,7 +152,7 @@ Return ONLY valid JSON in this schema:
         artifactName: "validation-results",
         role: "programmer",
         prompt: validationExecPrompt,
-        timeoutMs: 1000 * 60 * 12,
+        timeoutMs: ctx.config.workflow.timeouts.pocValidation,
         ...stepOpts,
       });
       validationResults = validationExecRes.payload || validationResults;

@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   buildPrBodyFromIssue,
   computeGitWorktreeFingerprint,
+  detectRemoteType,
   runPpcommit,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -18,7 +19,7 @@ import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 export default defineMachine({
   name: "develop.pr_creation",
   description:
-    "Create pull request: commit changes, push to remote, create PR via gh CLI.",
+    "Create pull request: commit changes, push to remote, create PR/MR via gh or glab.",
   inputSchema: z.object({
     type: z.string().default("feat"),
     semanticName: z.string().default(""),
@@ -28,7 +29,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.testsPassed) {
@@ -111,16 +112,13 @@ export default defineMachine({
       : state.branch;
     const baseBranch = input.base || state.baseBranch || null;
 
-    const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    const isGitLab = /gitlab/i.test((remoteResult.stdout || "").trim());
+    // Detect hosting platform from origin remote URL.
+    const isGitLab = detectRemoteType(repoRoot) === "gitlab";
 
     // Push to remote
     const push = spawnSync(
       "git",
-      ["push", "-u", "origin", `HEAD:${remoteBranch}`],
+      ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, encoding: "utf8" },
     );
     if (push.status !== 0) throw new Error(`git push failed: ${push.stderr}`);
@@ -216,7 +214,7 @@ export default defineMachine({
     state.prBranch = remoteBranch;
     state.prBase = baseBranch;
     state.steps.prCreated = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     ctx.log({
       event: "pr_created",
