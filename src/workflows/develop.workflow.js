@@ -526,9 +526,15 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
 
     const result = [];
     for (const pr of prs) {
+      // Fetch the remote ref so we can diff even if the branch isn't checked out locally
+      spawnSync("git", ["fetch", "origin", pr.branch], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 10000,
+      });
       const stat = spawnSync(
         "git",
-        ["diff", "--stat", `${defaultBranch}...${pr.branch}`],
+        ["diff", "--stat", `${defaultBranch}...origin/${pr.branch}`],
         { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
       );
       if (stat.status !== 0) continue;
@@ -663,14 +669,28 @@ export async function runDevelopLoop(opts, ctx) {
   let skipped = 0;
 
   // Seed outcomeMap from ALL terminal issues in the prior run (includes
-  // issues no longer in the active list, e.g. closed/merged)
+  // issues no longer in the active list, e.g. closed/merged).
+  // For completed branches, compute diffSummary so they can serve as
+  // fallback conflict context when open-PR fetching is unavailable.
   for (const prior of priorQueue) {
-    if (["completed", "failed", "skipped"].includes(prior.status)) {
-      outcomeMap.set(prior.id, {
-        status: prior.status,
-        branch: prior.branch || undefined,
-      });
+    if (!["completed", "failed", "skipped"].includes(prior.status)) continue;
+    const entry = { status: prior.status, branch: prior.branch || undefined };
+    if (prior.status === "completed" && prior.branch) {
+      const priorRepoRoot = resolveRepoRoot(
+        ctx.workspaceDir,
+        normalizeRepoPath(ctx.workspaceDir, prior.repo_path),
+      );
+      const priorDefault = detectDefaultBranch(priorRepoRoot);
+      const stat = spawnSync(
+        "git",
+        ["diff", "--stat", `${priorDefault}...${prior.branch}`],
+        { cwd: priorRepoRoot, encoding: "utf8", timeout: 5000 },
+      );
+      if (stat.status === 0) {
+        entry.diffSummary = (stat.stdout || "").trim() || undefined;
+      }
     }
+    outcomeMap.set(prior.id, entry);
   }
   for (const entry of loopState.issueQueue) {
     if (entry.status === "completed") completed++;
@@ -791,12 +811,16 @@ export async function runDevelopLoop(opts, ctx) {
       });
     }
 
+    // Resolve per-issue default branch (may differ from workspace root
+    // when issue.repo_path targets a different repo).
+    const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
+
     // Build active branch context from all open PRs on the repo,
     // supplemented by completed branches from this run that may not
     // have PRs yet (or whose PRs aren't visible to the CLI).
     const openPrBranches = fetchOpenPrBranches(
       issueRepoRoot,
-      defaultBranch,
+      issueDefaultBranch,
       ctx.log,
     );
     const seenBranches = new Set(openPrBranches.map((b) => b.branch));
@@ -893,8 +917,8 @@ export async function runDevelopLoop(opts, ctx) {
         // Record diff stats so subsequent issues can detect file overlap
         const diffStat = spawnSync(
           "git",
-          ["diff", "--stat", `${defaultBranch}...${branch}`],
-          { cwd: loopRepoRoot, encoding: "utf8" },
+          ["diff", "--stat", `${issueDefaultBranch}...${branch}`],
+          { cwd: issueRepoRoot, encoding: "utf8" },
         );
         const diffSummary = (diffStat.stdout || "").trim();
         outcomeMap.set(issue.id, { status: "completed", branch, diffSummary });
