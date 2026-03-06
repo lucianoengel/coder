@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -39,30 +39,30 @@ export default defineMachine({
       scope: "workspace",
     });
 
-    const pipeline = (await loadPipeline(input.pipelinePath)) || {
+    const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "issue-critique",
       current: "init",
       history: [],
       steps: {},
     };
-    const _analysisBrief = await resolveArtifact(
+    const _analysisBrief = resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const _webReferenceMap = await resolveArtifact(
+    const _webReferenceMap = resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
     );
-    const validationResults = await resolveArtifact(
+    const validationResults = resolveArtifact(
       input.validationResults,
       input.stepsDir,
       "validation-results",
     );
 
-    await beginPipelineStep(
+    beginPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
@@ -137,8 +137,8 @@ Return JSON:
   "feedback": ["actionable feedback items for next iteration"]
 }`;
 
-    const res = await agent.executeWithRetry(prompt, {
-      timeoutMs: 1000 * 60 * 8,
+    const res = await agent.execute(prompt, {
+      timeoutMs: ctx.config.workflow.timeouts.researchStep,
     });
     requireExitZero(agentName, "issue_critique", res);
 
@@ -146,9 +146,9 @@ Return JSON:
 
     // Save critique artifact
     const critiquePath = path.join(input.stepsDir, "issue-critique.json");
-    await writeFile(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
+    writeFileSync(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
 
-    await appendScratchpad(input.scratchpadPath, "Issue Critique", [
+    appendScratchpad(input.scratchpadPath, "Issue Critique", [
       `- agent: ${agentName}`,
       `- verdict: ${payload?.verdict || "unknown"}`,
       `- score: ${payload?.overallScore || "unknown"}`,
@@ -156,7 +156,7 @@ Return JSON:
       `- gaps_found: ${(payload?.backlogIssues?.gaps || []).length}`,
     ]);
 
-    await endPipelineStep(
+    endPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,

@@ -46,25 +46,25 @@ export default defineMachine({
       scope: "workspace",
     });
 
-    const pipeline = (await loadPipeline(input.pipelinePath)) || {
+    const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "tech-selection",
       current: "init",
       history: [],
       steps: {},
     };
-    const analysisBrief = await resolveArtifact(
+    const analysisBrief = resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const webRefs = await resolveArtifact(
+    const webRefs = resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
     );
 
-    await beginPipelineStep(
+    beginPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
@@ -137,20 +137,20 @@ Return JSON:
   }
 }`;
 
-    const res = await agent.executeWithRetry(prompt, {
-      timeoutMs: 1000 * 60 * 8,
+    const res = await agent.execute(prompt, {
+      timeoutMs: ctx.config.workflow.timeouts.researchStep,
     });
     requireExitZero(agentName, "tech_selection", res);
 
     const payload = parseAgentPayload(agentName, res.stdout);
 
-    await appendScratchpad(input.scratchpadPath, "Tech Selection", [
+    appendScratchpad(input.scratchpadPath, "Tech Selection", [
       `- agent: ${agentName}`,
       `- categories: ${(payload?.categories || []).length}`,
       `- stack: ${payload?.stack?.summary || "unknown"}`,
     ]);
 
-    await endPipelineStep(
+    endPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,

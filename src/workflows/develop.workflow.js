@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
 import { detectDefaultBranch } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
+  artifactPaths,
   normalizeRepoPath,
   resolveRepoRoot,
 } from "../machines/develop/_shared.js";
@@ -17,11 +20,26 @@ import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import {
   loadLoopState,
+  loadState,
   saveLoopState,
+  saveState,
   statePathFor,
 } from "../state/workflow-state.js";
 import { buildIssueBranchName } from "../worktrees.js";
-import { WorkflowRunner } from "./_base.js";
+import { runHooks, WorkflowRunner } from "./_base.js";
+
+/**
+ * Update the loop state heartbeat timestamp.
+ */
+async function updateHeartbeat(ctx) {
+  try {
+    const ls = await loadLoopState(ctx.workspaceDir);
+    ls.lastHeartbeatAt = new Date().toISOString();
+    await saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
+  } catch {
+    // Best-effort — don't fail the pipeline over a heartbeat update
+  }
+}
 
 // Re-export machines for direct use
 export {
@@ -54,6 +72,135 @@ export function registerDevelopMachines() {
 }
 
 /**
+ * Run the planning + plan-review loop (up to maxRounds) using an existing WorkflowRunner.
+ * Between revision rounds, stale PLAN.md and PLANREVIEW.md are deleted so agents cannot
+ * silently reuse old artifacts via file-existence fallback paths.
+ *
+ * @param {import("./_base.js").WorkflowRunner} runner
+ * @param {import("../machines/_base.js").WorkflowContext} ctx
+ * @param {{ planningMachine: object, planReviewMachine: object, maxRounds?: number }} opts
+ */
+export async function runPlanLoop(
+  runner,
+  ctx,
+  { planningMachine: pm, planReviewMachine: prm, maxRounds } = {},
+) {
+  maxRounds = maxRounds ?? ctx.config?.workflow?.maxPlanRevisions ?? 3;
+  const allResults = [];
+  let priorCritique = "";
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (round > 0) {
+      const paths = artifactPaths(ctx.artifactsDir);
+      rmSync(paths.plan, { force: true });
+      rmSync(paths.critique, { force: true });
+    }
+
+    const planRound = await runner.run(
+      [{ machine: pm, inputMapper: () => ({ priorCritique }) }],
+      {},
+    );
+    allResults.push(...planRound.results);
+    if (planRound.status !== "completed") {
+      return {
+        status: planRound.status,
+        error: planRound.error,
+        results: allResults,
+      };
+    }
+
+    const reviewRound = await runner.run(
+      [{ machine: prm, inputMapper: () => ({ round }) }],
+      {},
+    );
+    allResults.push(...reviewRound.results);
+    if (reviewRound.status !== "completed") {
+      return {
+        status: reviewRound.status,
+        error: reviewRound.error,
+        results: allResults,
+      };
+    }
+
+    const verdict = reviewRound.results[0]?.data?.verdict;
+    ctx.log({ event: "plan_review_verdict", verdict, round, maxRounds });
+
+    const needsRevision = verdict === "REVISE" || verdict === "REJECT";
+    if (!needsRevision || round === maxRounds - 1) {
+      if (needsRevision && round === maxRounds - 1) {
+        ctx.log({
+          event: "plan_review_exhausted",
+          lastVerdict: verdict,
+          roundsUsed: round + 1,
+          maxRounds,
+        });
+      }
+      break;
+    }
+
+    priorCritique = reviewRound.results[0]?.data?.critiqueMd || "";
+    const state = await loadState(ctx.workspaceDir);
+    state.steps ||= {};
+    state.steps.wroteCritique = false;
+    await saveState(ctx.workspaceDir, state);
+  }
+
+  return { status: "completed", results: allResults };
+}
+
+/**
+ * Run a function with retries suitable for machine execution.
+ * Checks for "failed" status in the result. Respects cancellation between attempts.
+ */
+export async function runWithMachineRetry(
+  fn,
+  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt },
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      if (ctx.cancelToken?.cancelled) {
+        return { status: "cancelled", results: [] };
+      }
+      ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
+      if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
+    }
+    const result = await fn();
+    if (result.status !== "failed") return result;
+    ctx.log({
+      event: "machine_retry_failed",
+      attempt,
+      maxRetries,
+      error: result.error,
+    });
+    if (typeof onFailedAttempt === "function") {
+      await onFailedAttempt({ attempt, maxRetries, result });
+    }
+    if (attempt === maxRetries) return result;
+  }
+}
+
+function findFailedMachineResult(result) {
+  const results = Array.isArray(result?.results) ? result.results : [];
+  for (let i = results.length - 1; i >= 0; i--) {
+    const step = results[i];
+    if (step?.status === "error" || step?.status === "failed") return step;
+  }
+  return null;
+}
+
+async function injectRetryFeedback(ctx, failedMachine, error) {
+  const message = String(error || "").trim();
+  if (!message) return;
+  const paths = artifactPaths(ctx.artifactsDir);
+  const note =
+    "\n\n---\n## Retry Feedback\n\n" +
+    `**${failedMachine} failed — fix these issues before re-submitting:**\n\n` +
+    `\`\`\`\n${message}\n\`\`\`\n`;
+  await appendFile(paths.critique, note, "utf8");
+  ctx.log({ event: "retry_feedback_injected", machine: failedMachine });
+}
+
+/**
  * Run the full develop pipeline for a single issue.
  *
  * @param {{
@@ -75,6 +222,9 @@ export function registerDevelopMachines() {
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
 export async function runDevelopPipeline(opts, ctx) {
+  const start = Date.now();
+  const allResults = [];
+
   const runner = new WorkflowRunner({
     name: "develop",
     workflowContext: ctx,
@@ -83,7 +233,8 @@ export async function runDevelopPipeline(opts, ctx) {
     },
   });
 
-  return runner.run(
+  // Phase 1: issue draft
+  const phase1 = await runner.run(
     [
       {
         machine: issueDraftMachine,
@@ -95,40 +246,109 @@ export async function runDevelopPipeline(opts, ctx) {
           force: opts.force ?? false,
         }),
       },
-      {
-        machine: planningMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: planReviewMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: implementationMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: qualityReviewMachine,
-        inputMapper: () => ({
-          testCmd: opts.testCmd || "",
-          testConfigPath: opts.testConfigPath || "",
-          allowNoTests: opts.allowNoTests ?? false,
-          ppcommitPreset: opts.ppcommitPreset || "strict",
-        }),
-      },
-      {
-        machine: prCreationMachine,
-        inputMapper: () => ({
-          type: opts.prType || "feat",
-          semanticName: opts.prSemanticName || "",
-          title: opts.prTitle || "",
-          description: opts.prDescription || "",
-          base: opts.prBase || "",
-        }),
-      },
     ],
     {},
   );
+  allResults.push(...phase1.results);
+  if (phase1.status !== "completed") {
+    return { ...phase1, results: allResults, durationMs: Date.now() - start };
+  }
+
+  // Heartbeat after phase 1 (issue draft)
+  await updateHeartbeat(ctx);
+
+  if (ctx.cancelToken.cancelled) {
+    return {
+      status: "cancelled",
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Phase 2: planning + review loop
+  const loopResult = await runPlanLoop(runner, ctx, {
+    planningMachine,
+    planReviewMachine,
+  });
+  allResults.push(...loopResult.results);
+  if (loopResult.status !== "completed") {
+    return {
+      status: loopResult.status,
+      error: loopResult.error,
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Heartbeat after phase 2 (planning + review)
+  await updateHeartbeat(ctx);
+
+  if (ctx.cancelToken.cancelled) {
+    return {
+      status: "cancelled",
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Phase 3: implementation → quality-review → PR creation
+  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
+  const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
+  const phase3 = await runWithMachineRetry(
+    () =>
+      runner.run(
+        [
+          {
+            machine: implementationMachine,
+            inputMapper: () => ({}),
+          },
+          {
+            machine: qualityReviewMachine,
+            inputMapper: () => ({
+              testCmd: opts.testCmd || "",
+              testConfigPath: opts.testConfigPath || "",
+              allowNoTests: opts.allowNoTests ?? false,
+              ppcommitPreset: opts.ppcommitPreset || "strict",
+            }),
+          },
+          {
+            machine: prCreationMachine,
+            inputMapper: () => ({
+              type: opts.prType || "feat",
+              semanticName: opts.prSemanticName || "",
+              title: opts.prTitle || "",
+              description: opts.prDescription || "",
+              base: opts.prBase || "",
+            }),
+          },
+        ],
+        {},
+      ),
+    {
+      maxRetries: maxMachineRetries,
+      backoffMs: retryBackoffMs,
+      ctx,
+      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
+        if (attempt >= maxRetries) return;
+        const failed = findFailedMachineResult(result);
+        if (failed?.machine !== "develop.quality_review") return;
+        await injectRetryFeedback(
+          ctx,
+          failed.machine,
+          failed.error || result.error || "",
+        );
+      },
+    },
+  );
+  allResults.push(...phase3.results);
+
+  // Heartbeat after phase 3 (implementation + review + PR)
+  await updateHeartbeat(ctx);
+
+  return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
 
 /**
@@ -240,13 +460,20 @@ export async function runDevelopLoop(opts, ctx) {
     testCmd,
     testConfigPath,
     allowNoTests = false,
+    issueSource = "",
     localIssuesDir = "",
     ppcommitPreset = "",
+    issueIds = [],
   } = opts;
 
-  // Step 1: List issues (local or remote)
+  // List issues (local or remote)
   const listResult = await issueListMachine.run(
-    { projectFilter, localIssuesDir },
+    {
+      projectFilter,
+      issueSource: issueSource || undefined,
+      localIssuesDir,
+      issueIds: issueIds.length > 0 ? issueIds : undefined,
+    },
     ctx,
   );
   if (listResult.status !== "ok") {
@@ -268,7 +495,7 @@ export async function runDevelopLoop(opts, ctx) {
     };
   }
 
-  // Step 2: Build dependency-aware queue
+  // Build dependency-aware queue
   const { queue: issues, rationale } = buildIssueQueue(rawIssues);
 
   ctx.log({
@@ -281,21 +508,42 @@ export async function runDevelopLoop(opts, ctx) {
     source: listResult.data.source || "remote",
   });
 
-  // Initialize loop state
-  const loopState = loadLoopState(ctx.workspaceDir);
+  // Initialize loop state — merge terminal statuses from prior run
+  const loopState = await loadLoopState(ctx.workspaceDir);
+  const priorQueue = loopState.issueQueue || [];
+  const priorById = new Map(priorQueue.map((q) => [q.id, q]));
+
   loopState.status = "running";
-  loopState.issueQueue = issues.map((iss) => ({
-    ...iss,
-    dependsOn: iss.dependsOn || iss.depends_on || [],
-    status: "pending",
-    branch: null,
-    prUrl: null,
-    error: null,
-    baseBranch: null,
-  }));
+  loopState.issueQueue = issues.map((iss) => {
+    const prior = priorById.get(iss.id);
+    const isTerminal =
+      prior && ["completed", "failed", "skipped"].includes(prior.status);
+    return {
+      ...iss,
+      dependsOn: iss.dependsOn || iss.depends_on || [],
+      status: isTerminal ? prior.status : "pending",
+      branch: isTerminal ? prior.branch : null,
+      prUrl: isTerminal ? prior.prUrl : null,
+      error: isTerminal ? prior.error : null,
+      baseBranch: isTerminal ? prior.baseBranch : null,
+      startedAt: isTerminal ? prior.startedAt : null,
+      completedAt: isTerminal ? prior.completedAt : null,
+    };
+  });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  const prevLoopRunId = loopState.runId;
+  loopState.runId = ctx.runId || loopState.runId;
+  await saveLoopState(ctx.workspaceDir, loopState, {
+    guardRunId: prevLoopRunId,
+  });
+
+  const loopRunId = randomUUID().slice(0, 8);
+  runHooks(ctx, loopRunId, "loop_start", "", {
+    status: "running",
+    total: issues.length,
+    method: rationale.method,
+  });
 
   /** @type {Map<string, { status: string, branch?: string }>} */
   const outcomeMap = new Map();
@@ -304,12 +552,51 @@ export async function runDevelopLoop(opts, ctx) {
   let failed = 0;
   let skipped = 0;
 
+  // Seed outcomeMap from ALL terminal issues in the prior run (includes
+  // issues no longer in the active list, e.g. closed/merged)
+  for (const prior of priorQueue) {
+    if (["completed", "failed", "skipped"].includes(prior.status)) {
+      outcomeMap.set(prior.id, {
+        status: prior.status,
+        branch: prior.branch || undefined,
+      });
+    }
+  }
+  for (const entry of loopState.issueQueue) {
+    if (entry.status === "completed") completed++;
+    else if (entry.status === "failed") failed++;
+    else if (entry.status === "skipped") skipped++;
+  }
+
   // Helper: process a single issue
   async function processIssue(issue, i, { isRetry = false } = {}) {
+    const currentStatus = loopState.issueQueue[i].status;
+    if (["completed", "failed", "skipped"].includes(currentStatus)) {
+      results.push({
+        ...issue,
+        status: currentStatus,
+        branch: loopState.issueQueue[i].branch,
+        prUrl: loopState.issueQueue[i].prUrl,
+        error: loopState.issueQueue[i].error,
+      });
+      return currentStatus;
+    }
+
     loopState.currentIndex = i;
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();
-    saveLoopState(ctx.workspaceDir, loopState);
+    loopState.issueQueue[i].status = "in_progress";
+    loopState.issueQueue[i].branch = buildIssueBranchName(issue);
+    loopState.issueQueue[i].startedAt = new Date().toISOString();
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+
+    const issueEnv = {
+      CODER_HOOK_ISSUE_ID: String(issue.id || ""),
+      CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
+    };
+    runHooks(ctx, loopRunId, "issue_start", "", {}, issueEnv);
 
     const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
       issue,
@@ -332,7 +619,17 @@ export async function runDevelopLoop(opts, ctx) {
         status: "skipped",
         error: "All dependencies failed",
       });
-      saveLoopState(ctx.workspaceDir, loopState);
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        { status: "skipped", reason: "all_dependencies_failed" },
+        issueEnv,
+      );
       return "skipped";
     }
 
@@ -343,7 +640,17 @@ export async function runDevelopLoop(opts, ctx) {
     if (hasUnresolvedDeps && !isRetry) {
       ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
       loopState.issueQueue[i].status = "deferred";
-      saveLoopState(ctx.workspaceDir, loopState);
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_deferred",
+        "",
+        { status: "deferred" },
+        issueEnv,
+      );
       return "deferred";
     }
 
@@ -391,13 +698,31 @@ export async function runDevelopLoop(opts, ctx) {
           prUrl: prResult?.data?.prUrl,
           branch,
         });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_complete",
+          "",
+          { status: "completed", prUrl: prResult?.data?.prUrl, branch },
+          issueEnv,
+        );
       } else {
         const errText = pipelineResult.error || "";
         if (isRateLimitError(errText) && !isRetry) {
           ctx.log({ event: "issue_rate_limited", issueId: issue.id });
           loopState.issueQueue[i].status = "deferred";
           loopState.issueQueue[i].error = errText;
-          saveLoopState(ctx.workspaceDir, loopState);
+          await saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_deferred",
+            "",
+            { status: "deferred" },
+            issueEnv,
+          );
           return "deferred";
         }
         loopState.issueQueue[i].status = "failed";
@@ -409,13 +734,31 @@ export async function runDevelopLoop(opts, ctx) {
           status: "failed",
           error: errText,
         });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_failed",
+          "",
+          { status: "failed", error: errText },
+          issueEnv,
+        );
       }
     } catch (err) {
       if (isRateLimitError(err.message) && !isRetry) {
         ctx.log({ event: "issue_rate_limited", issueId: issue.id });
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = err.message;
-        saveLoopState(ctx.workspaceDir, loopState);
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred" },
+          issueEnv,
+        );
         return "deferred";
       }
       loopState.issueQueue[i].status = "failed";
@@ -423,9 +766,19 @@ export async function runDevelopLoop(opts, ctx) {
       outcomeMap.set(issue.id, { status: "failed" });
       failed++;
       results.push({ ...issue, status: "failed", error: err.message });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: err.message },
+        issueEnv,
+      );
     }
 
-    saveLoopState(ctx.workspaceDir, loopState);
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
 
     // Reset between issues
     const issueStatus = loopState.issueQueue[i].status;
@@ -439,7 +792,60 @@ export async function runDevelopLoop(opts, ctx) {
   // Main pass
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
-    await processIssue(issues[i], i);
+    const issueStatus = await processIssue(issues[i], i);
+    if (issueStatus !== "failed") continue;
+
+    const failedIssueId = issues[i]?.id;
+    ctx.log({
+      event: "loop_aborted_on_failure",
+      issueId: failedIssueId,
+      reason: "issue_failed",
+    });
+
+    for (let j = 0; j < loopState.issueQueue.length; j++) {
+      const entry = loopState.issueQueue[j];
+      if (entry.status !== "pending" && entry.status !== "deferred") continue;
+
+      entry.status = "skipped";
+      entry.error = "Skipped: prior issue failed";
+      entry.completedAt = new Date().toISOString();
+      outcomeMap.set(entry.id, { status: "skipped" });
+      skipped++;
+
+      const issueEnv = {
+        CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+        CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+      };
+      ctx.log({
+        event: "issue_skipped",
+        issueId: entry.id,
+        reason: "aborted_after_failure",
+        failedIssueId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        {
+          status: "skipped",
+          reason: "aborted_after_failure",
+          failedIssueId,
+        },
+        issueEnv,
+      );
+
+      results.push({
+        ...issues[j],
+        status: "skipped",
+        error: entry.error,
+      });
+    }
+
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+    break;
   }
 
   // Retry pass for deferred issues whose dependencies are now resolved
@@ -566,7 +972,7 @@ Analyze and produce a markdown report with these sections:
 
 Be concrete: reference file paths, line ranges, and function names. If no issues exist for a section, say "None detected."`;
 
-      const { agent } = ctx.agentPool.getAgent("reviewer", {
+      const { agent } = ctx.agentPool.getAgent("coalesce", {
         scope: "repo",
       });
       const res = await agent.executeWithRetry(prompt, {
@@ -595,7 +1001,17 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 
   loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
   loopState.completedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  await saveLoopState(ctx.workspaceDir, loopState, {
+    guardRunId: loopState.runId,
+  });
+
+  runHooks(ctx, loopRunId, "loop_complete", "", {
+    status: loopState.status,
+    completed,
+    failed,
+    skipped,
+    deferred: stillDeferred,
+  });
 
   return {
     status: loopState.status,
@@ -621,7 +1037,12 @@ async function resetForNextIssue(
 
   // Delete workflow artifacts
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
+  for (const name of [
+    "ISSUE.md",
+    "PLAN.md",
+    "PLANREVIEW.md",
+    "REVIEW_FINDINGS.md",
+  ]) {
     const p = path.join(artifactsDir, name);
     if (existsSync(p)) rmSync(p, { force: true });
   }
@@ -665,7 +1086,7 @@ async function resetForNextIssue(
           cwd: repoRoot,
           encoding: "utf8",
         });
-        spawnSync("git", ["clean", "-fd"], {
+        spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
           cwd: repoRoot,
           encoding: "utf8",
         });

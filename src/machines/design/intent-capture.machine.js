@@ -1,4 +1,4 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { extractJson } from "../../helpers.js";
@@ -20,19 +20,18 @@ export default defineMachine({
       ctx.workspaceDir,
       ctx.config.design?.specDir || "spec/UI",
     );
-    await mkdir(specDir, { recursive: true });
+    mkdirSync(specDir, { recursive: true });
 
     // Load reference screenshots if provided
     const references = [];
     for (const screenshotPath of input.screenshotPaths) {
       const absPath = path.resolve(ctx.workspaceDir, screenshotPath);
-      try {
-        await access(absPath);
+      if (existsSync(absPath)) {
         references.push({
           path: screenshotPath,
           exists: true,
         });
-      } catch {
+      } else {
         ctx.log({ event: "design_screenshot_missing", path: screenshotPath });
       }
     }
@@ -74,8 +73,8 @@ Return ONLY valid JSON in this schema:
   "notes": "string"
 }`;
 
-    const res = await agent.executeWithRetry(parsePrompt, {
-      timeoutMs: 1000 * 60 * 5,
+    const res = await agent.execute(parsePrompt, {
+      timeoutMs: ctx.config.workflow.timeouts.designStep,
     });
     if (res.exitCode !== 0) {
       throw new Error(
@@ -106,16 +105,7 @@ Return ONLY valid JSON in this schema:
       capturedAt: new Date().toISOString(),
     };
     const intentPath = path.join(specDir, "intent.json");
-    await writeFile(intentPath, `${JSON.stringify(intentSpec, null, 2)}\n`);
-
-    const stitchAvailable = ctx.config.design?.stitch?.enabled === true;
-    if (!stitchAvailable) {
-      ctx.log({
-        event: "design_stitch_unavailable",
-        message:
-          "Stitch is not enabled. ui_generation will fail unless design.stitch.enabled=true in coder.json.",
-      });
-    }
+    writeFileSync(intentPath, `${JSON.stringify(intentSpec, null, 2)}\n`);
 
     ctx.log({
       event: "design_intent_captured",
@@ -129,7 +119,6 @@ Return ONLY valid JSON in this schema:
         specDir,
         intentPath,
         intentSpec,
-        stitchAvailable,
       },
     };
   },

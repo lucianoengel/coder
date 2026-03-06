@@ -1,6 +1,8 @@
-import { access, readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { formatCommandFailure, stripAgentNoise } from "../../helpers.js";
 import {
   IssueItemSchema,
   IssuesPayloadSchema,
@@ -12,48 +14,63 @@ import { parseAgentPayload, requireExitZero } from "./_shared.js";
 
 const HANG_TIMEOUT_MS = 1000 * 60 * 2;
 
+function isNoiseOnlyGeminiResult(agentName, res) {
+  if (agentName !== "gemini") return "";
+  const cleaned = stripAgentNoise(res?.stdout || "").trim();
+  return cleaned
+    ? ""
+    : "gemini returned no response content (noise-only stdout)";
+}
+
 /**
  * Load issues from a local manifest.json + markdown files.
  *
  * @param {string} issuesDir - Absolute path to issues directory
  * @returns {{ issues: z.infer<typeof IssueItemSchema>[], recommended_index: number } | null}
  */
-async function loadLocalIssues(issuesDir) {
+function loadLocalIssues(issuesDir) {
   const manifestPath = path.join(issuesDir, "manifest.json");
-  if (
-    !(await access(manifestPath)
-      .then(() => true)
-      .catch(() => false))
-  )
-    return null;
+  if (!existsSync(manifestPath)) return null;
 
   let manifest;
   try {
-    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   } catch {
     return null;
   }
 
   if (!Array.isArray(manifest.issues)) return null;
 
+  // Detect workspace root from manifest if present (research pipeline writes filePath relative to workspace)
+  const workspaceRoot = manifest.repoRoot || manifest.repoPath || "";
+
   const issues = [];
   for (const entry of manifest.issues) {
-    if (!entry.id || !entry.file) continue;
+    if (!entry.id || (!entry.file && !entry.filePath)) continue;
+
+    // Resolve markdown path: entry.file is relative to parent of issuesDir,
+    // entry.filePath (from research pipeline) is relative to workspace root
+    let mdPath;
+    if (entry.file) {
+      mdPath = path.resolve(path.dirname(issuesDir), entry.file);
+    } else if (entry.filePath) {
+      mdPath = path.isAbsolute(entry.filePath)
+        ? entry.filePath
+        : path.resolve(
+            workspaceRoot || path.dirname(issuesDir),
+            entry.filePath,
+          );
+    }
 
     // Resolve title from manifest or markdown file
     let title = entry.title || "";
-    if (!title && entry.file) {
-      const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
-      if (
-        await access(mdPath)
-          .then(() => true)
-          .catch(() => false)
-      ) {
+    if (!title && mdPath) {
+      if (existsSync(mdPath)) {
         try {
-          const content = await readFile(mdPath, "utf8");
+          const content = readFileSync(mdPath, "utf8");
           const heading = content.match(/^#\s+(.+)/m);
           title = heading
-            ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
+            ? heading[1].replace(/^ISSUE-\d+\s*[\u2014\u2013-]\s*/, "").trim()
             : entry.id;
         } catch {
           title = entry.id;
@@ -76,17 +93,135 @@ async function loadLocalIssues(issuesDir) {
   return issues.length > 0 ? { issues, recommended_index: 0 } : null;
 }
 
+/**
+ * Fetch open GitHub issues via gh CLI.
+ *
+ * @param {string} cwd - Directory to run gh in (repo root)
+ * @returns {object[]}
+ */
+function fetchGithubIssues(cwd) {
+  const res = spawnSync(
+    "gh",
+    [
+      "issue",
+      "list",
+      "--json",
+      "number,title,body,labels,url,comments",
+      "--state",
+      "open",
+      "--limit",
+      "50",
+    ],
+    { cwd, encoding: "utf8", timeout: 15000 },
+  );
+  if (res.error) {
+    throw new Error(`gh: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(
+      formatCommandFailure("gh issue list failed", {
+        exitCode: res.status ?? 1,
+        stderr: res.stderr || "",
+        stdout: res.stdout || "",
+      }),
+    );
+  }
+  if (!res.stdout) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    throw new Error(
+      `gh returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `gh returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Fetch open GitLab issues via glab CLI.
+ *
+ * @param {string} cwd - Directory to run glab in (repo root)
+ * @returns {object[]}
+ */
+function fetchGitlabIssues(cwd) {
+  // glab issue list --output json is not available in glab v1.x;
+  // use `glab api` which returns proper JSON with full pagination support.
+  // Slim the response to only fields the AI needs to avoid ARG_MAX (E2BIG).
+  const allIssues = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = spawnSync(
+      "glab",
+      ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
+      { cwd, encoding: "utf8", timeout: 15000 },
+    );
+    if (res.error) {
+      throw new Error(`glab: ${res.error.message}`);
+    }
+    if (res.status !== 0) {
+      throw new Error(
+        formatCommandFailure("glab issue list failed", {
+          exitCode: res.status ?? 1,
+          stderr: res.stderr || "",
+          stdout: res.stdout || "",
+        }),
+      );
+    }
+    if (!res.stdout) break;
+    let parsed;
+    try {
+      parsed = JSON.parse(res.stdout);
+    } catch {
+      throw new Error(
+        `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    // Keep only the fields needed for issue selection to avoid E2BIG when
+    // the full payload is embedded in a bash heredoc prompt.
+    const slim = parsed.map((i) => ({
+      iid: i.iid,
+      title: i.title,
+      description: (i.description || "").slice(0, 500),
+      labels: (i.labels || []).map((l) => (typeof l === "string" ? l : l.name)),
+      web_url: i.web_url,
+    }));
+    allIssues.push(...slim);
+    if (parsed.length < 100) break;
+  }
+  return allIssues;
+}
+
 export default defineMachine({
   name: "develop.issue_list",
   description:
-    "List assigned GitHub, GitLab, and Linear issues, rate difficulty, return with recommended_index.",
+    "List open issues from the configured source (github, linear, gitlab, or local), rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
+    issueSource: z
+      .enum(["github", "linear", "gitlab", "local"])
+      .optional()
+      .describe("Override config.workflow.issueSource for this run"),
     localIssuesDir: z
       .string()
       .default("")
       .describe(
         "Path to local issues directory with manifest.json (absolute or relative to workspace)",
+      ),
+    issueIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Force specific issue IDs to be processed (e.g. ["#84", "#82"] for GitHub). Skips AI selection.',
       ),
   }),
   mcpAnnotations: {
@@ -97,67 +232,110 @@ export default defineMachine({
   },
 
   async execute(input, ctx) {
-    // Try local issues first if requested
-    if (input.localIssuesDir) {
-      const resolvedDir = path.isAbsolute(input.localIssuesDir)
-        ? input.localIssuesDir
-        : path.resolve(ctx.workspaceDir, input.localIssuesDir);
+    const issueSource = input.issueSource || ctx.config.workflow.issueSource;
+    const issueIds =
+      input.issueIds && input.issueIds.length > 0 ? input.issueIds : null;
 
-      const local = await loadLocalIssues(resolvedDir);
-      if (local) {
-        ctx.log({
-          event: "step1_local_issues",
-          count: local.issues.length,
-          dir: resolvedDir,
-        });
-        return {
-          status: "ok",
-          data: {
-            issues: local.issues,
-            recommended_index: local.recommended_index,
-            source: "local",
-          },
-        };
+    // Local issues — no agent needed
+    if (issueSource === "local") {
+      const rawDir =
+        input.localIssuesDir ||
+        ctx.config.workflow.localIssuesDir ||
+        ".coder/local-issues";
+      const resolvedDir = path.isAbsolute(rawDir)
+        ? rawDir
+        : path.resolve(ctx.workspaceDir, rawDir);
+
+      const local = loadLocalIssues(resolvedDir);
+      if (!local) {
+        throw new Error(
+          `issueSource is "local" but no valid manifest found at ${resolvedDir}`,
+        );
       }
+
+      const filtered = issueIds
+        ? local.issues.filter((iss) =>
+            issueIds.some(
+              (id) => id.toLowerCase() === String(iss.id).toLowerCase(),
+            ),
+          )
+        : local.issues;
+
       ctx.log({
-        event: "step1_local_issues_fallback",
-        reason: "manifest not found or empty, falling back to remote",
+        event: "step1_local_issues",
+        count: filtered.length,
         dir: resolvedDir,
+        issueIds: issueIds || undefined,
       });
+      return {
+        status: "ok",
+        data: {
+          issues: filtered,
+          recommended_index: 0,
+          source: "local",
+        },
+      };
+    }
+
+    // Forced issue IDs for github/gitlab — fetch and filter without AI
+    if (issueIds && (issueSource === "github" || issueSource === "gitlab")) {
+      const fetchFn =
+        issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
+      const raw = fetchFn(ctx.workspaceDir);
+      const idSet = new Set(issueIds.map((id) => id.toLowerCase()));
+      const matched = raw
+        .filter((issue) => {
+          const id = `#${issue.number ?? issue.iid}`;
+          return idSet.has(id.toLowerCase());
+        })
+        .map((issue) => {
+          const parsed = IssueItemSchema.safeParse({
+            source: issueSource,
+            id: `#${issue.number ?? issue.iid}`,
+            title: issue.title,
+            repo_path: "",
+            difficulty: 3,
+            reason: "Forced by issueIds parameter",
+            depends_on: [],
+          });
+          return parsed.success ? parsed.data : null;
+        })
+        .filter(Boolean);
+      ctx.log({
+        event: "step1_forced_ids",
+        source: issueSource,
+        count: matched.length,
+        issueIds,
+      });
+      return {
+        status: "ok",
+        data: { issues: matched, recommended_index: 0, source: "forced" },
+      };
     }
 
     // Remote issue listing via agent
     const { agentName, agent } = ctx.agentPool.getAgent("issueSelector", {
       scope: "workspace",
     });
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
-    // Sub-step: list Linear teams if LINEAR_API_KEY is available
+    // Sub-step: list Linear teams when source is linear
     if (
+      issueSource === "linear" &&
       ctx.secrets.LINEAR_API_KEY &&
       (!state.steps.listedProjects || !state.linearProjects)
     ) {
       ctx.log({ event: "step0_list_projects" });
       try {
-        const projPrompt = `Use your Linear MCP to list all teams I have access to.
-
-Return ONLY valid JSON in this schema:
-{
-  "projects": [
-    {
-      "id": "string (team ID)",
-      "name": "string (team name)",
-      "key": "string (team key, e.g. ENG)"
-    }
-  ]
-}`;
+        const projPrompt = `Use your Linear MCP to list all teams I have access to.\n\nReturn ONLY valid JSON in this schema:\n{\n  "projects": [\n    {\n      "id": "string (team ID)",\n      "name": "string (team name)",\n      "key": "string (team key, e.g. ENG)"\n    }\n  ]\n}`;
         const projRes = await agent.executeWithRetry(projPrompt, {
           structured: true,
-          timeoutMs: 1000 * 60 * 5,
+          timeoutMs: ctx.config.workflow.timeouts.issueSelection,
           hangTimeoutMs: HANG_TIMEOUT_MS,
           retries: 2,
           retryOnRateLimit: true,
+          isTransientResult: (res) => isNoiseOnlyGeminiResult(agentName, res),
         });
         requireExitZero(agentName, "project listing failed", projRes);
 
@@ -177,7 +355,7 @@ Return ONLY valid JSON in this schema:
           if (match) state.selectedProject = match;
         }
         state.steps.listedProjects = true;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       } catch (err) {
         ctx.log({
           event: "step0_list_projects_failed",
@@ -185,22 +363,15 @@ Return ONLY valid JSON in this schema:
         });
         state.steps.listedProjects = true;
         state.linearProjects ||= [];
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
     }
 
     // Main issue listing
-    ctx.log({ event: "step1_list_issues" });
-    let projectFilterClause = "";
-    if (state.selectedProject) {
-      projectFilterClause = `\nOnly include Linear issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
-    } else if (input.projectFilter) {
-      projectFilterClause = `\nOnly include Linear issues from projects matching "${input.projectFilter}".`;
-    }
+    ctx.log({ event: "step1_list_issues", issueSource });
 
-    const listPrompt = `Use your GitHub MCP, GitLab MCP, and Linear MCP to list the issues assigned to me.${projectFilterClause}
-
-Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
+    const TAIL = `
+Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
 For each issue, also identify any dependency relationships — if an issue explicitly references or requires another issue to be completed first, include the dependency in "depends_on" as the issue ID string.
 
@@ -208,7 +379,7 @@ Return ONLY valid JSON in this schema:
 {
   "issues": [
     {
-      "source": "github" | "gitlab" | "linear",
+      "source": "<source>",
       "id": "string",
       "title": "string",
       "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
@@ -220,12 +391,49 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
+    let listPrompt;
+    if (issueSource === "github") {
+      const issues = fetchGithubIssues(ctx.workspaceDir);
+      ctx.log({
+        event: "step1_fetch",
+        source: "github",
+        count: issues.length,
+      });
+      const issueList =
+        issues.length > 0
+          ? `Here are the open GitHub issues for this repo (fetched via gh CLI):\n${JSON.stringify(issues, null, 2)}`
+          : "No open GitHub issues found.";
+      listPrompt = `${issueList}\n\nUse "github" as the source value and "#<number>" as the id (e.g. "#42").\n${TAIL}`;
+    } else if (issueSource === "gitlab") {
+      const issues = fetchGitlabIssues(ctx.workspaceDir);
+      ctx.log({
+        event: "step1_fetch",
+        source: "gitlab",
+        count: issues.length,
+      });
+      const issueList =
+        issues.length > 0
+          ? `Here are the open GitLab issues for this repo (fetched via glab CLI):\n${JSON.stringify(issues, null, 2)}`
+          : "No open GitLab issues found.";
+      listPrompt = `${issueList}\n\nUse "gitlab" as the source value and "#<iid>" as the id (e.g. "#42").\n${TAIL}`;
+    } else {
+      // linear — agent fetches via MCP
+      let projectFilterClause = "";
+      if (state.selectedProject) {
+        projectFilterClause = `\nOnly include issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
+      } else if (input.projectFilter) {
+        projectFilterClause = `\nOnly include issues from projects matching "${input.projectFilter}".`;
+      }
+      listPrompt = `Use your Linear MCP to list open issues.${projectFilterClause}\n\nUse "linear" as the source value and the Linear issue identifier as the id (e.g. "ENG-42").\n${TAIL}`;
+    }
+
     const res = await agent.executeWithRetry(listPrompt, {
       structured: true,
-      timeoutMs: 1000 * 60 * 10,
+      timeoutMs: ctx.config.workflow.timeouts.issueSelection,
       hangTimeoutMs: HANG_TIMEOUT_MS,
       retries: 2,
       retryOnRateLimit: true,
+      isTransientResult: (r) => isNoiseOnlyGeminiResult(agentName, r),
     });
     requireExitZero(agentName, "issue listing failed", res);
 
@@ -235,7 +443,7 @@ Return ONLY valid JSON in this schema:
 
     state.steps.listedIssues = true;
     state.issuesPayload = issuesPayload;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return {
       status: "ok",
