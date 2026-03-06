@@ -75,7 +75,7 @@ Return ONLY valid JSON in this schema:
 }`;
 
     const res = await agent.execute(parsePrompt, {
-      timeoutMs: 1000 * 60 * 5,
+      timeoutMs: ctx.config.workflow.timeouts.designStep,
     });
     if (res.exitCode !== 0) {
       throw new Error(
@@ -108,15 +108,6 @@ Return ONLY valid JSON in this schema:
     const intentPath = path.join(specDir, "intent.json");
     await writeFile(intentPath, `${JSON.stringify(intentSpec, null, 2)}\n`);
 
-    const stitchAvailable = ctx.config.design?.stitch?.enabled === true;
-    if (!stitchAvailable) {
-      ctx.log({
-        event: "design_stitch_unavailable",
-        message:
-          "Stitch is not enabled. ui_generation will fail unless design.stitch.enabled=true in coder.json.",
-      });
-    }
-
     ctx.log({
       event: "design_intent_captured",
       screens: parsed.screens.length,
@@ -129,7 +120,6 @@ Return ONLY valid JSON in this schema:
         specDir,
         intentPath,
         intentSpec,
-        stitchAvailable,
       },
     };
   },
