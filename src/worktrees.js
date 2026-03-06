@@ -37,6 +37,7 @@ function sourceShortCode(source) {
   if (source === "github") return "GH";
   if (source === "gitlab") return "GL";
   if (source === "linear") return "LN";
+  if (source === "gitlab") return "GL";
   const normalized = String(source || "")
     .toUpperCase()
     .replace(/[^0-9A-Z]+/g, "");
