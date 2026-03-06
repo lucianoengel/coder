@@ -12,14 +12,15 @@ Each pipeline step is an independent **machine** — callable as a standalone MC
 | `gemini` CLI | Default agent for issue selection, plan review, research |
 | `claude` (Claude Code) | Default agent for planning, implementation |
 | `codex` CLI | Default agent for code review, committing |
-| `gh` CLI | GitHub issue listing, PR creation |
+| `gh` CLI | GitHub issue listing and PR creation (`issueSource: "github"`) |
+| `glab` CLI | GitLab issue listing and MR creation (`issueSource: "gitlab"`) |
 
 Agent role assignments are configurable — any role can use any of the three backends.
 
 ## Install
 
 ```bash
-npm install -g @canesin/coder-mcp
+npm install -g @canesin/coder
 ```
 
 Or from source:
@@ -81,10 +82,10 @@ coder serve               # start MCP server (delegates to coder-mcp)
 
 ### Develop
 
-Picks up GitHub/Linear issues, implements code, pushes PRs:
+Picks up issues from GitHub, GitLab, Linear, or a local manifest, implements code, and pushes PRs/MRs:
 
 ```
-issue-list → issue-draft → planning → plan-review → implementation → quality-review → pr-creation
+issue-list → issue-draft → planning ⇄ plan-review → implementation → quality-review → pr-creation
 ```
 
 ```
@@ -171,8 +172,9 @@ All state lives under `.coder/` (gitignored):
 | `workflow-state.json` | Per-issue step completion |
 | `loop-state.json` | Multi-issue develop queue |
 | `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
+| `steering/` | Persistent project context (`product.md`, `structure.md`, `tech.md`) |
 | `scratchpad/` | Research pipeline checkpoints |
-| `logs/*.jsonl` | Structured event logs |
+| `logs/*.jsonl` | Structured event logs (tagged with `runId`) |
 | `state.db` | Optional SQLite mirror |
 
 ## Configuration
@@ -197,7 +199,15 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
       "reviewer": "codex",
       "committer": "codex"
     },
-    "wip": { "push": true, "autoCommit": true }
+    // Issue source: "github" (default), "linear", "gitlab", or "local"
+    // github → gh CLI, gitlab → glab CLI, linear → Linear MCP, local → .coder/local-issues/
+    "issueSource": "github",
+    "localIssuesDir": ".coder/local-issues",
+    "wip": { "push": true, "autoCommit": true },
+    // Post-step hooks (shell commands triggered on workflow events)
+    "hooks": [
+      { "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
+    ]
   },
 
   // Commit hygiene (tree-sitter AST-based)
@@ -237,6 +247,29 @@ Built-in commit hygiene checker using tree-sitter AST analysis. Blocks:
 
 Optional LLM-assisted checks via Gemini API for deeper analysis.
 
+## Steering context
+
+Persistent project knowledge in `.coder/steering/` that agents receive automatically:
+
+```bash
+coder_steering_generate   # scan repo, create product.md / structure.md / tech.md
+coder_steering_update     # refresh after significant changes
+```
+
+Also available as the `coder://steering` MCP resource.
+
+## Hooks
+
+User-defined shell commands triggered on workflow events. Configure in `config.workflow.hooks[]`:
+
+```jsonc
+{ "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
+```
+
+Events: `workflow_start`, `workflow_complete`, `workflow_failed`, `machine_start`, `machine_complete`, `machine_error`, `loop_start`, `loop_complete`, `issue_start`, `issue_complete`, `issue_failed`, `issue_skipped`, `issue_deferred`.
+
+Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATUS`, `CODER_HOOK_DATA`, and `CODER_HOOK_RUN_ID` environment variables. Failures are logged but never break the workflow.
+
 ## Safety
 
 - Workspace boundaries enforced — agents operate within the target repo
@@ -244,6 +277,7 @@ Optional LLM-assisted checks via Gemini API for deeper analysis.
 - Health-check URLs restricted to localhost
 - One active run per workspace
 - Session TTL with automatic cleanup (HTTP mode)
+- Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
 
@@ -254,7 +288,8 @@ Optional LLM-assisted checks via Gemini API for deeper analysis.
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI + ppcommit LLM checks (auto-aliased) |
 | `ANTHROPIC_API_KEY` | Claude Code |
 | `OPENAI_API_KEY` | Codex CLI |
-| `GITHUB_TOKEN` | GitHub API (issues, PRs) |
+| `GITHUB_TOKEN` | GitHub API (issues, PRs) — used by `gh` CLI |
+| `GITLAB_TOKEN` / `GITLAB_API_TOKEN` | GitLab API — used by `glab` CLI |
 | `LINEAR_API_KEY` | Linear issue tracking |
 | `GOOGLE_STITCH_API_KEY` | Design pipeline (Google Stitch) |
 

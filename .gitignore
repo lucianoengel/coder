@@ -5,7 +5,7 @@ node_modules/
 .mcp.json
 coder.json
 
-# Local issue specs for coder workflow
+# Local issue specs
 .coder-local-issues/
 issues/
 
@@ -16,6 +16,10 @@ issues/
 # Workflow artifacts
 .coder/
 .coder-worktrees/
+ISSUE.md
+PLAN.md
+PLANREVIEW.md
+REVIEW.md
 
 # IDE
 .idea/
