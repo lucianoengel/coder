@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import {
   buildPrBodyFromIssue,
@@ -19,7 +19,7 @@ import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 export default defineMachine({
   name: "develop.pr_creation",
   description:
-    "Create pull request or merge request: commit changes, push to remote, create PR/MR via gh/glab CLI.",
+    "Create pull request: commit changes, push to remote, create PR/MR via gh or glab.",
   inputSchema: z.object({
     type: z.string().default("feat"),
     semanticName: z.string().default(""),
@@ -29,7 +29,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.testsPassed) {
@@ -112,10 +112,13 @@ export default defineMachine({
       : state.branch;
     const baseBranch = input.base || state.baseBranch || null;
 
+    // Detect hosting platform from origin remote URL.
+    const isGitLab = detectRemoteType(repoRoot) === "gitlab";
+
     // Push to remote
     const push = spawnSync(
       "git",
-      ["push", "-u", "origin", `HEAD:${remoteBranch}`],
+      ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, encoding: "utf8" },
     );
     if (push.status !== 0) throw new Error(`git push failed: ${push.stderr}`);
@@ -124,12 +127,8 @@ export default defineMachine({
     let body = input.description || "";
     if (!body) {
       const paths = artifactPaths(ctx.artifactsDir);
-      if (
-        await access(paths.issue)
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        const issueMd = await readFile(paths.issue, "utf8");
+      if (existsSync(paths.issue)) {
+        const issueMd = readFileSync(paths.issue, "utf8");
         body = buildPrBodyFromIssue(issueMd, { maxLines: 10 });
       }
     }
@@ -141,13 +140,18 @@ export default defineMachine({
     // Append issue link
     if (state.selected) {
       const { source, id } = state.selected;
-      if (source === "github" || source === "gitlab") {
+      if (source === "github") {
         const normalized = String(id).trim();
         body += normalized.includes("#")
           ? `\n\nCloses ${normalized}`
           : `\n\nCloses #${normalized}`;
       } else if (source === "linear") {
         body += `\n\nResolves ${id}`;
+      } else if (source === "gitlab") {
+        const normalized = String(id).trim();
+        body += normalized.includes("#")
+          ? `\n\nCloses ${normalized}`
+          : `\n\nCloses #${normalized}`;
       }
     }
 
@@ -155,29 +159,32 @@ export default defineMachine({
       input.title ||
       `${normalizedType}: ${state.selected?.title || input.semanticName || state.branch}`;
 
-    // Create PR/MR
-    const source = state.selected?.source;
-    const useGitlab =
-      source === "gitlab" ||
-      (source === "local" && detectRemoteType(repoRoot) === "gitlab");
-
-    let pr;
-    let cliLabel;
-    if (useGitlab) {
+    // Create PR or MR depending on the hosting platform
+    let prUrl;
+    if (isGitLab) {
       const mrArgs = [
         "mr",
         "create",
-        "--source-branch",
-        remoteBranch,
         "--title",
         prTitle,
         "--description",
         body,
+        "--source-branch",
+        remoteBranch,
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
-      pr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
-      cliLabel = "glab mr create";
+      const mr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
+      if (mr.status !== 0)
+        throw new Error(`glab mr create failed: ${mr.stderr || mr.stdout}`);
+      const mrRaw = (mr.stdout || "").trim();
+      const mrLines = mrRaw.split("\n").filter((l) => l.trim());
+      prUrl = mrLines.find((l) => l.startsWith("http")) || mrLines.pop() || "";
+      if (!prUrl || !prUrl.startsWith("http")) {
+        throw new Error(
+          `glab mr create did not return an MR URL. Output:\n${mrRaw || "(empty)"}`,
+        );
+      }
     } else {
       const prArgs = [
         "pr",
@@ -190,26 +197,24 @@ export default defineMachine({
         body,
       ];
       if (baseBranch) prArgs.push("--base", baseBranch);
-      pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
-      cliLabel = "gh pr create";
-    }
-    if (pr.status !== 0)
-      throw new Error(`${cliLabel} failed: ${pr.stderr || pr.stdout}`);
-
-    const raw = (pr.stdout || "").trim();
-    const lines = raw.split("\n").filter((l) => l.trim());
-    const prUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
-    if (!prUrl || !prUrl.startsWith("http")) {
-      throw new Error(
-        `${cliLabel} did not return a URL. Output:\n${raw || "(empty)"}`,
-      );
+      const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+      if (pr.status !== 0)
+        throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
+      const raw = (pr.stdout || "").trim();
+      const lines = raw.split("\n").filter((l) => l.trim());
+      prUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
+      if (!prUrl || !prUrl.startsWith("http")) {
+        throw new Error(
+          `gh pr create did not return a PR URL. Output:\n${raw || "(empty)"}`,
+        );
+      }
     }
 
     state.prUrl = prUrl;
     state.prBranch = remoteBranch;
     state.prBase = baseBranch;
     state.steps.prCreated = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     ctx.log({
       event: "pr_created",

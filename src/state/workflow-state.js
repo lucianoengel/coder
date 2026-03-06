@@ -1,22 +1,49 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  access,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { assign, setup } from "xstate";
 import { z } from "zod";
 import {
-  runSqliteIgnoreErrors,
+  runSqliteAsyncIgnoreErrors,
   sqlEscape,
   sqliteAvailable,
 } from "../sqlite.js";
 
 const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 
+const _writeChains = new Map(); // Map<workspaceDir, Promise<void>>
+const _sqliteWriteChains = new Map(); // Map<sqlitePath, Promise<void>>
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-function persistSnapshotToSqlite(sqlitePath, payload) {
-  if (!sqlitePath || !sqliteAvailable()) return;
-  mkdirSync(path.dirname(sqlitePath), { recursive: true });
+async function atomicWriteJson(filePath, data) {
+  const dir = path.dirname(filePath);
+  const tmpPath = filePath + ".tmp";
+  let op = "mkdir";
+  try {
+    await mkdir(dir, { recursive: true });
+    op = "write";
+    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+    op = "rename";
+    await rename(tmpPath, filePath);
+  } catch (err) {
+    const code = err.code ? ` (${err.code})` : "";
+    throw new Error(
+      `Failed to write state ${filePath} [${op}]${code}: ${err.message}`,
+    );
+  }
+}
+
+async function _persistSnapshotToSqliteInner(sqlitePath, payload) {
+  await mkdir(path.dirname(sqlitePath), { recursive: true });
   const valueJson = JSON.stringify(payload.value ?? null);
   const contextJson = JSON.stringify(payload.context ?? {});
   const sql = `
@@ -35,18 +62,49 @@ ON CONFLICT(run_id) DO UPDATE SET
   context_json=excluded.context_json,
   updated_at=excluded.updated_at;
 `;
-  runSqliteIgnoreErrors(sqlitePath, sql);
+  await runSqliteAsyncIgnoreErrors(sqlitePath, sql);
+}
+
+async function persistSnapshotToSqlite(sqlitePath, payload) {
+  if (!sqlitePath || !sqliteAvailable()) return;
+  let currentChain = _sqliteWriteChains.get(sqlitePath) || Promise.resolve();
+  currentChain = currentChain
+    .then(() => _persistSnapshotToSqliteInner(sqlitePath, payload))
+    .catch(() => {});
+  _sqliteWriteChains.set(sqlitePath, currentChain);
+  await currentChain;
+}
+
+async function fileExists(p) {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readGuardRunId(statePath, guardRunId) {
+  if (!guardRunId) return false;
+  if (!(await fileExists(statePath))) return false;
+  try {
+    const existing = JSON.parse(await readFile(statePath, "utf8"));
+    if (existing.runId && existing.runId !== guardRunId) return true;
+  } catch {}
+  return false;
 }
 
 export function workflowStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "workflow-state.json");
 }
 
-export function saveWorkflowSnapshot(
+export async function saveWorkflowSnapshot(
   workspaceDir,
-  { runId, workflow = "develop", snapshot, sqlitePath = "" },
+  { runId, workflow = "develop", snapshot, sqlitePath = "", guardRunId = "" },
 ) {
   if (!runId || !snapshot) return null;
+  const statePath = workflowStatePathFor(workspaceDir);
+  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -55,18 +113,34 @@ export function saveWorkflowSnapshot(
     context: snapshot.context,
     updatedAt: nowIso(),
   };
-  const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  persistSnapshotToSqlite(sqlitePath, payload);
+  let writeErr;
+  let currentWriteChain = _writeChains.get(workspaceDir) || Promise.resolve();
+  currentWriteChain = currentWriteChain
+    .then(() => atomicWriteJson(statePath, payload))
+    .catch((e) => {
+      writeErr = e;
+    });
+  _writeChains.set(workspaceDir, currentWriteChain);
+  await currentWriteChain;
+  if (writeErr) throw writeErr;
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function saveWorkflowTerminalState(
+export async function saveWorkflowTerminalState(
   workspaceDir,
-  { runId, workflow = "develop", state, context = {}, sqlitePath = "" },
+  {
+    runId,
+    workflow = "develop",
+    state,
+    context = {},
+    sqlitePath = "",
+    guardRunId = "",
+  },
 ) {
   if (!runId || !state) return null;
+  const statePath = workflowStatePathFor(workspaceDir);
+  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -75,19 +149,27 @@ export function saveWorkflowTerminalState(
     context,
     updatedAt: nowIso(),
   };
-  const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  persistSnapshotToSqlite(sqlitePath, payload);
+  let writeErr;
+  let currentWriteChain = _writeChains.get(workspaceDir) || Promise.resolve();
+  currentWriteChain = currentWriteChain
+    .then(() => atomicWriteJson(statePath, payload))
+    .catch((e) => {
+      writeErr = e;
+    });
+  _writeChains.set(workspaceDir, currentWriteChain);
+  await currentWriteChain;
+  if (writeErr) throw writeErr;
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function loadWorkflowSnapshot(workspaceDir) {
+export async function loadWorkflowSnapshot(workspaceDir) {
   const p = workflowStatePathFor(workspaceDir);
-  if (!existsSync(p)) return null;
+  if (!(await fileExists(p))) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+    return JSON.parse(await readFile(p, "utf8"));
+  } catch (err) {
+    console.error(`[coder] corrupt workflow state ${p}: ${err.message}`);
     return null;
   }
 }
@@ -207,7 +289,7 @@ export function createWorkflowLifecycleMachine() {
 
 const LoopIssueResultSchema = z
   .object({
-    source: z.enum(["github", "gitlab", "linear", "local"]),
+    source: z.enum(["github", "linear", "gitlab", "local"]),
     id: z.string().min(1),
     title: z.string(),
     repoPath: z.string().default(""),
@@ -252,26 +334,93 @@ export function loopStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "loop-state.json");
 }
 
-export function loadLoopState(workspaceDir) {
+export async function loadLoopState(workspaceDir) {
   const p = loopStatePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return LoopStateSchema.parse(raw);
   } catch {
     return LoopStateSchema.parse({});
   }
 }
 
-export function saveLoopState(workspaceDir, loopState) {
+export async function saveLoopState(
+  workspaceDir,
+  loopState,
+  { guardRunId = "" } = {},
+) {
   const p = loopStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
+  if (guardRunId) {
+    try {
+      const existing = JSON.parse(await readFile(p, "utf8"));
+      if (existing.runId && existing.runId !== guardRunId) return;
+    } catch {}
+  }
+  let writeErr;
+  let currentWriteChain = _writeChains.get(workspaceDir) || Promise.resolve();
+  currentWriteChain = currentWriteChain
+    .then(() => atomicWriteJson(p, loopState))
+    .catch((e) => {
+      writeErr = e;
+    });
+  _writeChains.set(workspaceDir, currentWriteChain);
+  await currentWriteChain;
+  if (writeErr) throw writeErr;
+}
+
+// --- CLI control signals (file-based cancel/pause/resume) ---
+
+export function controlSignalPath(workspaceDir) {
+  return path.join(workspaceDir, ".coder", "control.json");
+}
+
+export async function writeControlSignal(workspaceDir, signal) {
+  const p = controlSignalPath(workspaceDir);
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, JSON.stringify({ ...signal, ts: nowIso() }), "utf8");
+}
+
+/**
+ * Poll for a file-based control signal and apply it to the cancelToken.
+ * Returns the action name if a signal was consumed, otherwise null.
+ */
+export async function pollControlSignal(workspaceDir, cancelToken, runId) {
+  const p = controlSignalPath(workspaceDir);
+  if (!(await fileExists(p))) return null;
+  try {
+    const signal = JSON.parse(await readFile(p, "utf8"));
+    if (signal.runId && signal.runId !== runId) return null;
+    if (signal.action === "cancel") {
+      cancelToken.cancelled = true;
+      try {
+        await unlink(p);
+      } catch {}
+      return "cancel";
+    }
+    if (signal.action === "pause") {
+      cancelToken.paused = true;
+      try {
+        await unlink(p);
+      } catch {}
+      return "pause";
+    }
+    if (signal.action === "resume") {
+      cancelToken.paused = false;
+      try {
+        await unlink(p);
+      } catch {}
+      return "resume";
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Per-issue state ---
 
 const SelectedIssueSchema = z.object({
-  source: z.enum(["github", "gitlab", "linear", "local"]),
+  source: z.enum(["github", "linear", "gitlab", "local"]),
   id: z.string().min(1),
   title: z.string().min(1),
   repo_path: z.string().default(""),
@@ -288,7 +437,10 @@ const StepsSchema = z
     wrotePlan: z.boolean().optional(),
     wroteCritique: z.boolean().optional(),
     implemented: z.boolean().optional(),
-    codexReviewed: z.boolean().optional(),
+    reviewerCompleted: z.boolean().optional(),
+    reviewRound: z.number().int().min(0).optional(),
+    reviewVerdict: z.enum(["APPROVED", "REVISE"]).optional(),
+    programmerFixedRound: z.number().int().min(0).optional(),
     ppcommitInitiallyClean: z.boolean().optional(),
     ppcommitClean: z.boolean().optional(),
     testsPassed: z.boolean().optional(),
@@ -315,6 +467,7 @@ const IssueStateSchema = z
     issuesPayload: z.any().optional(),
     steps: StepsSchema,
     claudeSessionId: z.string().nullable().default(null),
+    reviewerSessionId: z.string().nullable().default(null),
     lastError: z.string().nullable().default(null),
     reviewFingerprint: z.string().nullable().default(null),
     reviewedAt: z.string().nullable().default(null),
@@ -337,6 +490,7 @@ const DEFAULT_ISSUE_STATE = {
   answers: null,
   steps: {},
   claudeSessionId: null,
+  reviewerSessionId: null,
   lastError: null,
   reviewFingerprint: null,
   reviewedAt: null,
@@ -351,18 +505,26 @@ export function statePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "state.json");
 }
 
-export function loadState(workspaceDir) {
+export async function loadState(workspaceDir) {
   const p = statePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return IssueStateSchema.parse(raw);
   } catch {
     return { ...DEFAULT_ISSUE_STATE };
   }
 }
 
-export function saveState(workspaceDir, state) {
+export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+  let writeErr;
+  let currentWriteChain = _writeChains.get(workspaceDir) || Promise.resolve();
+  currentWriteChain = currentWriteChain
+    .then(() => atomicWriteJson(p, state))
+    .catch((e) => {
+      writeErr = e;
+    });
+  _writeChains.set(workspaceDir, currentWriteChain);
+  await currentWriteChain;
+  if (writeErr) throw writeErr;
 }

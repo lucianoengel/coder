@@ -17,7 +17,7 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -132,21 +132,33 @@ FORBIDDEN patterns:
     let res;
     try {
       res = await programmerAgent.execute(implPrompt, {
-        resumeId:
-          programmerName === "claude" ? state.claudeSessionId : undefined,
-        timeoutMs: 1000 * 60 * 60,
+        resumeId: state.claudeSessionId || undefined,
+        timeoutMs: ctx.config.workflow.timeouts.implementation,
       });
-      requireExitZero(programmerName, "implementation failed", res);
     } catch (err) {
-      if (state.claudeSessionId) {
+      if (
+        err.name === "CommandFatalStderrError" &&
+        err.category === "auth" &&
+        state.claudeSessionId
+      ) {
+        ctx.log({
+          event: "session_resume_failed",
+          sessionId: state.claudeSessionId,
+        });
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
+        // Fresh session loses prior planning context — acceptable per GH-89
+        res = await programmerAgent.execute(implPrompt, {
+          timeoutMs: ctx.config.workflow.timeouts.implementation,
+        });
+      } else {
+        throw err;
       }
-      throw err;
     }
+    requireExitZero(programmerName, "implementation failed", res);
 
     state.steps.implemented = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const diffStat = spawnSync("git", ["diff", "--stat", "HEAD"], {
       cwd: repoRoot,

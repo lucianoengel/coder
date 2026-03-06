@@ -1,6 +1,6 @@
 {
-  "name": "@canesin/coder-mcp",
-  "version": "0.3.0",
+  "name": "@canesin/coder",
+  "version": "1.0.0-rc.0",
   "description": "Multi-agent coding workflow orchestrator (gemini-cli + claude-code + codex-cli)",
   "license": "MIT",
   "repository": {
@@ -24,8 +24,7 @@
   ],
   "type": "module",
   "bin": {
-    "coder": "./bin/coder.js",
-    "coder-mcp": "./bin/coder-mcp.js"
+    "coder": "./bin/coder.js"
   },
   "files": [
     "bin/",
@@ -45,18 +44,19 @@
     "lint:fix": "biome check --write ./bin ./src ./test package.json",
     "format": "biome format --write ./bin ./src ./test package.json",
     "format:check": "biome format ./bin ./src ./test package.json",
-    "test": "NODE_ENV=test node --test test/*.test.js",
+    "test": "NODE_ENV=test node --experimental-test-module-mocks --test test/*.test.js",
     "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "cli-table3": "^0.6.5",
     "deepmerge": "^4.3.1",
     "jsonrepair": "^3.12.0",
     "p-retry": "^7.1.1",
+    "qs": "^6.15.0",
     "tree-sitter": "^0.25.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-go": "^0.25.0",
@@ -66,7 +66,7 @@
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "xstate": "^5.28.0",
-    "zod": "^3.25.76"
+    "zod": "^4.3.6"
   },
   "overrides": {
     "tree-sitter-java": {
@@ -80,6 +80,6 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.15"
+    "@biomejs/biome": "^2.4.4"
   }
 }
