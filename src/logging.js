@@ -63,7 +63,7 @@ export function ensureLogsDir(workspaceDir) {
   mkdirSync(logsDir(workspaceDir), { recursive: true });
 }
 
-export function makeJsonlLogger(workspaceDir, name) {
+export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
   ensureLogsDir(workspaceDir);
   const p = path.join(logsDir(workspaceDir), `${name}.jsonl`);
 
@@ -75,7 +75,9 @@ export function makeJsonlLogger(workspaceDir, name) {
 
   return (event) => {
     const safeEvent = sanitizeLogEvent(event);
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...safeEvent });
+    const entry = { ts: new Date().toISOString(), ...safeEvent };
+    if (runId) entry.runId = runId;
+    const line = JSON.stringify(entry);
     stream.write(line + "\n");
   };
 }

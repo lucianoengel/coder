@@ -73,7 +73,7 @@ Return ONLY valid JSON in this schema:
         artifactName: "web-references",
         role: "issueSelector",
         prompt: referencePrompt,
-        timeoutMs: 1000 * 60 * 8,
+        timeoutMs: ctx.config.workflow.timeouts.webSearch,
         ...stepOpts,
       });
       webReferenceMap = referencesRes.payload || webReferenceMap;

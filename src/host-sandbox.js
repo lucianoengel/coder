@@ -41,6 +41,15 @@ export class CommandTimeoutError extends Error {
   }
 }
 
+export class CommandFatalStderrError extends Error {
+  constructor(pattern, category) {
+    super(`Command aborted after fatal stderr match [${category}]: ${pattern}`);
+    this.name = "CommandFatalStderrError";
+    this.pattern = pattern;
+    this.category = category;
+  }
+}
+
 export class McpStartupError extends Error {
   constructor(agentName, failedServers) {
     super(
@@ -54,6 +63,13 @@ export class McpStartupError extends Error {
 
 function mergeEnv(base, extra) {
   return { ...base, ...(extra || {}) };
+}
+
+function stripNestedClaudeEnv(env) {
+  const clean = { ...(env || {}) };
+  delete clean.CLAUDECODE;
+  delete clean.CLAUDE_CODE_ENTRYPOINT;
+  return clean;
 }
 
 function filterEnv(env) {
@@ -76,20 +92,26 @@ export class HostSandboxProvider {
 
   async create(envs = {}, agentType = "default", workingDirectory) {
     const sandboxId = `host-${agentType}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const mergedEnv = stripNestedClaudeEnv(
+      mergeEnv(mergeEnv(filterEnv(process.env), this.baseEnv), envs),
+    );
     return new HostSandboxInstance({
       sandboxId,
       cwd: workingDirectory || this.defaultCwd,
-      env: mergeEnv(mergeEnv(filterEnv(process.env), this.baseEnv), envs),
+      env: mergedEnv,
       useSystemdRun: this.useSystemdRun,
     });
   }
 
   async resume(sandboxId) {
     // "Resume" is best-effort for host execution: return a fresh instance using current env/cwd.
+    const mergedEnv = stripNestedClaudeEnv(
+      mergeEnv(filterEnv(process.env), this.baseEnv),
+    );
     return new HostSandboxInstance({
       sandboxId,
       cwd: this.defaultCwd,
-      env: mergeEnv(filterEnv(process.env), this.baseEnv),
+      env: mergedEnv,
       useSystemdRun: this.useSystemdRun,
     });
   }
@@ -137,7 +159,10 @@ class HostSandboxInstance extends EventEmitter {
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
-          (p) => typeof p === "string" && p.trim() !== "",
+          (p) =>
+            typeof p?.pattern === "string" &&
+            p.pattern.trim() !== "" &&
+            typeof p?.category === "string",
         )
       : [];
 
@@ -288,14 +313,11 @@ class HostSandboxInstance extends EventEmitter {
         if (killOnStderrPatterns.length > 0) {
           const lower = chunk.toLowerCase();
           const hit = killOnStderrPatterns.find((p) =>
-            lower.includes(String(p).toLowerCase()),
+            lower.includes(p.pattern.toLowerCase()),
           );
           if (hit) {
             terminateChild();
-            const err = new Error(
-              `Command aborted after stderr auth failure: ${hit}`,
-            );
-            err.name = "CommandAuthError";
+            const err = new CommandFatalStderrError(hit.pattern, hit.category);
             err.stdout = stdout;
             err.stderr = stderr;
             settle(err);
@@ -329,16 +351,61 @@ class HostSandboxInstance extends EventEmitter {
       stopSystemdUnit(this.currentUnit);
       this.currentUnit = null;
     }
-    if (this.currentChild) {
-      try {
-        if (this.currentChild.pid)
-          process.kill(-this.currentChild.pid, "SIGTERM");
-      } catch {
-        this.currentChild.kill("SIGTERM");
-      }
-      this.currentChild = null;
+    const child = this.currentChild;
+    if (!child) {
       this.currentCommand = null;
+      return;
     }
+    this.currentChild = null;
+    this.currentCommand = null;
+
+    // Always SIGTERM the process group — descendants may outlive the leader
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGTERM");
+    } catch {
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+    }
+
+    // Leader already exited: close/exit won't fire again.
+    // Grace period for SIGTERM, then SIGKILL the group.
+    if (child.exitCode !== null) {
+      await new Promise((resolve) => {
+        setTimeout(() => {
+          try {
+            if (child.pid) process.kill(-child.pid, "SIGKILL");
+          } catch {}
+          resolve();
+        }, 500);
+      });
+      return;
+    }
+
+    // Wait for exit with SIGKILL escalation
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (!done) {
+          done = true;
+          resolve();
+        }
+      };
+      child.once("close", finish);
+      child.once("exit", finish);
+      child.once("error", finish);
+      setTimeout(() => {
+        if (done) return;
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+        setTimeout(finish, 2000);
+      }, 5000);
+    });
   }
   _launch(command, { background, timeoutMs }) {
     if (this.useSystemdRun) {
