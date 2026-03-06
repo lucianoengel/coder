@@ -12,10 +12,13 @@ function makeTmpWorkspace() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "gh118-"));
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
-  execSync("git init && git commit --allow-empty -m init", {
-    cwd: tmp,
-    stdio: "ignore",
-  });
+  execSync(
+    "git init && git config user.email 'test@test.com' && git config user.name 'Test User' && git commit --allow-empty -m init",
+    {
+      cwd: tmp,
+      stdio: "ignore",
+    },
+  );
   return tmp;
 }
 
