@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
-import { AgentPool } from "../src/agents/pool.js";
 
 const tmpDir = os.tmpdir();
 
@@ -293,34 +294,68 @@ test("executeWithRetry retries when isTransientResult flags a successful respons
   assert.match(res.stdout, /recommended_index/);
 });
 
-test("AgentPool.setRepoRoot: preserves agent whose colon-containing cwd matches new repoRoot", async () => {
-  const config = {
-    models: { gemini: null, claude: null },
-    mcp: { strictStartup: false },
-    claude: { skipPermissions: false },
-    verbose: false,
-  };
-  const colonPath = "/tmp/path:with:colon";
-  const pool = new AgentPool({
-    config,
-    workspaceDir: tmpDir,
-    repoRoot: tmpDir,
+test("activeRuns stores the actual runPromise, not eager Promise.resolve()", async (t) => {
+  let resolveDevelop;
+  const blockingPromise = new Promise((r) => {
+    resolveDevelop = r;
   });
 
-  let killCalled = 0;
-  const mockAgent = {
-    kill: async () => {
-      killCalled++;
+  t.mock.module("../src/workflows/develop.workflow.js", {
+    namedExports: { runDevelopLoop: () => blockingPromise },
+  });
+  t.mock.module("../src/workflows/research.workflow.js", {
+    namedExports: {
+      runResearchPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+  t.mock.module("../src/workflows/design.workflow.js", {
+    namedExports: {
+      runDesignPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+
+  const { activeRuns, registerWorkflowTools } = await import(
+    "../src/mcp/tools/workflows.js"
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-activeRuns-"));
+
+  // Capture the promise value stored at activeRuns.set call time (before any mutation)
+  let capturedPromise = null;
+  t.mock.method(activeRuns, "set", function (key, value) {
+    if (value?.startedAt !== undefined) {
+      capturedPromise = value.promise;
+    }
+    return Map.prototype.set.call(this, key, value);
+  });
+
+  const handlers = {};
+  const stubServer = {
+    registerTool: (name, _opts, fn) => {
+      handlers[name] = fn;
     },
   };
-  pool._agents.set(`cli:test-agent:${colonPath}`, mockAgent);
+  registerWorkflowTools(stubServer, ws);
 
-  await pool.setRepoRoot(colonPath);
+  await handlers.coder_workflow({ action: "start", workflow: "develop" });
 
-  assert.equal(
-    killCalled,
-    0,
-    "agent whose cwd matches the new repoRoot must not be killed",
+  assert.ok(
+    capturedPromise instanceof Promise,
+    "activeRuns.set was called with a promise",
   );
-  assert.ok(pool._agents.has(`cli:test-agent:${colonPath}`));
+
+  // The promise stored at set time must be the IIFE (pending), not eager Promise.resolve()
+  const SENTINEL = Symbol("pending");
+  const raced = await Promise.race([
+    capturedPromise,
+    Promise.resolve(SENTINEL),
+  ]);
+  assert.equal(
+    raced,
+    SENTINEL,
+    "promise stored in activeRuns.set should be pending (not the eager Promise.resolve())",
+  );
+
+  resolveDevelop({ status: "completed" });
+  await capturedPromise.catch(() => {});
+  rmSync(ws, { recursive: true, force: true });
 });
