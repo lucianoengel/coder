@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { AgentRolesInputSchema, resolveConfig } from "../../config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
+import { buildSecrets, isPidAlive, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
+import { withStartLock } from "../../state/start-lock.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
@@ -16,16 +18,17 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
 } from "../../state/workflow-state.js";
+import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
-const HEARTBEAT_STALE_MS = 30_000;
+const HEARTBEAT_STALE_MS = 900_000;
 
 /** @type {Map<string, { actor: ReturnType<typeof createActor>, workspace: string, sqlitePath: string }>} */
 const workflowActors = new Map();
-/** @type {Map<string, { cancelToken: { cancelled: boolean, paused: boolean }, workspace: string, promise: Promise, startedAt: string }>} */
+/** @type {Map<string, { cancelToken: { cancelled: boolean, paused: boolean }, agentPool?: import("../../agents/pool.js").AgentPool, workspace: string, promise: Promise, startedAt: string }>} */
 export const activeRuns = new Map();
 
 function workflowSqlitePath(workspaceDir) {
@@ -43,13 +46,13 @@ function startWorkflowActor({
 }) {
   const sqlitePath = workflowSqlitePath(workspaceDir);
   const actor = createActor(createWorkflowLifecycleMachine());
-  actor.subscribe(async () => {
-    await saveWorkflowSnapshot(workspaceDir, {
+  actor.subscribe(() => {
+    saveWorkflowSnapshot(workspaceDir, {
       runId,
       workflow,
       snapshot: actor.getPersistedSnapshot(),
       sqlitePath,
-    });
+    }).catch(() => {});
   });
   actor.start();
   actor.send({
@@ -76,16 +79,7 @@ function workflowStateName(snapshot) {
   }
 }
 
-function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (err?.code === "EPERM") return true;
-    return false;
-  }
-}
+const HEARTBEAT_TRULY_STUCK_MS = 1_800_000; // 30 minutes
 
 function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   const heartbeatTs = lastHeartbeatAt ? Date.parse(lastHeartbeatAt) : NaN;
@@ -98,12 +92,24 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   const shouldCheckStale =
     status === "running" || status === "paused" || status === "cancelling";
   const pidStale = shouldCheckStale && runnerAlive === false;
-  const isStale = shouldCheckStale && (heartbeatStale || pidStale);
-  const staleReason = isStale
-    ? pidStale
-      ? "runner_process_not_alive"
-      : "heartbeat_stale"
-    : null;
+
+  // Trust PID over heartbeat: if the runner process is alive but heartbeat is
+  // stale, don't mark as stale unless heartbeat exceeds the truly-stuck threshold
+  const heartbeatTrulyStuck =
+    heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_TRULY_STUCK_MS;
+  const isStale =
+    shouldCheckStale &&
+    (pidStale || (heartbeatStale && (!runnerAlive || heartbeatTrulyStuck)));
+
+  let staleReason = null;
+  if (isStale) {
+    if (pidStale) staleReason = "runner_process_not_alive";
+    else if (heartbeatTrulyStuck) staleReason = "heartbeat_truly_stuck";
+    else staleReason = "heartbeat_stale";
+  } else if (shouldCheckStale && heartbeatStale && runnerAlive) {
+    staleReason = "heartbeat_stale_runner_alive";
+  }
+
   return {
     heartbeatAgeMs,
     runnerPid: runnerPid ?? null,
@@ -158,6 +164,7 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
         completedAt: diskState.completedAt,
       },
       sqlitePath: workflowSqlitePath(workspaceDir),
+      guardRunId: runId,
     });
   }
   return true;
@@ -196,14 +203,9 @@ async function readWorkflowStatus(workspaceDir) {
 
   let agentActivity = null;
   const activityPath = path.join(workspaceDir, ".coder", "activity.json");
-  if (
-    await access(activityPath).then(
-      () => true,
-      () => false,
-    )
-  ) {
+  if (existsSync(activityPath)) {
     try {
-      agentActivity = JSON.parse(await readFile(activityPath, "utf8"));
+      agentActivity = JSON.parse(readFileSync(activityPath, "utf8"));
     } catch {
       /* best-effort */
     }
@@ -211,14 +213,9 @@ async function readWorkflowStatus(workspaceDir) {
 
   let mcpHealth = null;
   const healthPath = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (
-    await access(healthPath).then(
-      () => true,
-      () => false,
-    )
-  ) {
+  if (existsSync(healthPath)) {
     try {
-      mcpHealth = JSON.parse(await readFile(healthPath, "utf8"));
+      mcpHealth = JSON.parse(readFileSync(healthPath, "utf8"));
     } catch {
       /* best-effort */
     }
@@ -244,11 +241,12 @@ async function readWorkflowStatus(workspaceDir) {
   };
 }
 
-async function readWorkflowEvents(
+function readWorkflowEvents(
   workspaceDir,
   workflowName,
   afterSeq = 0,
   limit = 50,
+  { filterRunId = "" } = {},
 ) {
   const logPath = path.join(
     workspaceDir,
@@ -256,15 +254,9 @@ async function readWorkflowEvents(
     "logs",
     `${workflowName}.jsonl`,
   );
-  if (
-    !(await access(logPath).then(
-      () => true,
-      () => false,
-    ))
-  )
-    return { events: [], nextSeq: 0, totalLines: 0 };
+  if (!existsSync(logPath)) return { events: [], nextSeq: 0, totalLines: 0 };
 
-  const content = await readFile(logPath, "utf8");
+  const content = readFileSync(logPath, "utf8");
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];
@@ -272,7 +264,9 @@ async function readWorkflowEvents(
   const end = Math.min(start + limit, totalLines);
   for (let i = start; i < end; i++) {
     try {
-      events.push({ seq: i + 1, ...JSON.parse(allLines[i]) });
+      const parsed = JSON.parse(allLines[i]);
+      if (filterRunId && parsed.runId && parsed.runId !== filterRunId) continue;
+      events.push({ seq: i + 1, ...parsed });
     } catch {
       events.push({ seq: i + 1, raw: allLines[i] });
     }
@@ -396,11 +390,23 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           .string()
           .default("")
           .describe("Start-only: path to test config JSON"),
+        issueSource: z
+          .enum(["github", "linear", "gitlab", "local"])
+          .optional()
+          .describe(
+            "Develop start-only: issue source override (github | linear | gitlab | local); defaults to config.workflow.issueSource",
+          ),
         localIssuesDir: z
           .string()
           .default("")
           .describe(
             "Develop start-only: path to local issues directory with manifest.json",
+          ),
+        issueIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Develop start-only: force specific issue IDs, skipping AI selection (e.g. ["#84", "#82"] for GitHub)',
           ),
         destructiveReset: z
           .boolean()
@@ -511,11 +517,13 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "events") {
-          const result = await readWorkflowEvents(
+          const currentStatus = await readWorkflowStatus(ws);
+          const result = readWorkflowEvents(
             ws,
             workflow,
             params.afterSeq,
             params.limit,
+            { filterRunId: currentStatus.runId || "" },
           );
           return {
             content: [
@@ -532,59 +540,106 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "start") {
-          // Check for active runs
-          for (const [id, run] of activeRuns) {
-            if (run.workspace !== ws) continue;
-            const diskState = await loadLoopState(ws);
-            if (
-              ["completed", "failed", "cancelled"].includes(diskState.status)
-            ) {
-              activeRuns.delete(id);
-              workflowActors.delete(id);
-              continue;
+          let startContext;
+          try {
+            startContext = await withStartLock(ws, async () => {
+              // Cancel any active in-memory runs for this workspace
+              for (const [id, run] of activeRuns) {
+                if (run.workspace !== ws) continue;
+                const diskState = await loadLoopState(ws);
+                if (
+                  ["completed", "failed", "cancelled"].includes(
+                    diskState.status,
+                  )
+                ) {
+                  activeRuns.delete(id);
+                  workflowActors.delete(id);
+                  continue;
+                }
+                // Force-cancel the old run: set flag, kill agents, await exit
+                run.cancelToken.cancelled = true;
+                try {
+                  await run.agentPool?.killAll();
+                } catch {}
+                const actorEntry = workflowActors.get(id);
+                if (actorEntry?.workspace === ws) {
+                  actorEntry.actor.send({
+                    type: "CANCEL",
+                    at: new Date().toISOString(),
+                  });
+                }
+                await Promise.race([
+                  run.promise,
+                  new Promise((r) => setTimeout(r, 10_000)),
+                ]);
+                await markRunTerminalOnDisk(ws, id, workflow, "cancelled");
+                activeRuns.delete(id);
+                workflowActors.delete(id);
+              }
+
+              // Also check disk state — guards against restarts where activeRuns was cleared
+              {
+                const diskLoopState = await loadLoopState(ws);
+                if (
+                  diskLoopState.status === "running" ||
+                  diskLoopState.status === "paused"
+                ) {
+                  // Mark stale or orphaned disk runs as failed so the new run can start
+                  await markRunTerminalOnDisk(
+                    ws,
+                    diskLoopState.runId,
+                    workflow,
+                    "failed",
+                  );
+                }
+              }
+
+              const nextRunId = randomUUID().slice(0, 8);
+              const initialAgent = params.agentRoles?.issueSelector || "gemini";
+
+              // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
+              const priorLoopState = await loadLoopState(ws);
+
+              // Save initial loop state
+              await saveLoopState(ws, {
+                version: 1,
+                runId: nextRunId,
+                goal: params.goal,
+                status: "running",
+                projectFilter: params.projectFilter || null,
+                maxIssues: params.maxIssues || null,
+                issueQueue: priorLoopState.issueQueue || [],
+                currentIndex: 0,
+                currentStage: `${workflow}_starting`,
+                currentStageStartedAt: new Date().toISOString(),
+                activeAgent: initialAgent,
+                lastHeartbeatAt: new Date().toISOString(),
+                runnerPid: process.pid,
+                startedAt: new Date().toISOString(),
+                completedAt: null,
+              });
+
+              return { nextRunId, initialAgent };
+            });
+          } catch (err) {
+            if (err?.code === "WORKFLOW_START_LOCK_BUSY") {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      action,
+                      workflow,
+                      status: "blocked",
+                      reason: "workflow_start_lock_busy",
+                    }),
+                  },
+                ],
+              };
             }
-            // Check if the run is stale before blocking
-            const staleCheck = detectStaleness(diskState);
-            if (staleCheck.isStale) {
-              await markRunTerminalOnDisk(ws, id, workflow, "cancelled");
-              activeRuns.delete(id);
-              workflowActors.delete(id);
-              continue;
-            }
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    error: `Workspace already has active run: ${id}`,
-                  }),
-                },
-              ],
-              isError: true,
-            };
+            throw err;
           }
-
-          const nextRunId = randomUUID().slice(0, 8);
-          const initialAgent = params.agentRoles?.issueSelector || "gemini";
-
-          // Save initial loop state
-          await saveLoopState(ws, {
-            version: 1,
-            runId: nextRunId,
-            goal: params.goal,
-            status: "running",
-            projectFilter: params.projectFilter || null,
-            maxIssues: params.maxIssues || null,
-            issueQueue: [],
-            currentIndex: 0,
-            currentStage: `${workflow}_starting`,
-            currentStageStartedAt: new Date().toISOString(),
-            activeAgent: initialAgent,
-            lastHeartbeatAt: new Date().toISOString(),
-            runnerPid: process.pid,
-            startedAt: new Date().toISOString(),
-            completedAt: null,
-          });
+          const { nextRunId, initialAgent } = startContext;
 
           startWorkflowActor({
             workflow,
@@ -595,19 +650,14 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             currentStage: `${workflow}_starting`,
           });
 
-          // Store cancel token for this run
           const cancelToken = { cancelled: false, paused: false };
-          activeRuns.set(nextRunId, {
-            cancelToken,
-            workspace: ws,
-            promise: Promise.resolve(),
-            startedAt: new Date().toISOString(),
-          });
 
-          // Build workflow context
-          const config = resolveConfig(ws, {
-            agentRoles: params.agentRoles,
-          });
+          // Build workflow context — agentRoles must be nested under workflow
+          const overrides = {};
+          if (params.agentRoles) {
+            overrides.workflow = { agentRoles: params.agentRoles };
+          }
+          const config = resolveConfig(ws, overrides);
           const artifactsDir = path.join(ws, ".coder", "artifacts");
           const scratchpadDir = path.join(ws, ".coder", "scratchpad");
           await mkdir(path.join(ws, ".coder"), { recursive: true });
@@ -615,12 +665,15 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           await mkdir(scratchpadDir, { recursive: true });
           ensureLogsDir(ws);
 
-          const log = makeJsonlLogger(ws, workflow);
-          const secrets = buildSecrets(DEFAULT_PASS_ENV);
+          const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });
+          const secrets = buildSecrets(resolvePassEnv(config));
+          const steeringContext = loadSteeringContext(ws);
           const agentPool = new AgentPool({
             config,
             workspaceDir: ws,
             verbose: config.verbose,
+            steeringContext,
+            runId: nextRunId,
           });
 
           const workflowCtx = {
@@ -633,6 +686,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             secrets,
             artifactsDir,
             scratchpadDir,
+            steeringContext,
           };
 
           // Fire and forget — run in background
@@ -649,9 +703,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     testCmd: params.testCmd,
                     testConfigPath: params.testConfigPath,
                     allowNoTests: params.allowNoTests,
+                    issueSource:
+                      params.issueSource || config.workflow.issueSource,
                     localIssuesDir:
                       params.localIssuesDir || config.workflow.localIssuesDir,
                     ppcommitPreset: params.ppcommitPreset,
+                    issueIds: params.issueIds || [],
                   },
                   workflowCtx,
                 );
@@ -722,7 +779,14 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             }
           })();
 
-          activeRuns.get(nextRunId).promise = runPromise;
+          // Store run entry with agentPool so cancel can kill agents
+          activeRuns.set(nextRunId, {
+            cancelToken,
+            agentPool,
+            workspace: ws,
+            promise: runPromise,
+            startedAt: new Date().toISOString(),
+          });
 
           return {
             content: [
@@ -760,6 +824,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           const run = activeRuns.get(runId);
           if (run) {
             run.cancelToken.cancelled = true;
+            try {
+              await run.agentPool?.killAll();
+            } catch {}
             const actorEntry = workflowActors.get(runId);
             if (actorEntry?.workspace === ws) {
               actorEntry.actor.send({

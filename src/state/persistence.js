@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import {
   access,
   appendFile,
@@ -7,7 +6,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { sqlEscape, sqliteAvailable } from "../sqlite.js";
+import { runSqliteAsync, sqlEscape, sqliteAvailable } from "../sqlite.js";
 
 /**
  * Scratchpad persistence — file + optional SQLite sync.
@@ -25,9 +24,10 @@ export class ScratchpadPersistence {
     this.workspaceDir = opts.workspaceDir;
     this.scratchpadDir = opts.scratchpadDir;
     this.sqlitePath = opts.sqlitePath;
-    this._readyPromise = opts.sqliteSync
+    this._sqliteReady = opts.sqliteSync
       ? this._initSqlite()
       : Promise.resolve(false);
+    this._writeChain = Promise.resolve();
   }
 
   async _initSqlite() {
@@ -46,39 +46,8 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
     }
   }
 
-  async _ensureReady() {
-    if (this._sqliteEnabled === undefined) {
-      this._sqliteEnabled = await this._readyPromise;
-    }
-    return this._sqliteEnabled;
-  }
-
   async _runSql(sql) {
-    return new Promise((resolve, reject) => {
-      const proc = spawn("sqlite3", [this.sqlitePath], {
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "",
-        stderr = "";
-      proc.stdout.on("data", (d) => {
-        stdout += d;
-      });
-      proc.stderr.on("data", (d) => {
-        stderr += d;
-      });
-      proc.on("close", (code) => {
-        if (code !== 0)
-          reject(
-            new Error(
-              `sqlite3 failed: ${(stderr || stdout || "").trim() || "unknown error"}`,
-            ),
-          );
-        else resolve(stdout);
-      });
-      proc.on("error", reject);
-      proc.stdin.write(`${sql}\n`);
-      proc.stdin.end();
-    });
+    return runSqliteAsync(this.sqlitePath, sql);
   }
 
   _relPath(absPath) {
@@ -103,37 +72,39 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
   }
 
   async _syncToSqlite(filePath) {
-    if (!(await this._ensureReady())) return;
-    if (
-      !(await access(filePath)
-        .then(() => true)
-        .catch(() => false))
-    )
+    const enabled = await this._sqliteReady;
+    if (!enabled) return;
+    try {
+      await access(filePath);
+    } catch {
       return;
+    }
     const relPath = this._relPath(filePath);
     if (!relPath) return;
-    try {
-      const content = await readFile(filePath, "utf8");
-      const now = new Date().toISOString();
-      await this._runSql(`
+    this._writeChain = this._writeChain
+      .then(async () => {
+        const content = await readFile(filePath, "utf8");
+        const now = new Date().toISOString();
+        await this._runSql(`
 INSERT INTO scratchpad_files (file_path, content, updated_at)
 VALUES ('${sqlEscape(relPath)}', '${sqlEscape(content)}', '${sqlEscape(now)}')
 ON CONFLICT(file_path) DO UPDATE SET
   content = excluded.content,
   updated_at = excluded.updated_at;`);
-    } catch {
-      // best-effort
-    }
+      })
+      .catch(() => {});
+    await this._writeChain;
   }
 
   async restoreFromSqlite(filePath) {
-    if (!(await this._ensureReady())) return false;
-    if (
-      await access(filePath)
-        .then(() => true)
-        .catch(() => false)
-    )
-      return false;
+    const enabled = await this._sqliteReady;
+    if (!enabled) return false;
+    try {
+      await access(filePath);
+      return false; // file already exists
+    } catch {
+      // file doesn't exist — proceed
+    }
     const relPath = this._relPath(filePath);
     if (!relPath) return false;
     try {

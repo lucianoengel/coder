@@ -71,6 +71,35 @@ test("saveState + loadState round-trip", async () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
+test("saveState + loadState round-trip with gitlab source", async () => {
+  const ws = makeTmpDir();
+  const state = {
+    selected: { source: "gitlab", id: "42", title: "Add health endpoint" },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: "feat/add-health-endpoint_GL_42",
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  };
+  await saveState(ws, state);
+  const loaded = await loadState(ws);
+  assert.equal(loaded.selected.source, "gitlab");
+  assert.equal(loaded.selected.id, "42");
+  rmSync(ws, { recursive: true, force: true });
+});
+
 test("loadLoopState returns defaults for nonexistent workspace", async () => {
   const state = await loadLoopState("/nonexistent-path-" + Date.now());
   assert.equal(state.status, "idle");
@@ -220,5 +249,139 @@ test("saveWorkflowTerminalState persists terminal state", async () => {
   assert.equal(loaded.value, "completed");
   assert.equal(loaded.workflow, "research");
 
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveState calls serialize without errors", async () => {
+  const ws = makeTmpDir();
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveState(ws, {
+        selected: { source: "github", id: String(i), title: `Issue ${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded = await loadState(ws);
+  assert.ok(loaded.selected);
+  // Last write wins — id should be "4"
+  assert.equal(loaded.selected.id, "4");
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveState calls from different workspaces maintain isolation", async () => {
+  const ws1 = makeTmpDir();
+  const ws2 = makeTmpDir();
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveState(ws1, {
+        selected: {
+          source: "github",
+          id: `ws1-id-${i}`,
+          title: `WS1 Issue ${i}`,
+        },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+    writes.push(
+      saveState(ws2, {
+        selected: {
+          source: "github",
+          id: `ws2-id-${i}`,
+          title: `WS2 Issue ${i}`,
+        },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded1 = await loadState(ws1);
+  const loaded2 = await loadState(ws2);
+  assert.equal(loaded1.selected.id, "ws1-id-4");
+  assert.equal(loaded2.selected.id, "ws2-id-4");
+  rmSync(ws1, { recursive: true, force: true });
+  rmSync(ws2, { recursive: true, force: true });
+});
+
+test("concurrent saveWorkflowSnapshot calls serialize without errors", async () => {
+  const ws = makeTmpDir();
+  const machine = createWorkflowLifecycleMachine();
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "concurrent-run",
+    workflow: "develop",
+    at: new Date().toISOString(),
+  });
+
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveWorkflowSnapshot(ws, {
+        runId: `run-${i}`,
+        workflow: "develop",
+        snapshot: actor.getPersistedSnapshot(),
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded = await loadWorkflowSnapshot(ws);
+  assert.ok(loaded);
+  // Last write wins
+  assert.equal(loaded.runId, "run-4");
+
+  actor.stop();
   rmSync(ws, { recursive: true, force: true });
 });

@@ -1,279 +1,361 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { CliAgent } from "../src/agents/cli-agent.js";
-import { CoderConfigSchema } from "../src/config.js";
 
-function makeTmpDir() {
-  return mkdtempSync(path.join(os.tmpdir(), "cli-agent-test-"));
+import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
+
+const tmpDir = os.tmpdir();
+
+function makeAgent(agentName, modelOverride) {
+  const config = {
+    models: {
+      gemini: modelOverride?.gemini ?? null,
+      claude: modelOverride?.claude ?? null,
+    },
+    mcp: { strictStartup: false },
+    claude: { skipPermissions: false },
+    verbose: false,
+  };
+  return new CliAgent(agentName, {
+    cwd: tmpDir,
+    workspaceDir: tmpDir,
+    secrets: {},
+    config,
+  });
 }
 
-function makeMinimalConfig(overrides = {}) {
-  const defaults = {
-    models: {
-      gemini: {
-        model: "gemini-pro",
-        apiEndpoint: "https://example.com",
-        apiKeyEnv: "KEY",
-      },
-    },
+const MALICIOUS = "'; touch /tmp/pwned; #";
+const ESCAPED_MALICIOUS = "''\\''; touch /tmp/pwned; #'";
+
+test("gemini: sessionId is ignored (no Gemini equivalent)", () => {
+  const agent = makeAgent("gemini");
+  const cmd = agent._buildCommand("prompt", { sessionId: "some-id" });
+  assert.ok(!cmd.includes("--sandbox-id"));
+  assert.ok(!cmd.includes("--session-id"));
+  assert.ok(!cmd.includes("--resume"));
+});
+
+test("gemini: resumeId maps to --resume latest", () => {
+  const agent = makeAgent("gemini");
+  const cmd = agent._buildCommand("prompt", { resumeId: "some-id" });
+  assert.ok(cmd.includes("--resume latest"));
+  assert.ok(!cmd.includes("--sandbox-id"));
+});
+
+test("gemini: malicious modelName is shell-escaped", () => {
+  const agent = makeAgent("gemini", { gemini: MALICIOUS });
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.includes(`-m ${ESCAPED_MALICIOUS}`));
+  assert.ok(!cmd.includes(`-m '; touch`));
+});
+
+test("gemini: malicious modelName is shell-escaped in structured mode", () => {
+  const agent = makeAgent("gemini", { gemini: MALICIOUS });
+  const cmd = agent._buildCommand("prompt", { structured: true });
+  assert.ok(cmd.includes(`-m ${ESCAPED_MALICIOUS}`));
+  assert.ok(!cmd.includes(`-m '; touch`));
+});
+
+test("claude: malicious sessionId is shell-escaped", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { sessionId: MALICIOUS });
+  assert.ok(cmd.includes(`--session-id ${ESCAPED_MALICIOUS}`));
+  assert.ok(!cmd.includes(`--session-id '; touch`));
+});
+
+test("claude: command includes --no-session-persistence", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.includes("--no-session-persistence"));
+});
+
+test("claude: malicious resumeId is shell-escaped", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { resumeId: MALICIOUS });
+  assert.ok(cmd.includes(`--resume ${ESCAPED_MALICIOUS}`));
+  assert.ok(!cmd.includes(`--resume '; touch`));
+});
+
+test("claude: malicious model name is shell-escaped", () => {
+  const agent = makeAgent("claude", { claude: MALICIOUS });
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.includes(`--model ${ESCAPED_MALICIOUS}`));
+  assert.ok(!cmd.includes(`--model '; touch`));
+});
+
+test("codex: default command uses bypass flag and skips full-auto", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", {});
+  assert.ok(cmd.startsWith("codex exec "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.ok(cmd.includes("--skip-git-repo-check"));
+  assert.ok(!cmd.includes("--full-auto"));
+});
+
+test("codex: resume command uses subcommand with bypass flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { resumeId: "resume-123" });
+  assert.ok(cmd.startsWith("codex exec resume 'resume-123' "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.ok(cmd.includes("--skip-git-repo-check"));
+  assert.ok(!cmd.includes("--full-auto"));
+});
+
+test("resolveAgentName: known agents resolve", () => {
+  assert.equal(resolveAgentName("gemini"), "gemini");
+  assert.equal(resolveAgentName("claude"), "claude");
+  assert.equal(resolveAgentName("codex"), "codex");
+});
+
+test("resolveAgentName: custom agent name resolves", () => {
+  assert.equal(resolveAgentName("aider"), "aider");
+  assert.equal(resolveAgentName("cursor"), "cursor");
+});
+
+test("resolveAgentName: normalizes to lowercase", () => {
+  assert.equal(resolveAgentName("Gemini"), "gemini");
+  assert.equal(resolveAgentName("AIDER"), "aider");
+});
+
+test("resolveAgentName: trims whitespace", () => {
+  assert.equal(resolveAgentName("  claude  "), "claude");
+});
+
+test("resolveAgentName: rejects empty", () => {
+  assert.throws(() => resolveAgentName(""), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects null and undefined", () => {
+  assert.throws(() => resolveAgentName(null), /Invalid agent name/);
+  assert.throws(() => resolveAgentName(undefined), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects path separators", () => {
+  assert.throws(() => resolveAgentName("foo/bar"), /Invalid agent name/);
+  assert.throws(() => resolveAgentName("foo\\bar"), /Invalid agent name/);
+});
+
+test("resolveAgentName: rejects shell injection", () => {
+  assert.throws(() => resolveAgentName("x; rm -rf /"), /Invalid agent name/);
+  assert.throws(() => resolveAgentName("$(whoami)"), /Invalid agent name/);
+});
+
+test("custom agent falls through to codex exec in _buildCommand", () => {
+  const agent = makeAgent("aider");
+  const cmd = agent._buildCommand("test prompt");
+  assert.ok(cmd.startsWith("codex exec"));
+});
+
+function makeFakeSandbox() {
+  const sandbox = new EventEmitter();
+  sandbox.kill = () => Promise.resolve();
+  sandbox.commands = {
+    run: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }),
   };
-  return CoderConfigSchema.parse({ ...defaults, ...overrides });
+  return sandbox;
 }
 
-test("executeWithRetry: retries 5 times by default on rate limit", async () => {
-  const tmp = makeTmpDir();
-  const config = makeMinimalConfig();
-  const agent = new CliAgent("gemini", {
-    cwd: tmp,
-    secrets: {},
-    config,
-    workspaceDir: tmp,
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+  return { promise, resolve, reject };
+}
 
-  let calls = 0;
-  const mockRun = async () => {
-    calls++;
-    return {
-      exitCode: 1,
-      stdout: "rate limit exceeded 429",
-      stderr: "",
-    };
-  };
-
-  agent._sandbox = {
-    on: () => {},
-    commands: { run: mockRun },
-    kill: async () => {},
-  };
-
-  await assert.rejects(
-    async () => {
-      await agent.executeWithRetry("test prompt", {
-        retryOnRateLimit: true,
-        backoffMs: 1,
-      });
+test("_ensureSandbox: concurrent calls coalesce to a single create()", async () => {
+  const agent = makeAgent("claude");
+  let createCount = 0;
+  const sandbox = makeFakeSandbox();
+  agent._provider = {
+    create: () => {
+      createCount++;
+      return Promise.resolve(sandbox);
     },
-    (err) => err.name === "RateLimitError",
-  );
+  };
 
-  assert.equal(calls, 6);
+  const [s1, s2, s3] = await Promise.all([
+    agent._ensureSandbox(),
+    agent._ensureSandbox(),
+    agent._ensureSandbox(),
+  ]);
 
-  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(createCount, 1);
+  assert.equal(s1, sandbox);
+  assert.equal(s2, sandbox);
+  assert.equal(s3, sandbox);
 });
 
-test("executeWithRetry: respects custom retries option", async () => {
-  const tmp = makeTmpDir();
-  const config = makeMinimalConfig();
-  const agent = new CliAgent("gemini", {
-    cwd: tmp,
-    secrets: {},
-    config,
-    workspaceDir: tmp,
-  });
-
-  let calls = 0;
-  const mockRun = async () => {
-    calls++;
-    return {
-      exitCode: 1,
-      stdout: "rate limit exceeded 429",
-      stderr: "",
-    };
-  };
-
-  agent._sandbox = {
-    on: () => {},
-    commands: { run: mockRun },
-    kill: async () => {},
-  };
-
-  await assert.rejects(
-    async () => {
-      await agent.executeWithRetry("test prompt", {
-        retryOnRateLimit: true,
-        retries: 2,
-        backoffMs: 1,
-      });
+test("_ensureSandbox: failed creation clears promise, allowing retry", async () => {
+  const agent = makeAgent("claude");
+  let createCount = 0;
+  const sandbox = makeFakeSandbox();
+  agent._provider = {
+    create: () => {
+      createCount++;
+      if (createCount === 1) return Promise.reject(new Error("boom"));
+      return Promise.resolve(sandbox);
     },
-    (err) => err.name === "RateLimitError",
-  );
+  };
 
-  assert.equal(calls, 3);
+  await assert.rejects(() => agent._ensureSandbox(), /boom/);
+  assert.equal(agent._sandboxPromise, null);
 
-  rmSync(tmp, { recursive: true, force: true });
+  const result = await agent._ensureSandbox();
+  assert.equal(result, sandbox);
+  assert.equal(createCount, 2);
 });
 
-test("executeWithRetry: does not retry on CommandTimeoutError", async () => {
-  const tmp = makeTmpDir();
-  const config = makeMinimalConfig();
-  const agent = new CliAgent("gemini", {
-    cwd: tmp,
-    secrets: {},
-    config,
-    workspaceDir: tmp,
-  });
+test("_ensureSandbox: kill() during in-flight creation aborts and kills sandbox", async () => {
+  const agent = makeAgent("claude");
+  const d = deferred();
+  agent._provider = { create: () => d.promise };
 
-  let calls = 0;
-  const mockRun = async () => {
-    calls++;
-    const err = new Error("timeout");
-    err.name = "CommandTimeoutError";
-    throw err;
+  const ensurePromise = agent._ensureSandbox();
+
+  await agent.kill();
+  assert.equal(agent._sandboxPromise, null);
+
+  let killCalled = false;
+  const sandbox = makeFakeSandbox();
+  sandbox.kill = () => {
+    killCalled = true;
+    return Promise.resolve();
   };
+  d.resolve(sandbox);
 
-  agent._sandbox = {
-    on: () => {},
-    commands: { run: mockRun },
-    kill: async () => {},
-  };
-
-  await assert.rejects(
-    async () => {
-      await agent.executeWithRetry("test prompt", {
-        retryOnRateLimit: true,
-        backoffMs: 1,
-      });
-    },
-    (err) => err.name === "CommandTimeoutError",
-  );
-
-  assert.equal(calls, 1);
-
-  rmSync(tmp, { recursive: true, force: true });
+  await assert.rejects(ensurePromise, { name: "AbortError" });
+  assert.equal(killCalled, true);
+  assert.equal(agent._sandbox, null);
 });
 
-test("executeWithFallback: switches to fallback model after rate limit exhaustion", async () => {
-  const tmp = makeTmpDir();
-  const config = makeMinimalConfig({
-    models: {
-      gemini: {
-        model: "gemini-pro",
-        fallbackModel: "gemini-flash",
-      },
+test("_ensureSandbox: rejected first creation does not wipe second in-flight promise", async () => {
+  const agent = makeAgent("claude");
+  const d1 = deferred();
+  const d2 = deferred();
+  let createCount = 0;
+  agent._provider = {
+    create: () => {
+      createCount++;
+      return createCount === 1 ? d1.promise : d2.promise;
     },
-  });
-  const agent = new CliAgent("gemini", {
-    cwd: tmp,
-    secrets: {},
-    config,
-    workspaceDir: tmp,
-  });
+  };
 
-  const executedCommands = [];
-  const mockRun = async (cmd) => {
-    executedCommands.push(cmd);
-    if (cmd.includes("gemini-pro")) {
-      return {
-        exitCode: 1,
-        stdout: "rate limit 429",
-        stderr: "",
-      };
-    }
-    if (cmd.includes("gemini-flash")) {
+  const p1 = agent._ensureSandbox();
+  await agent.kill();
+
+  const p2 = agent._ensureSandbox();
+
+  d1.reject(new Error("first failed"));
+  await assert.rejects(p1, /first failed/);
+
+  // Second promise must still be intact
+  assert.notEqual(agent._sandboxPromise, null);
+
+  const sandbox2 = makeFakeSandbox();
+  d2.resolve(sandbox2);
+  const result = await p2;
+  assert.equal(result, sandbox2);
+  assert.equal(agent._sandbox, sandbox2);
+});
+
+test("executeWithRetry retries when isTransientResult flags a successful response", async () => {
+  const agent = makeAgent("gemini");
+  let calls = 0;
+  agent.execute = async () => {
+    calls++;
+    if (calls === 1) {
       return {
         exitCode: 0,
-        stdout: "success",
+        stdout: "Resources updated for server: github",
         stderr: "",
       };
     }
-    return { exitCode: 1, stdout: "unknown", stderr: "" };
-  };
-
-  agent._sandbox = {
-    on: () => {},
-    commands: { run: mockRun },
-    kill: async () => {},
-  };
-
-  const res = await agent.executeWithFallback("prompt", {
-    retryOnRateLimit: true,
-    backoffMs: 1,
-  });
-
-  assert.equal(res.exitCode, 0);
-  assert.equal(res.stdout, "success");
-
-  const proCalls = executedCommands.filter((c) =>
-    c.includes("gemini-pro"),
-  ).length;
-  const flashCalls = executedCommands.filter((c) =>
-    c.includes("gemini-flash"),
-  ).length;
-
-  assert.equal(proCalls, 6);
-  assert.ok(flashCalls >= 1);
-
-  rmSync(tmp, { recursive: true, force: true });
-});
-
-test("executeWithFallback: rethrows RateLimitError when no fallback configured", async () => {
-  const tmp = makeTmpDir();
-  const config = makeMinimalConfig({
-    models: {
-      gemini: {
-        model: "gemini-pro",
-        fallbackModel: "",
-      },
-    },
-  });
-  const agent = new CliAgent("gemini", {
-    cwd: tmp,
-    secrets: {},
-    config,
-    workspaceDir: tmp,
-  });
-
-  const mockRun = async () => {
     return {
-      exitCode: 1,
-      stdout: "rate limit 429",
+      exitCode: 0,
+      stdout: '{"issues":[],"recommended_index":0}',
       stderr: "",
     };
   };
 
-  agent._sandbox = {
-    on: () => {},
-    commands: { run: mockRun },
-    kill: async () => {},
-  };
+  const res = await agent.executeWithRetry("prompt", {
+    retries: 1,
+    backoffMs: 0,
+    isTransientResult: (result) =>
+      /updated for server/i.test(result.stdout || "") ? "noise-only" : "",
+  });
 
-  await assert.rejects(
-    async () => {
-      await agent.executeWithFallback("prompt", {
-        retryOnRateLimit: true,
-        backoffMs: 1,
-      });
-    },
-    (err) => err.name === "RateLimitError",
-  );
-
-  rmSync(tmp, { recursive: true, force: true });
+  assert.equal(calls, 2);
+  assert.equal(res.exitCode, 0);
+  assert.match(res.stdout, /recommended_index/);
 });
 
-test("config: ModelEntrySchema accepts fallbackModel", () => {
-  const parsed = CoderConfigSchema.parse({
-    models: {
-      gemini: {
-        model: "gemini-pro",
-        fallbackModel: "gemini-flash",
-      },
+test("activeRuns stores the actual runPromise, not eager Promise.resolve()", async (t) => {
+  let resolveDevelop;
+  const blockingPromise = new Promise((r) => {
+    resolveDevelop = r;
+  });
+
+  t.mock.module("../src/workflows/develop.workflow.js", {
+    namedExports: { runDevelopLoop: () => blockingPromise },
+  });
+  t.mock.module("../src/workflows/research.workflow.js", {
+    namedExports: {
+      runResearchPipeline: () => Promise.resolve({ status: "completed" }),
     },
   });
-  assert.equal(parsed.models.gemini.fallbackModel, "gemini-flash");
-});
+  t.mock.module("../src/workflows/design.workflow.js", {
+    namedExports: {
+      runDesignPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
 
-test("config: ModelEntrySchema rejects invalid fallbackModel names", () => {
-  assert.throws(() => {
-    CoderConfigSchema.parse({
-      models: {
-        gemini: {
-          model: "gemini-pro",
-          fallbackModel: "bad;model",
-        },
-      },
-    });
-  }, /Invalid model name/);
+  const { activeRuns, registerWorkflowTools } = await import(
+    "../src/mcp/tools/workflows.js"
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-activeRuns-"));
+
+  // Capture the promise value stored at activeRuns.set call time (before any mutation)
+  let capturedPromise = null;
+  t.mock.method(activeRuns, "set", function (key, value) {
+    if (value?.startedAt !== undefined) {
+      capturedPromise = value.promise;
+    }
+    return Map.prototype.set.call(this, key, value);
+  });
+
+  const handlers = {};
+  const stubServer = {
+    registerTool: (name, _opts, fn) => {
+      handlers[name] = fn;
+    },
+  };
+  registerWorkflowTools(stubServer, ws);
+
+  await handlers.coder_workflow({ action: "start", workflow: "develop" });
+
+  assert.ok(
+    capturedPromise instanceof Promise,
+    "activeRuns.set was called with a promise",
+  );
+
+  // The promise stored at set time must be the IIFE (pending), not eager Promise.resolve()
+  const SENTINEL = Symbol("pending");
+  const raced = await Promise.race([
+    capturedPromise,
+    Promise.resolve(SENTINEL),
+  ]);
+  assert.equal(
+    raced,
+    SENTINEL,
+    "promise stored in activeRuns.set should be pending (not the eager Promise.resolve())",
+  );
+
+  resolveDevelop({ status: "completed" });
+  await capturedPromise.catch(() => {});
+  rmSync(ws, { recursive: true, force: true });
 });
