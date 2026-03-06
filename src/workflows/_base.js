@@ -122,7 +122,10 @@ export class WorkflowRunner {
           reason: checkpoint ? "workflow_mismatch" : "checkpoint_not_found",
           runId: opts.resumeFromRunId,
         });
-      } else if (checkpoint.steps.length > 0 && checkpoint.currentStep <= steps.length) {
+      } else if (
+        checkpoint.steps.length > 0 &&
+        checkpoint.currentStep <= steps.length
+      ) {
         this.runId = checkpoint.runId;
         this.results = checkpoint.steps.map((s) => ({
           machine: s.machine,
