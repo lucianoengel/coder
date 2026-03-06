@@ -9,7 +9,7 @@ import { isRateLimitError } from "../src/helpers.js";
 function makeConfig(retryOverrides = {}, fallbackOverrides = {}) {
   return CoderConfigSchema.parse({
     agents: {
-      retry: { maxRetries: 3, retryDelayMs: 0, ...retryOverrides },
+      retry: { retries: 3, backoffMs: 0, ...retryOverrides },
       fallback: fallbackOverrides,
     },
   });
@@ -48,7 +48,7 @@ function makePool(config) {
 }
 
 test("RetryFallbackWrapper retries on non-zero exitCode", async () => {
-  const config = makeConfig({ maxRetries: 3, retryDelayMs: 0 });
+  const config = makeConfig({ retries: 3, backoffMs: 0 });
   const pool = makePool(config);
 
   const fail = { exitCode: 1, stdout: "", stderr: "transient" };
@@ -63,8 +63,8 @@ test("RetryFallbackWrapper retries on non-zero exitCode", async () => {
   assert.equal(res.stdout, "done");
 });
 
-test("RetryFallbackWrapper does not retry more than maxRetries", async () => {
-  const config = makeConfig({ maxRetries: 2, retryDelayMs: 0 });
+test("RetryFallbackWrapper does not retry more than retries", async () => {
+  const config = makeConfig({ retries: 2, backoffMs: 0 });
   const pool = makePool(config);
 
   const fail = { exitCode: 1, stdout: "", stderr: "always fails" };
@@ -80,8 +80,8 @@ test("RetryFallbackWrapper does not retry more than maxRetries", async () => {
 
 test("RetryFallbackWrapper detects rate-limit text and retries when retryOnRateLimit:true", async () => {
   const config = makeConfig({
-    maxRetries: 3,
-    retryDelayMs: 0,
+    retries: 3,
+    backoffMs: 0,
     retryOnRateLimit: true,
   });
   const pool = makePool(config);
@@ -104,18 +104,14 @@ test("RetryFallbackWrapper detects rate-limit text and retries when retryOnRateL
 test("RetryFallbackWrapper invokes fallback after primary exhausts retries", async () => {
   const config = CoderConfigSchema.parse({
     agents: {
-      retry: { maxRetries: 1, retryDelayMs: 0 },
+      retry: { retries: 1, backoffMs: 0 },
       fallback: { planner: "codex" },
     },
   });
   const pool = makePool(config);
 
   const fail = { exitCode: 1, stdout: "", stderr: "primary failed" };
-  const fallbackOk = {
-    exitCode: 0,
-    stdout: "from-fallback",
-    stderr: "",
-  };
+  const fallbackOk = { exitCode: 0, stdout: "from-fallback", stderr: "" };
   const primaryMock = makeMockAgent([fail]);
   const fallbackMock = makeMockAgent([fallbackOk]);
 
@@ -128,7 +124,7 @@ test("RetryFallbackWrapper invokes fallback after primary exhausts retries", asy
 });
 
 test("RetryFallbackWrapper skips fallback when not configured", async () => {
-  const config = makeConfig({ maxRetries: 1, retryDelayMs: 0 });
+  const config = makeConfig({ retries: 1, backoffMs: 0 });
   const pool = makePool(config);
 
   const fail = { exitCode: 1, stdout: "", stderr: "no fallback" };
@@ -144,7 +140,7 @@ test("RetryFallbackWrapper skips fallback when not configured", async () => {
 });
 
 test("executeStructured retries and returns parsed JSON on success", async () => {
-  const config = makeConfig({ maxRetries: 2, retryDelayMs: 0 });
+  const config = makeConfig({ retries: 2, backoffMs: 0 });
   const pool = makePool(config);
 
   const fail = { exitCode: 1, stdout: "", stderr: "transient" };
@@ -160,7 +156,7 @@ test("executeStructured retries and returns parsed JSON on success", async () =>
 });
 
 test("executeWithRetry is an alias for execute on wrapper", async () => {
-  const config = makeConfig({ maxRetries: 1, retryDelayMs: 0 });
+  const config = makeConfig({ retries: 1, backoffMs: 0 });
   const pool = makePool(config);
 
   const ok = { exitCode: 0, stdout: "alias-ok", stderr: "" };
@@ -215,8 +211,8 @@ test("ApiAgent.executeWithRetry retries on HTTP error and succeeds", async () =>
 
 test("config.agents.retry schema: defaults", () => {
   const config = CoderConfigSchema.parse({});
-  assert.equal(config.agents.retry.maxRetries, 1);
-  assert.equal(config.agents.retry.retryDelayMs, 5000);
+  assert.equal(config.agents.retry.retries, 1);
+  assert.equal(config.agents.retry.backoffMs, 5000);
   assert.equal(config.agents.retry.retryOnRateLimit, true);
 });
 

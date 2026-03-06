@@ -1,24 +1,21 @@
 import pRetry from "p-retry";
-import {
-  buildSecrets,
-  DEFAULT_PASS_ENV,
-  isRateLimitError,
-} from "../helpers.js";
+import { buildSecrets, isRateLimitError, resolvePassEnv } from "../helpers.js";
 import { AgentAdapter } from "./_base.js";
 import { createApiAgent } from "./api-agent.js";
 import { CliAgent, resolveAgentName } from "./cli-agent.js";
 import { McpAgent } from "./mcp-agent.js";
 
+/**
+ * Wraps a primary agent with configurable retry and optional fallback agent.
+ * If the primary exhausts retries, the fallback (if provided) is tried.
+ */
 class RetryFallbackWrapper extends AgentAdapter {
-  constructor(
-    primary,
-    { fallback, maxRetries, retryDelayMs, retryOnRateLimit },
-  ) {
+  constructor(primary, { fallback, retries, backoffMs, retryOnRateLimit }) {
     super();
     this._primary = primary;
-    this._fallback = fallback;
-    this._maxRetries = maxRetries;
-    this._retryDelayMs = retryDelayMs;
+    this._fallback = fallback ?? null;
+    this._retries = retries;
+    this._backoffMs = backoffMs;
     this._retryOnRateLimit = retryOnRateLimit;
   }
 
@@ -70,13 +67,17 @@ class RetryFallbackWrapper extends AgentAdapter {
         return res;
       },
       {
-        retries: this._maxRetries,
-        minTimeout: this._retryDelayMs,
+        retries: this._retries,
+        minTimeout: this._backoffMs,
         factor: 2,
         shouldRetry: (ctx) => {
           const name = ctx.error.name;
           if (name === "CommandTimeoutError") return false;
-          if (name === "CommandAuthError") return false;
+          if (
+            name === "CommandFatalStderrError" &&
+            ctx.error.category === "auth"
+          )
+            return false;
           if (name === "McpStartupError") return false;
           return true;
         },
@@ -90,7 +91,10 @@ class RetryFallbackWrapper extends AgentAdapter {
   }
 
   async kill() {
-    await Promise.allSettled([this._primary.kill(), this._fallback?.kill()]);
+    await Promise.allSettled([
+      this._primary.kill(),
+      this._fallback?.kill() ?? Promise.resolve(),
+    ]);
   }
 }
 
@@ -114,8 +118,9 @@ export class AgentPool {
     this.config = opts.config;
     this.workspaceDir = opts.workspaceDir;
     this.repoRoot = opts.repoRoot || opts.workspaceDir;
-    this.secrets = buildSecrets(opts.passEnv || DEFAULT_PASS_ENV);
+    this.secrets = buildSecrets(opts.passEnv || resolvePassEnv(opts.config));
     this.verbose = opts.verbose ?? opts.config.verbose;
+    this.steeringContext = opts.steeringContext;
 
     /** @type {Map<string, import("./cli-agent.js").CliAgent>} */
     this._agents = new Map();
@@ -132,49 +137,63 @@ export class AgentPool {
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
-    let rawAgent;
-    if (mode === "cli") {
-      const key = `cli:${agentName}:${cwd}`;
-      if (!this._agents.has(key)) {
-        this._agents.set(
-          key,
-          new CliAgent(agentName, {
-            cwd,
-            secrets: this.secrets,
-            config: this.config,
-            workspaceDir: this.workspaceDir,
-            verbose: this.verbose,
-          }),
-        );
-      }
-      rawAgent = this._agents.get(key);
-    } else if (mode === "api") {
+    if (mode === "api") {
       return this._getApiAgent(role, { scope });
-    } else if (mode === "mcp") {
+    }
+
+    if (mode === "mcp") {
       return this._getMcpAgent(role, { scope });
-    } else {
+    }
+
+    if (mode !== "cli") {
       throw new Error(`Agent mode "${mode}" is not supported`);
     }
 
-    const retryConfig = this.config.agents?.retry;
+    const key = `cli:${agentName}:${cwd}`;
+    if (!this._agents.has(key)) {
+      this._agents.set(
+        key,
+        new CliAgent(agentName, {
+          cwd,
+          secrets: this.secrets,
+          config: this.config,
+          workspaceDir: this.workspaceDir,
+          verbose: this.verbose,
+          steeringContext: this.steeringContext,
+        }),
+      );
+    }
+    const rawAgent = this._agents.get(key);
+
+    const retryCfg = this.config.agents?.retry;
     const fallbackName = this.config.agents?.fallback?.[role];
-    if (retryConfig?.maxRetries > 0 || fallbackName) {
-      const fallbackAgent = fallbackName
-        ? new CliAgent(fallbackName, {
-            cwd,
-            secrets: this.secrets,
-            config: this.config,
-            workspaceDir: this.workspaceDir,
-            verbose: this.verbose,
-          })
-        : null;
+    if ((retryCfg?.retries ?? 0) > 0 || fallbackName) {
+      let fallbackAgent = null;
+      if (fallbackName) {
+        const resolvedFallback = resolveAgentName(fallbackName);
+        const fallbackKey = `cli:${resolvedFallback}:${cwd}`;
+        if (!this._agents.has(fallbackKey)) {
+          this._agents.set(
+            fallbackKey,
+            new CliAgent(resolvedFallback, {
+              cwd,
+              secrets: this.secrets,
+              config: this.config,
+              workspaceDir: this.workspaceDir,
+              verbose: this.verbose,
+              steeringContext: this.steeringContext,
+            }),
+          );
+        }
+        fallbackAgent = this._agents.get(fallbackKey);
+      }
       return {
         agentName,
         agent: new RetryFallbackWrapper(rawAgent, {
           fallback: fallbackAgent,
-          maxRetries: retryConfig?.maxRetries ?? 1,
-          retryDelayMs: retryConfig?.retryDelayMs ?? 5000,
-          retryOnRateLimit: retryConfig?.retryOnRateLimit ?? true,
+          retries: retryCfg?.retries ?? 1,
+          backoffMs: retryCfg?.backoffMs ?? 5000,
+          retryOnRateLimit: retryCfg?.retryOnRateLimit ?? true,
         }),
       };
     }
@@ -209,6 +228,7 @@ export class AgentPool {
     const keyId = transport === "http" ? serverUrl : serverCommand;
     const key = `mcp:${serverName}:${keyId}`;
     if (!this._agents.has(key)) {
+      const retryCfg = this.config.agents?.retry;
       this._agents.set(
         key,
         new McpAgent({
@@ -219,6 +239,8 @@ export class AgentPool {
           authHeader: opts.authHeader || "",
           env: opts.env || {},
           serverName,
+          retries: retryCfg?.retries ?? 3,
+          backoffMs: retryCfg?.backoffMs ?? 1000,
         }),
       );
     }

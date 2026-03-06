@@ -25,19 +25,20 @@ export class ApiAgent extends AgentAdapter {
     this.apiKey = opts.apiKey;
     this.model = opts.model || "";
     this.systemPrompt = opts.systemPrompt || "";
-    this._abortController = null;
+    this._activeControllers = new Set();
   }
 
   async execute(prompt, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 60_000;
-    this._abortController = new AbortController();
-    const timer = setTimeout(() => this._abortController.abort(), timeoutMs);
+    const controller = new AbortController();
+    this._activeControllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response =
         this.provider === "gemini"
-          ? await this._callGemini(prompt)
-          : await this._callAnthropic(prompt);
+          ? await this._callGemini(prompt, controller.signal)
+          : await this._callAnthropic(prompt, controller.signal);
 
       return { exitCode: 0, stdout: response, stderr: "" };
     } catch (err) {
@@ -51,12 +52,13 @@ export class ApiAgent extends AgentAdapter {
       return { exitCode: 1, stdout: "", stderr: err.message };
     } finally {
       clearTimeout(timer);
-      this._abortController = null;
+      this._activeControllers.delete(controller);
     }
   }
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, opts);
+    if (res.exitCode !== 0) return { ...res, parsed: undefined };
     const parsed = extractJson(res.stdout);
     return { ...res, parsed };
   }
@@ -76,8 +78,7 @@ export class ApiAgent extends AgentAdapter {
             rateErr.name = "RateLimitError";
             throw rateErr;
           }
-          const err = new Error(details.slice(0, 300) || "API request failed");
-          throw err;
+          throw new Error(details.slice(0, 300) || "API request failed");
         }
         return res;
       },
@@ -99,15 +100,15 @@ export class ApiAgent extends AgentAdapter {
   }
 
   async kill() {
-    if (this._abortController) {
-      this._abortController.abort();
-      this._abortController = null;
+    for (const controller of this._activeControllers) {
+      controller.abort();
     }
+    this._activeControllers.clear();
   }
 
-  async _callGemini(prompt) {
+  async _callGemini(prompt, signal) {
     const model = this.model || "gemini-3.1-pro-preview";
-    const url = `${this.endpoint}/models/${model}:generateContent?key=${this.apiKey}`;
+    const url = `${this.endpoint}/models/${model}:generateContent`;
 
     const body = {
       contents: [{ parts: [{ text: prompt }] }],
@@ -118,9 +119,12 @@ export class ApiAgent extends AgentAdapter {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": this.apiKey,
+      },
       body: JSON.stringify(body),
-      signal: this._abortController?.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -136,7 +140,7 @@ export class ApiAgent extends AgentAdapter {
     return parts.map((p) => p.text || "").join("");
   }
 
-  async _callAnthropic(prompt) {
+  async _callAnthropic(prompt, signal) {
     const model = this.model || "claude-sonnet-4-6";
     const url = `${this.endpoint}/v1/messages`;
 
@@ -157,7 +161,7 @@ export class ApiAgent extends AgentAdapter {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
-      signal: this._abortController?.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -191,7 +195,7 @@ export function createApiAgent(opts) {
   if (provider === "gemini") {
     return new ApiAgent({
       provider: "gemini",
-      endpoint: config.agents.geminiApiEndpoint,
+      endpoint: config.models.gemini.apiEndpoint,
       apiKey: secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY || "",
       model: resolveModelName(config.models.gemini),
       systemPrompt: opts.systemPrompt,
@@ -200,7 +204,7 @@ export function createApiAgent(opts) {
 
   return new ApiAgent({
     provider: "anthropic",
-    endpoint: config.agents.anthropicApiEndpoint,
+    endpoint: config.models.claude.apiEndpoint,
     apiKey: secrets.ANTHROPIC_API_KEY || "",
     model: resolveModelName(config.models.claude),
     systemPrompt: opts.systemPrompt,
