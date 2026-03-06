@@ -1,7 +1,7 @@
 {
   "models": {
     "gemini": {
-      "model": "gemini-3-flash-preview",
+      "model": "gemini-3.1-pro-preview",
       "apiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
       "apiKeyEnv": "GEMINI_API_KEY"
     },
@@ -15,6 +15,18 @@
       "apiEndpoint": "https://api.openai.com",
       "apiKeyEnv": "OPENAI_API_KEY"
     }
+  },
+  "sandbox": {
+    "passEnv": [
+      "GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "GITHUB_TOKEN",
+      "LINEAR_API_KEY"
+    ],
+    "passEnvPatterns": []
   },
   "workflow": {
     "agentRoles": {
@@ -36,6 +48,7 @@
       "sqliteSync": true,
       "sqlitePath": ".coder/state.db"
     },
+    "issueSource": "github",
     "localIssuesDir": ""
   },
   "ppcommit": {
