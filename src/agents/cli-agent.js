@@ -175,7 +175,7 @@ export class CliAgent extends AgentAdapter {
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p";
+      let flags = "claude -p --no-session-persistence";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${shellEscape(claudeModel)}`;
@@ -234,6 +234,7 @@ export class CliAgent extends AgentAdapter {
     const retries = opts.retries ?? 1;
     const backoffMs = opts.backoffMs ?? 5000;
     const retryOnRateLimit = opts.retryOnRateLimit ?? false;
+    const isTransientResult = opts.isTransientResult;
 
     return pRetry(
       async () => {
@@ -244,6 +245,16 @@ export class CliAgent extends AgentAdapter {
             const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
             rateErr.name = "RateLimitError";
             throw rateErr;
+          }
+        }
+        if (typeof isTransientResult === "function") {
+          const reason = isTransientResult(res);
+          if (reason) {
+            const transientError = new Error(
+              `Transient result: ${String(reason).slice(0, 300)}`,
+            );
+            transientError.name = "TransientResultError";
+            throw transientError;
           }
         }
         return res;

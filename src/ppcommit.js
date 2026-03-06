@@ -183,7 +183,10 @@ function assertGitleaksInstalled() {
     encoding: "utf8",
     timeout: 5000,
   });
-  if (res.error?.code === "ENOENT") {
+  if (
+    res.error?.code &&
+    ["ENOENT", "EACCES", "EPERM"].includes(res.error.code)
+  ) {
     throw new Error(
       `gitleaks binary not found in PATH.\n` +
         `  PATH searched: ${process.env.PATH}\n` +
@@ -960,7 +963,11 @@ function extractJsonArray(text) {
   const lastBracket = trimmed.lastIndexOf("]");
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
     const candidate = trimmed.slice(firstBracket, lastBracket + 1);
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch {
+      return [];
+    }
   }
   return [];
 }

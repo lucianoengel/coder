@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   runPpcommitAll,
   runPpcommitBranch,
   runPpcommitNative,
 } from "../src/ppcommit.js";
-
-const GITLEAKS_PROBE = spawnSync("gitleaks", ["version"], { encoding: "utf8" });
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -27,11 +26,6 @@ function makeRepo() {
   run("git", ["init"], dir);
   run("git", ["config", "user.email", "test@example.com"], dir);
   run("git", ["config", "user.name", "Test User"], dir);
-  writeFileSync(
-    path.join(dir, "coder.json"),
-    JSON.stringify({ ppcommit: { blockSecrets: false } }),
-    "utf8",
-  );
   return dir;
 }
 
@@ -42,7 +36,7 @@ test("ppcommit: skip via config", async () => {
     "// TODO: should be ignored\n",
     "utf8",
   );
-  const r = await runPpcommitNative(repo, { skip: true });
+  const r = await runPpcommitNative(repo, { blockSecrets: false, skip: true });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });
@@ -50,7 +44,7 @@ test("ppcommit: skip via config", async () => {
 test("ppcommit: detects TODO comment", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "// TODO: fix this\n", "utf8");
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /^ERROR:/m);
   assert.match(r.stdout, /a\.js:1/);
@@ -59,7 +53,7 @@ test("ppcommit: detects TODO comment", async () => {
 test("ppcommit: blocks new markdown outside allowed dirs", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "notes.md"), "# Notes\n", "utf8");
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /notes\.md:1/);
 });
@@ -71,7 +65,7 @@ test("ppcommit: does not flag edits to existing markdown", async () => {
   run("git", ["commit", "-m", "add readme"], repo);
 
   writeFileSync(path.join(repo, "README.md"), "# Readme\n\nMore.\n", "utf8");
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 0);
 });
 
@@ -81,8 +75,8 @@ test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
   const smile = String.fromCodePoint(0x1f642);
   writeFileSync(path.join(repo, "a.js"), `// hello ${smile}\n`, "utf8");
   const r = await runPpcommitNative(repo, {
-    treatWarningsAsErrors: true,
     blockSecrets: false,
+    treatWarningsAsErrors: true,
   });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /^ERROR: Emoji character in code at a\.js:1$/m);
@@ -95,8 +89,43 @@ test("ppcommit: does not crash when optional parsers are unavailable", async () 
     "const x = 123;\nconsole.log(x);\n",
     "utf8",
   );
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 0);
+});
+
+test("ppcommit: irreparable LLM fallback JSON returns cleanly without extra retries", async () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: 'prefix [{"a":"\\uZZZZ"}] suffix',
+            },
+          },
+        ],
+      }),
+    };
+  };
+
+  try {
+    const r = await runPpcommitNative(repo, {
+      blockSecrets: false,
+      enableLlm: true,
+      llmApiKey: "test-key",
+    });
+    assert.equal(r.exitCode, 0);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("ppcommit: detects staged new markdown files", async () => {
@@ -106,7 +135,7 @@ test("ppcommit: detects staged new markdown files", async () => {
   writeFileSync(path.join(repo, "new.md"), "# new\n", "utf8");
   run("git", ["add", "docs/ok.md", "new.md"], repo);
 
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /new\.md:1/);
   assert.doesNotMatch(r.stdout, /docs\/ok\.md:1/);
@@ -116,7 +145,7 @@ test("ppcommit: does not allow workflow artifacts under .coder/", async () => {
   const repo = makeRepo();
   mkdirSync(path.join(repo, ".coder"), { recursive: true });
   writeFileSync(path.join(repo, ".coder", "notes.md"), "# Notes\n", "utf8");
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /\.coder\/notes\.md:1/);
 });
@@ -124,7 +153,7 @@ test("ppcommit: does not allow workflow artifacts under .coder/", async () => {
 test("ppcommit: does not allow coder workflow markdown artifacts (ISSUE/PLAN) in repo diffs", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "ISSUE.md"), "# Issue\n", "utf8");
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /ISSUE\.md:1/);
 });
@@ -144,9 +173,9 @@ function makeRepoWithMainBranch() {
 
 test("ppcommit branch: no files changed since base", async () => {
   const repo = makeRepoWithMainBranch();
-  const r = await runPpcommitBranch(repo, "main");
+  const r = await runPpcommitBranch(repo, "main", { blockSecrets: false });
   assert.equal(r.exitCode, 0);
-  assert.match(r.stdout, /(No files changed|All checks passed)/i);
+  assert.match(r.stdout, /No files changed/i);
 });
 
 test("ppcommit branch: detects TODO in files changed since base", async () => {
@@ -155,7 +184,7 @@ test("ppcommit branch: detects TODO in files changed since base", async () => {
   writeFileSync(path.join(repo, "a.js"), "// TODO: fix this\n", "utf8");
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
-  const r = await runPpcommitBranch(repo, "main");
+  const r = await runPpcommitBranch(repo, "main", { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /TODO/);
   assert.match(r.stdout, /a\.js:1/);
@@ -171,7 +200,7 @@ test("ppcommit branch: clean files pass checks", async () => {
   );
   run("git", ["add", "b.js"], repo);
   run("git", ["commit", "-m", "add b.js"], repo);
-  const r = await runPpcommitBranch(repo, "main");
+  const r = await runPpcommitBranch(repo, "main", { blockSecrets: false });
   assert.equal(r.exitCode, 0);
 });
 
@@ -185,7 +214,10 @@ test("ppcommit branch: skip via config", async () => {
   );
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
-  const r = await runPpcommitBranch(repo, "main", { skip: true });
+  const r = await runPpcommitBranch(repo, "main", {
+    blockSecrets: false,
+    skip: true,
+  });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });
@@ -196,14 +228,16 @@ test("ppcommit branch: detects new markdown added since base", async () => {
   writeFileSync(path.join(repo, "notes.md"), "# Notes\n", "utf8");
   run("git", ["add", "notes.md"], repo);
   run("git", ["commit", "-m", "add notes"], repo);
-  const r = await runPpcommitBranch(repo, "main");
+  const r = await runPpcommitBranch(repo, "main", { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /notes\.md:1/);
 });
 
 test("ppcommit branch: invalid base ref is an error (does not silently succeed)", async () => {
   const repo = makeRepoWithMainBranch();
-  const r = await runPpcommitBranch(repo, "definitely-not-a-real-branch");
+  const r = await runPpcommitBranch(repo, "definitely-not-a-real-branch", {
+    blockSecrets: false,
+  });
   assert.notEqual(r.exitCode, 0);
   assert.match(r.stderr, /Failed to diff against base/);
 });
@@ -216,7 +250,7 @@ test("ppcommit all: checks all files in the repo", async () => {
   writeFileSync(path.join(repo, "a.js"), "// TODO: fix\n", "utf8");
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
-  const r = await runPpcommitAll(repo);
+  const r = await runPpcommitAll(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /TODO/);
   assert.match(r.stdout, /a\.js:1/);
@@ -225,49 +259,56 @@ test("ppcommit all: checks all files in the repo", async () => {
 test("ppcommit all: clean repo passes", async () => {
   const repo = makeRepoWithMainBranch();
   // init.txt has only "initial\n" — no issues
-  const r = await runPpcommitAll(repo);
+  const r = await runPpcommitAll(repo, { blockSecrets: false });
   assert.equal(r.exitCode, 0);
 });
 
 // --- gitleaks ENOENT tests (spawned subprocess for fresh module state) ---
 
-test(
-  "ppcommit: gitleaks missing from PATH produces actionable error",
-  { skip: GITLEAKS_PROBE.error?.code === "EPERM" },
-  async () => {
-    const repo = makeRepo();
-    writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
-    const srcPath = path.resolve(
-      import.meta.dirname,
-      "..",
-      "src",
-      "ppcommit.js",
-    );
-    const script = `
-    import { runPpcommitNative } from ${JSON.stringify("file://" + srcPath)};
-    try {
-      await runPpcommitNative(${JSON.stringify(repo)}, { blockSecrets: true });
-      process.stdout.write("NO_ERROR");
-    } catch (e) {
-      process.stdout.write(e.message);
-    }
-  `;
-    // Include node + git dirs but exclude gitleaks
-    const nodeBin = path.dirname(process.execPath);
-    const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
-    const r = spawnSync(
-      process.execPath,
-      ["--input-type=module", "-e", script],
-      {
-        encoding: "utf8",
-        timeout: 15000,
-        env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
+test("ppcommit: gitleaks missing from PATH produces actionable error", () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+  // Use minimal PATH that excludes gitleaks. CI installs to /usr/local/bin;
+  // node is invoked via process.execPath (absolute), so we don't need node in PATH.
+  const restrictedPath = "/usr/bin:/bin";
+  const ppcommitPath = path.resolve(
+    import.meta.dirname,
+    "..",
+    "src",
+    "ppcommit.js",
+  );
+  const runnerPath = path.join(
+    os.tmpdir(),
+    `coder-ppcommit-gitleaks-test-${process.pid}.mjs`,
+  );
+  const runnerCode = `
+import { runPpcommitNative } from "${pathToFileURL(ppcommitPath).href}";
+try {
+  await runPpcommitNative(process.env.CODER_PPCOMMIT_REPO, { blockSecrets: true });
+  process.stdout.write("NO_ERROR");
+} catch (e) {
+  process.stdout.write(e.message || String(e));
+}
+`;
+  writeFileSync(runnerPath, runnerCode, "utf8");
+  try {
+    const res = spawnSync(process.execPath, [runnerPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: restrictedPath,
+        CODER_PPCOMMIT_REPO: repo,
       },
-    );
-    const out = r.stdout || "";
+      timeout: 10_000,
+    });
+    const out = (res.stdout || "") + (res.stderr || "");
     assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
     assert.match(out, /gitleaks binary not found in PATH/);
     assert.match(out, /gitleaks\/gitleaks/);
     assert.match(out, /blockSecrets/);
-  },
-);
+  } finally {
+    try {
+      unlinkSync(runnerPath);
+    } catch {}
+  }
+});

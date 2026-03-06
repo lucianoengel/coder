@@ -1,35 +1,41 @@
-import fs from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
-export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
-  const normalRoot = path.resolve(fs.realpathSync(defaultWorkspace));
-  const normalTarget = path.resolve(
-    fs.realpathSync(workspace || defaultWorkspace),
+function isWithinRoot(root, candidate) {
+  const rel = path.relative(root, candidate);
+  return (
+    rel === "" ||
+    (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel))
   );
-  const root = normalRoot;
-  const target = normalTarget;
+}
 
-  if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") return target;
+function resolveExistingRealPathOrParent(targetPath) {
+  try {
+    return realpathSync(targetPath);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+    let probe = path.dirname(targetPath);
+    while (probe && probe !== path.dirname(probe)) {
+      if (existsSync(probe)) return realpathSync(probe);
+      probe = path.dirname(probe);
+    }
+    if (existsSync(probe)) return realpathSync(probe);
+    throw err;
+  }
+}
 
-  // Pre-resolution: the physical path of `workspace` must already be within root.
-  // Catches symlinks outside root that point inside (e.g. /tmp/link → /root/dir).
-  if (
-    normalTarget !== normalRoot &&
-    !normalTarget.startsWith(normalRoot + path.sep)
-  ) {
+export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
+  const rootPath = path.resolve(defaultWorkspace);
+  const targetPath = path.resolve(workspace || defaultWorkspace);
+  if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") return targetPath;
+
+  const root = realpathSync(rootPath);
+  const target = resolveExistingRealPathOrParent(targetPath);
+  if (!isWithinRoot(root, target)) {
     throw new Error(
       `Workspace must be within server root: ${root}. ` +
         "Set CODER_ALLOW_ANY_WORKSPACE=1 to allow arbitrary paths.",
     );
   }
-
-  // Post-resolution: the resolved target must also be within root.
-  // Catches symlinks inside root that point outside (e.g. /root/link → /etc).
-  if (target !== root && !target.startsWith(root + path.sep)) {
-    throw new Error(
-      `Workspace must be within server root: ${root}. ` +
-        "Set CODER_ALLOW_ANY_WORKSPACE=1 to allow arbitrary paths.",
-    );
-  }
-  return target;
+  return targetPath;
 }
