@@ -607,7 +607,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                   : randomUUID().slice(0, 8);
               const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
-              // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
+              // Pass full prior queue to runDevelopLoop so it can:
+              // 1. Build knownBranches for WIP preservation (needs all branches)
+              // 2. Filter to only keep completed issues in the merge logic
               const priorLoopState = await loadLoopState(ws);
 
               // Save initial loop state

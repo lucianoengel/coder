@@ -6,7 +6,10 @@ import path from "node:path";
 import test from "node:test";
 import { loadLoopState, saveLoopState } from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
-import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
+import {
+  resetForNextIssue,
+  runDevelopLoop,
+} from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "gh118-"));
@@ -175,7 +178,7 @@ test("prior completed issue is not re-processed, dependency resolves for B", asy
   }
 });
 
-test("prior failed issue is not re-processed, dependent is skipped", async () => {
+test("prior failed issue is retried on fresh start, dependent proceeds", async () => {
   const ws = makeTmpWorkspace();
   const originalWfRun = WorkflowRunner.prototype.run;
   try {
@@ -202,9 +205,12 @@ test("prior failed issue is not re-processed, dependent is skipped", async () =>
       ],
     });
 
-    const pipelineCalls = [];
+    const issueDraftCalls = [];
     WorkflowRunner.prototype.run = async (steps) => {
-      pipelineCalls.push(steps[0]?.machine?.name);
+      const name = steps[0]?.machine?.name;
+      if (name === "develop.issue_draft") {
+        issueDraftCalls.push(steps[0]?.inputMapper?.()?.issue?.id);
+      }
       return successfulPipelineStub(steps);
     };
 
@@ -214,15 +220,19 @@ test("prior failed issue is not re-processed, dependent is skipped", async () =>
       ctx,
     );
 
-    assert.equal(pipelineCalls.length, 0, "no pipeline calls expected");
-    assert.equal(result.completed, 0);
-    assert.equal(result.failed, 1);
-    assert.equal(result.skipped, 1);
+    assert.deepEqual(
+      issueDraftCalls,
+      ["A", "B"],
+      "both A and B should enter pipeline (A retried, B proceeds)",
+    );
+    assert.equal(result.completed, 2);
+    assert.equal(result.failed, 0);
+    assert.equal(result.skipped, 0);
 
     const resultA = result.results.find((r) => r.id === "A");
     const resultB = result.results.find((r) => r.id === "B");
-    assert.equal(resultA.status, "failed");
-    assert.equal(resultB.status, "skipped");
+    assert.equal(resultA.status, "completed");
+    assert.equal(resultB.status, "completed");
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
     rmSync(ws, { recursive: true, force: true });
@@ -306,6 +316,138 @@ test("fresh run with no prior state processes all issues", async () => {
     assert.equal(result.completed, 2);
     assert.equal(result.failed, 0);
     assert.equal(result.skipped, 0);
+  } finally {
+    WorkflowRunner.prototype.run = originalWfRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("reset failure after issue completes: loop status failed, counters updated", async () => {
+  const ws = makeTmpWorkspace();
+  const originalWfRun = WorkflowRunner.prototype.run;
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1, dependsOn: [] },
+      { id: "B", title: "Issue B", difficulty: 2, dependsOn: [] },
+    ]);
+
+    let resetCallCount = 0;
+    const resetOverride = async (...args) => {
+      resetCallCount++;
+      if (resetCallCount >= 1) {
+        throw new Error("simulated reset failure");
+      }
+      return resetForNextIssue(...args);
+    };
+
+    const issueDraftCalls = [];
+    WorkflowRunner.prototype.run = async (steps) => {
+      const name = steps[0]?.machine?.name;
+      if (name === "develop.issue_draft") {
+        issueDraftCalls.push(steps[0]?.inputMapper?.()?.issue?.id);
+      }
+      return successfulPipelineStub(steps);
+    };
+
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        resetForNextIssueOverride: resetOverride,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.completed, 0);
+    assert.equal(result.failed, 1);
+    assert.equal(result.skipped, 1);
+
+    const resultA = result.results.find((r) => r.id === "A");
+    const resultB = result.results.find((r) => r.id === "B");
+    assert.equal(resultA.status, "failed");
+    assert.ok(resultA.error?.includes("simulated reset failure"));
+    assert.equal(resultB.status, "skipped");
+
+    const resetFailed = ctx.logEvents.filter(
+      (e) => e.event === "reset_for_next_issue_failed",
+    );
+    assert.equal(resetFailed.length, 1);
+  } finally {
+    WorkflowRunner.prototype.run = originalWfRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("reset failure after pipeline failed: does not undercount completed", async () => {
+  const ws = makeTmpWorkspace();
+  const originalWfRun = WorkflowRunner.prototype.run;
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1, dependsOn: [] },
+      { id: "B", title: "Issue B", difficulty: 2, dependsOn: [] },
+    ]);
+
+    let resetCallCount = 0;
+    const resetOverride = async (...args) => {
+      resetCallCount++;
+      if (resetCallCount >= 1) {
+        throw new Error("simulated reset failure");
+      }
+      return resetForNextIssue(...args);
+    };
+
+    WorkflowRunner.prototype.run = async (steps) => {
+      const name = steps[0]?.machine?.name;
+      if (name === "develop.issue_draft") {
+        return { status: "completed", results: [{ status: "ok", data: {} }] };
+      }
+      if (name === "develop.planning") {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { planMd: "plan" } }],
+        };
+      }
+      if (name === "develop.plan_review") {
+        return {
+          status: "completed",
+          results: [
+            { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+          ],
+        };
+      }
+      if (name === "develop.implementation") {
+        return {
+          status: "failed",
+          error: "build failed",
+          results: [],
+        };
+      }
+      return { status: "completed", results: [] };
+    };
+
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        resetForNextIssueOverride: resetOverride,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.completed, 0);
+    assert.equal(result.failed, 1);
+    assert.equal(result.skipped, 1);
+    assert.ok(result.completed >= 0, "completed must not go negative");
+
+    const resultA = result.results.find((r) => r.id === "A");
+    assert.ok(
+      resultA?.error?.includes("build failed"),
+      "pipeline error should be preserved, not overwritten by reset error",
+    );
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
     rmSync(ws, { recursive: true, force: true });

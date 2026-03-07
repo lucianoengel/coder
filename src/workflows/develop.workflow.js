@@ -490,6 +490,193 @@ function resolveDependencyBranch(issue, outcomeMap) {
 const isRateLimitError = (text) =>
   /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
 
+/** Unstage, restore tracked files, and remove untracked files. Returns true only if all steps succeeded. */
+function discardWorktreeChanges(repoRoot) {
+  const resetRes = spawnSync("git", ["reset"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (resetRes.status !== 0) return false;
+
+  const diffRes = spawnSync("git", ["diff", "--name-only"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (diffRes.status !== 0) return false;
+  const hasTrackedChanges = !!(diffRes.stdout || "").trim();
+  if (hasTrackedChanges) {
+    const coRes = spawnSync("git", ["checkout", "--", "."], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (coRes.status !== 0) return false;
+  }
+
+  const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  return cleanRes.status === 0;
+}
+
+/**
+ * Ensure the workspace is in a known-clean state before starting the loop.
+ * Cleans up stale per-issue state and artifacts that a previous crashed or
+ * interrupted run may have left behind. Does NOT touch loop-state.json so
+ * issue-level resume information is preserved.
+ */
+export function ensureCleanLoopStart(
+  workspaceDir,
+  repoRoot,
+  defaultBranch,
+  log,
+  knownBranches = new Set(),
+) {
+  const cleaned = {
+    state: false,
+    artifacts: false,
+    branch: false,
+    wipCommitted: false,
+    worktree: false,
+  };
+
+  // 1. Delete stale per-issue state (step flags from a prior issue)
+  const sp = statePathFor(workspaceDir);
+  if (existsSync(sp)) {
+    rmSync(sp, { force: true });
+    cleaned.state = true;
+  }
+
+  // 2. Delete stale artifacts from a prior issue
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  for (const name of [
+    "ISSUE.md",
+    "PLAN.md",
+    "PLANREVIEW.md",
+    "REVIEW_FINDINGS.md",
+  ]) {
+    const p = path.join(artifactsDir, name);
+    if (existsSync(p)) {
+      rmSync(p, { force: true });
+      cleaned.artifacts = true;
+    }
+  }
+
+  // 3. Ensure git is on the default branch
+  const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (branchRes.status !== 0) {
+    const err = (branchRes.stderr || "").trim().slice(0, 200);
+    log({
+      event: "loop_startup_cleanup_failed",
+      step: "detect_branch",
+      error: err,
+    });
+    throw new Error(
+      `Loop startup cleanup failed: could not detect current branch: ${err}`,
+    );
+  }
+  const currentBranch = (branchRes.stdout || "").trim();
+  if (currentBranch && currentBranch !== defaultBranch) {
+    const wipStatus = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    const hasDirty = !!(wipStatus.stdout || "").trim();
+
+    if (hasDirty && knownBranches.has(currentBranch)) {
+      // Agent-managed branch from a prior run: preserve uncommitted WIP
+      const addRes = spawnSync("git", ["add", "-A"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (addRes.status !== 0) {
+        throw new Error(
+          `Loop startup cleanup failed: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
+        );
+      }
+      const commitRes = spawnSync(
+        "git",
+        ["commit", "-m", `wip: interrupted work on ${currentBranch}`],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+      if (commitRes.status === 0) {
+        cleaned.wipCommitted = true;
+      } else {
+        throw new Error(
+          `Loop startup cleanup failed: could not preserve WIP on ${currentBranch} (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
+        );
+      }
+    } else if (hasDirty) {
+      const discardOk = discardWorktreeChanges(repoRoot);
+      if (!discardOk) {
+        log({
+          event: "loop_startup_cleanup_failed",
+          step: "discard_unknown_branch",
+          error: "could not discard worktree",
+        });
+        throw new Error(
+          "Loop startup cleanup failed: could not discard worktree on unknown branch",
+        );
+      }
+    }
+
+    const coRes = spawnSync("git", ["checkout", defaultBranch], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (coRes.status !== 0) {
+      const err = (coRes.stderr || "").trim().slice(0, 200);
+      log({
+        event: "loop_startup_cleanup_failed",
+        step: "checkout_default_branch",
+        error: err,
+      });
+      throw new Error(
+        `Loop startup cleanup failed: could not checkout ${defaultBranch}: ${err}`,
+      );
+    }
+    cleaned.branch = true;
+  }
+
+  // 4. Clean any remaining dirty files on the default branch
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const dirtyLines = (status.stdout || "")
+    .split("\n")
+    .filter((l) => l.trim() && !l.slice(3).startsWith(".coder/"));
+  if (dirtyLines.length > 0) {
+    const ok = discardWorktreeChanges(repoRoot);
+    if (!ok) {
+      log({
+        event: "loop_startup_cleanup_failed",
+        step: "clean_worktree",
+        error: "discardWorktreeChanges failed",
+      });
+      throw new Error("Loop startup cleanup failed: could not clean worktree");
+    }
+    cleaned.worktree = true;
+  }
+
+  if (
+    cleaned.state ||
+    cleaned.artifacts ||
+    cleaned.branch ||
+    cleaned.wipCommitted ||
+    cleaned.worktree
+  ) {
+    log({
+      event: "loop_startup_cleanup",
+      ...cleaned,
+      ...(cleaned.branch && { previousBranch: currentBranch }),
+    });
+  }
+}
+
 /**
  * Fetch open PR/MR branches and their diff stats from the hosting platform.
  * Returns an array of { branch, issueId, title, diffStat } suitable for
@@ -613,6 +800,7 @@ export async function runDevelopLoop(opts, ctx) {
     localIssuesDir = "",
     ppcommitPreset = "",
     issueIds = [],
+    resetForNextIssueOverride, // Internal: test seam, do not use
   } = opts;
 
   // List issues (local or remote)
@@ -657,35 +845,38 @@ export async function runDevelopLoop(opts, ctx) {
     source: listResult.data.source || "remote",
   });
 
-  // Initialize loop state — merge terminal statuses from prior run
+  // Fresh-start semantics: only completed issues (with PRs) are preserved.
+  // Failed/skipped/deferred from prior runs are retried from scratch.
   const loopState = await loadLoopState(ctx.workspaceDir);
   const priorQueue = loopState.issueQueue || [];
   const priorById = new Map(priorQueue.map((q) => [q.id, q]));
 
+  // Keep original state for cleanup-failure path so we don't persist overwritten
+  // queue (which would erase branch metadata needed for WIP preservation).
+  const stateForCleanupFailure = {
+    ...loopState,
+    issueQueue: priorQueue.map((q) => ({ ...q })),
+  };
+
   loopState.status = "running";
   loopState.issueQueue = issues.map((iss) => {
     const prior = priorById.get(iss.id);
-    const isTerminal =
-      prior && ["completed", "failed", "skipped"].includes(prior.status);
+    const isCompleted = prior && prior.status === "completed";
     return {
       ...iss,
       dependsOn: iss.dependsOn || iss.depends_on || [],
-      status: isTerminal ? prior.status : "pending",
-      branch: isTerminal ? prior.branch : null,
-      prUrl: isTerminal ? prior.prUrl : null,
-      error: isTerminal ? prior.error : null,
-      baseBranch: isTerminal ? prior.baseBranch : null,
-      startedAt: isTerminal ? prior.startedAt : null,
-      completedAt: isTerminal ? prior.completedAt : null,
+      status: isCompleted ? "completed" : "pending",
+      branch: isCompleted ? prior.branch : null,
+      prUrl: isCompleted ? prior.prUrl : null,
+      error: null,
+      baseBranch: isCompleted ? prior.baseBranch : null,
+      startedAt: isCompleted ? prior.startedAt : null,
+      completedAt: isCompleted ? prior.completedAt : null,
     };
   });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  const prevLoopRunId = loopState.runId;
-  loopState.runId = ctx.runId || loopState.runId;
-  await saveLoopState(ctx.workspaceDir, loopState, {
-    guardRunId: prevLoopRunId,
-  });
+  loopState.runId = ctx.runId ?? loopState.runId; // ctx.runId typically unset; use prior if present
 
   const loopRunId = randomUUID().slice(0, 8);
   runHooks(ctx, loopRunId, "loop_start", "", {
@@ -694,9 +885,49 @@ export async function runDevelopLoop(opts, ctx) {
     method: rationale.method,
   });
 
-  // Resolve repo root and default branch once for the entire loop
+  // Ensure a clean workspace before processing any issues.
+  // Run before persisting overwritten queue so a crash leaves prior branches
+  // intact for WIP preservation on next startup.
+  // Recovers from prior crashed/interrupted runs without touching loop-state.json.
+  // Throws if git is broken — no point continuing if the workspace can't be cleaned.
   const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
-  const defaultBranch = detectDefaultBranch(loopRepoRoot);
+  const loopDefaultBranch = detectDefaultBranch(loopRepoRoot);
+  const knownBranches = new Set(
+    priorQueue.map((q) => q.branch).filter(Boolean),
+  );
+  try {
+    ensureCleanLoopStart(
+      ctx.workspaceDir,
+      loopRepoRoot,
+      loopDefaultBranch,
+      ctx.log,
+      knownBranches,
+    );
+  } catch (cleanupErr) {
+    stateForCleanupFailure.status = "failed";
+    stateForCleanupFailure.error = cleanupErr.message;
+    stateForCleanupFailure.runId = loopState.runId;
+    stateForCleanupFailure.completedAt = new Date().toISOString();
+    await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
+      guardRunId: loopState.runId,
+    });
+    runHooks(ctx, loopRunId, "loop_complete", "", {
+      status: "failed",
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      error: cleanupErr.message,
+    });
+    return {
+      status: "failed",
+      error: cleanupErr.message,
+      results: [],
+    };
+  }
+
+  await saveLoopState(ctx.workspaceDir, loopState, {
+    guardRunId: loopState.runId,
+  });
 
   /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
   const outcomeMap = new Map();
@@ -705,19 +936,20 @@ export async function runDevelopLoop(opts, ctx) {
   let failed = 0;
   let skipped = 0;
 
-  // Seed outcomeMap from ALL terminal issues in the prior run (includes
+  // Seed outcomeMap from completed issues in the prior run (includes
   // issues no longer in the active list, e.g. closed/merged).
+  // Only completed issues are seeded — failed/skipped are retried fresh.
   // For completed branches, compute diffSummary so they can serve as
   // fallback conflict context when open-PR fetching is unavailable.
   for (const prior of priorQueue) {
-    if (!["completed", "failed", "skipped"].includes(prior.status)) continue;
+    if (prior.status !== "completed") continue;
     const priorRepoPath = normalizeRepoPath(ctx.workspaceDir, prior.repo_path);
     const entry = {
-      status: prior.status,
+      status: "completed",
       branch: prior.branch || undefined,
       repoPath: priorRepoPath,
     };
-    if (prior.status === "completed" && prior.branch) {
+    if (prior.branch) {
       const priorRepoRoot = resolveRepoRoot(ctx.workspaceDir, priorRepoPath);
       const priorDefault = detectDefaultBranch(priorRepoRoot);
       const stat = spawnSync(
@@ -1060,12 +1292,61 @@ export async function runDevelopLoop(opts, ctx) {
       guardRunId: loopState.runId,
     });
 
-    // Reset between issues
+    // Reset between issues — if this fails, abort the loop because
+    // subsequent issues would run from the wrong branch/worktree.
     const issueStatus = loopState.issueQueue[i].status;
-    await resetForNextIssue(ctx.workspaceDir, repoPath, {
-      destructiveReset,
-      issueStatus,
-    });
+    const doReset = resetForNextIssueOverride ?? resetForNextIssue;
+    try {
+      await doReset(ctx.workspaceDir, repoPath, {
+        destructiveReset,
+        issueStatus,
+      });
+    } catch (resetErr) {
+      ctx.log({
+        event: "reset_for_next_issue_failed",
+        issueId: issue.id,
+        error: resetErr.message,
+      });
+      // Mark as failed so loop state/counters reflect the abort cause
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error =
+        issueStatus === "completed"
+          ? resetErr.message
+          : `${loopState.issueQueue[i].error}; reset failed: ${resetErr.message}`;
+      outcomeMap.set(issue.id, { status: "failed" });
+      if (issueStatus === "completed") {
+        completed--;
+        failed++;
+        const lastResult = results[results.length - 1];
+        if (lastResult?.id === issue.id) {
+          results[results.length - 1] = {
+            ...issue,
+            status: "failed",
+            error: resetErr.message,
+          };
+        } else {
+          results.push({ ...issue, status: "failed", error: resetErr.message });
+        }
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_failed",
+          "",
+          {
+            status: "failed",
+            error: loopState.issueQueue[i].error,
+          },
+          {
+            CODER_HOOK_ISSUE_ID: String(issue.id || ""),
+            CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
+          },
+        );
+      }
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      return "failed";
+    }
     return issueStatus;
   }
 
@@ -1076,6 +1357,7 @@ export async function runDevelopLoop(opts, ctx) {
     if (issueStatus !== "failed") continue;
 
     const failedIssueId = issues[i]?.id;
+    loopState.status = "failed";
     ctx.log({
       event: "loop_aborted_on_failure",
       issueId: failedIssueId,
@@ -1142,7 +1424,57 @@ export async function runDevelopLoop(opts, ctx) {
 
     for (const i of deferredIndices) {
       if (ctx.cancelToken.cancelled) break;
-      await processIssue(issues[i], i, { isRetry: true });
+      const retryStatus = await processIssue(issues[i], i, { isRetry: true });
+      if (retryStatus === "failed") {
+        const failedIssueId = issues[i]?.id;
+        loopState.status = "failed";
+        ctx.log({
+          event: "loop_aborted_on_failure",
+          issueId: failedIssueId,
+          reason: "issue_failed",
+        });
+        for (let j = 0; j < loopState.issueQueue.length; j++) {
+          const entry = loopState.issueQueue[j];
+          if (entry.status !== "pending" && entry.status !== "deferred")
+            continue;
+          entry.status = "skipped";
+          entry.error = "Skipped: prior issue failed";
+          entry.completedAt = new Date().toISOString();
+          outcomeMap.set(entry.id, { status: "skipped" });
+          skipped++;
+          const issueEnv = {
+            CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+            CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+          };
+          ctx.log({
+            event: "issue_skipped",
+            issueId: entry.id,
+            reason: "aborted_after_failure",
+            failedIssueId,
+          });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_skipped",
+            "",
+            {
+              status: "skipped",
+              reason: "aborted_after_failure",
+              failedIssueId,
+            },
+            issueEnv,
+          );
+          results.push({
+            ...issues[j],
+            status: "skipped",
+            error: entry.error,
+          });
+        }
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        break;
+      }
     }
   }
 
@@ -1276,7 +1608,9 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
     }
   }
 
-  loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
+  if (loopState.status === "running") {
+    loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
+  }
   loopState.completedAt = new Date().toISOString();
   await saveLoopState(ctx.workspaceDir, loopState, {
     guardRunId: loopState.runId,
@@ -1303,7 +1637,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 /**
  * Reset workspace for next issue in autonomous loop.
  */
-async function resetForNextIssue(
+export async function resetForNextIssue(
   workspaceDir,
   repoPath,
   { destructiveReset = false, issueStatus = "completed" } = {},
@@ -1327,41 +1661,84 @@ async function resetForNextIssue(
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
   if (existsSync(repoRoot)) {
-    // Preserve any uncommitted work on the current issue branch before
-    // switching back to the default branch (applies to all statuses so
-    // completed issues don't leave stray untracked files behind).
-    const status = spawnSync("git", ["status", "--porcelain"], {
+    const preStatus = spawnSync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
     });
-    if ((status.stdout || "").trim()) {
-      const label =
-        issueStatus === "completed" ? "stray files" : "partial work";
-      spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
-      spawnSync(
+    const hasDirtyFiles = !!(preStatus.stdout || "").trim();
+
+    if (
+      hasDirtyFiles &&
+      (issueStatus === "failed" || issueStatus === "skipped")
+    ) {
+      // Preserve partial work on the issue branch for failed/skipped issues.
+      const addRes = spawnSync("git", ["add", "-A"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (addRes.status !== 0) {
+        throw new Error(
+          `resetForNextIssue: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
+        );
+      }
+      const commitRes = spawnSync(
         "git",
-        ["commit", "-m", `wip: ${label} (issue ${issueStatus})`],
+        ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
         { cwd: repoRoot, encoding: "utf8" },
       );
+      if (commitRes.status !== 0) {
+        throw new Error(
+          `resetForNextIssue: could not preserve WIP (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
+        );
+      }
+    } else if (hasDirtyFiles) {
+      // For completed/deferred issues, discard stray changes — the pipeline
+      // should have committed everything it needs already.
+      if (!discardWorktreeChanges(repoRoot)) {
+        throw new Error(
+          "resetForNextIssue: could not discard worktree changes",
+        );
+      }
     }
 
     const defaultBranch = detectDefaultBranch(repoRoot);
-    spawnSync("git", ["checkout", defaultBranch], {
+    const coRes = spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    if (coRes.status !== 0) {
+      throw new Error(
+        `resetForNextIssue: could not checkout ${defaultBranch}: ${(coRes.stderr || "").trim().slice(0, 200)}`,
+      );
+    }
+
+    // Always remove untracked files after switching to the default branch
+    // to prevent them from leaking into the next issue's workspace.
+    const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (cleanRes.status !== 0) {
+      throw new Error(
+        `resetForNextIssue: git clean failed: ${(cleanRes.stderr || "").trim().slice(0, 200)}`,
+      );
+    }
 
     // Always clean untracked files after switching branches so the next
     // issue starts with a pristine working tree.
     if (destructiveReset) {
-      spawnSync("git", ["restore", "--staged", "--worktree", "."], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
+      // Redundant with discardWorktreeChanges + git clean above when hasDirtyFiles,
+      // but ensures staged/worktree match HEAD when we skipped discard (no dirty files).
+      const restoreRes = spawnSync(
+        "git",
+        ["restore", "--staged", "--worktree", "."],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+      if (restoreRes.status !== 0) {
+        throw new Error(
+          `resetForNextIssue: git restore failed: ${(restoreRes.stderr || "").trim().slice(0, 200)}`,
+        );
+      }
     }
-    spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
   }
 }
