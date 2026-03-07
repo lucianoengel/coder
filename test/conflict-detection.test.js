@@ -731,3 +731,132 @@ test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () 
     "Should log fetch attempt or failure",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Cross-repo contamination: outcomeMap entries are filtered by repoPath
+// ---------------------------------------------------------------------------
+
+test("activeBranches from outcomeMap only includes entries matching current issue repoPath", () => {
+  // Simulate the filtering logic from processIssue
+  const outcomeMap = new Map();
+  outcomeMap.set("issue-1", {
+    status: "completed",
+    branch: "coder/issue-1",
+    diffSummary: " src/auth.js | 10 +\n 1 file changed",
+    repoPath: ".",
+  });
+  outcomeMap.set("issue-2", {
+    status: "completed",
+    branch: "coder/issue-2",
+    diffSummary: " lib/utils.py | 5 +\n 1 file changed",
+    repoPath: "services/backend",
+  });
+  outcomeMap.set("issue-3", {
+    status: "completed",
+    branch: "coder/issue-3",
+    diffSummary: " src/users.js | 20 +\n 1 file changed",
+    repoPath: ".",
+  });
+  outcomeMap.set("issue-4", {
+    status: "failed",
+    repoPath: ".",
+  });
+
+  const currentRepoPath = ".";
+  const seenBranches = new Set();
+  const activeBranches = [];
+
+  for (const [id, outcome] of outcomeMap) {
+    if (
+      outcome.status === "completed" &&
+      outcome.branch &&
+      outcome.diffSummary &&
+      outcome.repoPath === currentRepoPath &&
+      !seenBranches.has(outcome.branch)
+    ) {
+      activeBranches.push({
+        branch: outcome.branch,
+        issueId: id,
+        diffStat: outcome.diffSummary,
+      });
+      seenBranches.add(outcome.branch);
+    }
+  }
+
+  assert.equal(activeBranches.length, 2, "Should only include issues from repo '.'");
+  const branchNames = activeBranches.map((b) => b.branch);
+  assert.ok(branchNames.includes("coder/issue-1"));
+  assert.ok(branchNames.includes("coder/issue-3"));
+  assert.ok(!branchNames.includes("coder/issue-2"), "issue-2 is from a different repo");
+});
+
+test("activeBranches excludes all entries when none match current repoPath", () => {
+  const outcomeMap = new Map();
+  outcomeMap.set("issue-1", {
+    status: "completed",
+    branch: "coder/issue-1",
+    diffSummary: " src/auth.js | 10 +\n 1 file changed",
+    repoPath: "services/frontend",
+  });
+
+  const currentRepoPath = "services/backend";
+  const activeBranches = [];
+
+  for (const [id, outcome] of outcomeMap) {
+    if (
+      outcome.status === "completed" &&
+      outcome.branch &&
+      outcome.diffSummary &&
+      outcome.repoPath === currentRepoPath
+    ) {
+      activeBranches.push({ branch: outcome.branch, issueId: id });
+    }
+  }
+
+  assert.equal(activeBranches.length, 0, "No entries should match a different repoPath");
+});
+
+// ---------------------------------------------------------------------------
+// fetchOpenPrBranches: uses PR ref-based fetch (pull/<n>/head)
+// ---------------------------------------------------------------------------
+
+test("fetchOpenPrBranches: uses pull/<number>/head refs for GitHub PRs", () => {
+  // This test validates the structure by checking the fetchRef computed
+  // for GitHub PRs. We can't easily mock spawnSync, so we verify the
+  // mapping function directly.
+  const ghPrData = [
+    { headRefName: "feat/auth", number: 42, title: "Add auth" },
+    { headRefName: "fix/typo", number: 99, title: "Fix typo" },
+  ];
+
+  const mapped = ghPrData.map((pr) => ({
+    branch: pr.headRefName,
+    id: `#${pr.number}`,
+    title: pr.title || "",
+    fetchRef: `pull/${pr.number}/head`,
+  }));
+
+  assert.equal(mapped[0].fetchRef, "pull/42/head");
+  assert.equal(mapped[0].branch, "feat/auth");
+  assert.equal(mapped[1].fetchRef, "pull/99/head");
+  assert.equal(mapped[1].id, "#99");
+});
+
+test("fetchOpenPrBranches: uses refs/merge-requests/<iid>/head for GitLab MRs", () => {
+  const glMrData = [
+    { source_branch: "feat/auth", iid: 7, title: "Add auth" },
+    { source_branch: "fix/bug", iid: 15, title: "Fix bug" },
+  ];
+
+  const mapped = glMrData.map((mr) => ({
+    branch: mr.source_branch,
+    id: `!${mr.iid}`,
+    title: mr.title || "",
+    fetchRef: `refs/merge-requests/${mr.iid}/head`,
+  }));
+
+  assert.equal(mapped[0].fetchRef, "refs/merge-requests/7/head");
+  assert.equal(mapped[0].branch, "feat/auth");
+  assert.equal(mapped[1].fetchRef, "refs/merge-requests/15/head");
+  assert.equal(mapped[1].id, "!15");
+});

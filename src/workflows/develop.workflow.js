@@ -505,6 +505,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
         branch: mr.source_branch,
         id: `!${mr.iid}`,
         title: mr.title || "",
+        fetchRef: `refs/merge-requests/${mr.iid}/head`,
       }));
     } else {
       const res = spawnSync(
@@ -521,20 +522,24 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
         branch: pr.headRefName,
         id: `#${pr.number}`,
         title: pr.title || "",
+        fetchRef: `pull/${pr.number}/head`,
       }));
     }
 
     const result = [];
     for (const pr of prs) {
-      // Fetch the remote ref so we can diff even if the branch isn't checked out locally
-      spawnSync("git", ["fetch", "origin", pr.branch], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 10000,
-      });
+      // Use the platform-specific PR ref to fetch; this works for both
+      // same-repo and fork-based PRs without needing the branch on origin.
+      const localRef = `pr-fetch/${pr.id}`;
+      const fetchRes = spawnSync(
+        "git",
+        ["fetch", "origin", `${pr.fetchRef}:${localRef}`],
+        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      );
+      if (fetchRes.status !== 0) continue;
       const stat = spawnSync(
         "git",
-        ["diff", "--stat", `${defaultBranch}...origin/${pr.branch}`],
+        ["diff", "--stat", `${defaultBranch}...${localRef}`],
         { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
       );
       if (stat.status !== 0) continue;
@@ -661,7 +666,7 @@ export async function runDevelopLoop(opts, ctx) {
   const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
   const defaultBranch = detectDefaultBranch(loopRepoRoot);
 
-  /** @type {Map<string, { status: string, branch?: string, diffSummary?: string }>} */
+  /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
   const outcomeMap = new Map();
   const results = [];
   let completed = 0;
@@ -674,12 +679,14 @@ export async function runDevelopLoop(opts, ctx) {
   // fallback conflict context when open-PR fetching is unavailable.
   for (const prior of priorQueue) {
     if (!["completed", "failed", "skipped"].includes(prior.status)) continue;
-    const entry = { status: prior.status, branch: prior.branch || undefined };
+    const priorRepoPath = normalizeRepoPath(ctx.workspaceDir, prior.repo_path);
+    const entry = {
+      status: prior.status,
+      branch: prior.branch || undefined,
+      repoPath: priorRepoPath,
+    };
     if (prior.status === "completed" && prior.branch) {
-      const priorRepoRoot = resolveRepoRoot(
-        ctx.workspaceDir,
-        normalizeRepoPath(ctx.workspaceDir, prior.repo_path),
-      );
+      const priorRepoRoot = resolveRepoRoot(ctx.workspaceDir, priorRepoPath);
       const priorDefault = detectDefaultBranch(priorRepoRoot);
       const stat = spawnSync(
         "git",
@@ -825,12 +832,14 @@ export async function runDevelopLoop(opts, ctx) {
     );
     const seenBranches = new Set(openPrBranches.map((b) => b.branch));
 
-    // Add current-run completed branches not already covered by open PRs
+    // Add current-run completed branches not already covered by open PRs,
+    // filtering to only those from the same repo to avoid cross-repo contamination.
     for (const [id, outcome] of outcomeMap) {
       if (
         outcome.status === "completed" &&
         outcome.branch &&
         outcome.diffSummary &&
+        outcome.repoPath === repoPath &&
         !seenBranches.has(outcome.branch)
       ) {
         const entry = loopState.issueQueue.find((q) => q.id === id);
@@ -921,7 +930,7 @@ export async function runDevelopLoop(opts, ctx) {
           { cwd: issueRepoRoot, encoding: "utf8" },
         );
         const diffSummary = (diffStat.stdout || "").trim();
-        outcomeMap.set(issue.id, { status: "completed", branch, diffSummary });
+        outcomeMap.set(issue.id, { status: "completed", branch, diffSummary, repoPath });
         completed++;
         results.push({
           ...issue,
