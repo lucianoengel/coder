@@ -89,7 +89,12 @@ export function registerDevelopMachines() {
 export async function runPlanLoop(
   runner,
   ctx,
-  { planningMachine: pm, planReviewMachine: prm, maxRounds, activeBranches } = {},
+  {
+    planningMachine: pm,
+    planReviewMachine: prm,
+    maxRounds,
+    activeBranches,
+  } = {},
 ) {
   maxRounds = maxRounds ?? ctx.config?.workflow?.maxPlanRevisions ?? 3;
   const allResults = [];
@@ -103,7 +108,15 @@ export async function runPlanLoop(
     }
 
     const planRound = await runner.run(
-      [{ machine: pm, inputMapper: () => ({ priorCritique, activeBranches: activeBranches || [] }) }],
+      [
+        {
+          machine: pm,
+          inputMapper: () => ({
+            priorCritique,
+            activeBranches: activeBranches || [],
+          }),
+        },
+      ],
       {},
     );
     allResults.push(...planRound.results);
@@ -499,7 +512,11 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
         { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
       );
       if (res.status !== 0 || !res.stdout) {
-        if (log) log({ event: "open_prs_fetch_failed", error: (res.stderr || "glab failed").trim() });
+        if (log)
+          log({
+            event: "open_prs_fetch_failed",
+            error: (res.stderr || "glab failed").trim(),
+          });
         return [];
       }
       const mrs = JSON.parse(res.stdout);
@@ -512,11 +529,24 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
     } else {
       const res = spawnSync(
         "gh",
-        ["pr", "list", "--state", "open", "--json", "headRefName,title,number", "--limit", "50"],
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--json",
+          "headRefName,title,number",
+          "--limit",
+          "50",
+        ],
         { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
       );
       if (res.status !== 0 || !res.stdout) {
-        if (log) log({ event: "open_prs_fetch_failed", error: (res.stderr || "gh failed").trim() });
+        if (log)
+          log({
+            event: "open_prs_fetch_failed",
+            error: (res.stderr || "gh failed").trim(),
+          });
         return [];
       }
       const items = JSON.parse(res.stdout);
@@ -892,8 +922,10 @@ export async function runDevelopLoop(opts, ctx) {
         await saveState(ctx.workspaceDir, deferState);
 
         const deferPaths = artifactPaths(ctx.artifactsDir);
-        if (existsSync(deferPaths.plan)) rmSync(deferPaths.plan, { force: true });
-        if (existsSync(deferPaths.critique)) rmSync(deferPaths.critique, { force: true });
+        if (existsSync(deferPaths.plan))
+          rmSync(deferPaths.plan, { force: true });
+        if (existsSync(deferPaths.critique))
+          rmSync(deferPaths.critique, { force: true });
 
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = pipelineResult.error;
@@ -933,7 +965,12 @@ export async function runDevelopLoop(opts, ctx) {
           { cwd: issueRepoRoot, encoding: "utf8" },
         );
         const diffSummary = (diffStat.stdout || "").trim();
-        outcomeMap.set(issue.id, { status: "completed", branch, diffSummary, repoPath });
+        outcomeMap.set(issue.id, {
+          status: "completed",
+          branch,
+          diffSummary,
+          repoPath,
+        });
         completed++;
         results.push({
           ...issue,

@@ -1,11 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -56,7 +50,10 @@ function makeRunner(ctx) {
 test("runPlanLoop: passes activeBranches to the planning machine input", async () => {
   const tmp = makeTmp();
   try {
-    const ctx = makeCtx({ workspaceDir: tmp, artifactsDir: path.join(tmp, ".coder", "artifacts") });
+    const ctx = makeCtx({
+      workspaceDir: tmp,
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+    });
     const runner = makeRunner(ctx);
     let capturedInput = null;
 
@@ -104,7 +101,10 @@ test("runPlanLoop: passes activeBranches to the planning machine input", async (
 test("runPlanLoop: defaults activeBranches to empty array when not provided", async () => {
   const tmp = makeTmp();
   try {
-    const ctx = makeCtx({ workspaceDir: tmp, artifactsDir: path.join(tmp, ".coder", "artifacts") });
+    const ctx = makeCtx({
+      workspaceDir: tmp,
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+    });
     const runner = makeRunner(ctx);
     let capturedInput = null;
 
@@ -715,18 +715,15 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
 
 test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () => {
   const logEvents = [];
-  const result = fetchOpenPrBranches(
-    "/nonexistent/repo",
-    "main",
-    (e) => logEvents.push(e),
+  const result = fetchOpenPrBranches("/nonexistent/repo", "main", (e) =>
+    logEvents.push(e),
   );
 
   assert.deepEqual(result, []);
   assert.ok(
     logEvents.some(
       (e) =>
-        e.event === "open_prs_fetch_failed" ||
-        e.event === "open_prs_fetched",
+        e.event === "open_prs_fetch_failed" || e.event === "open_prs_fetched",
     ),
     "Should log fetch attempt or failure",
   );
@@ -783,11 +780,18 @@ test("activeBranches from outcomeMap only includes entries matching current issu
     }
   }
 
-  assert.equal(activeBranches.length, 2, "Should only include issues from repo '.'");
+  assert.equal(
+    activeBranches.length,
+    2,
+    "Should only include issues from repo '.'",
+  );
   const branchNames = activeBranches.map((b) => b.branch);
   assert.ok(branchNames.includes("coder/issue-1"));
   assert.ok(branchNames.includes("coder/issue-3"));
-  assert.ok(!branchNames.includes("coder/issue-2"), "issue-2 is from a different repo");
+  assert.ok(
+    !branchNames.includes("coder/issue-2"),
+    "issue-2 is from a different repo",
+  );
 });
 
 test("activeBranches excludes all entries when none match current repoPath", () => {
@@ -813,7 +817,11 @@ test("activeBranches excludes all entries when none match current repoPath", () 
     }
   }
 
-  assert.equal(activeBranches.length, 0, "No entries should match a different repoPath");
+  assert.equal(
+    activeBranches.length,
+    0,
+    "No entries should match a different repoPath",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -935,7 +943,10 @@ test("runDevelopPipeline: skips CONFLICT_DETECTED when conflictDetection is fals
           { status: "ok", data: {} },
           {
             status: "ok",
-            data: { prUrl: "https://example.test/pr/toggle", branch: "feat/toggle" },
+            data: {
+              prUrl: "https://example.test/pr/toggle",
+              branch: "feat/toggle",
+            },
           },
         ],
         runId: "run-1",
@@ -950,7 +961,10 @@ test("runDevelopPipeline: skips CONFLICT_DETECTED when conflictDetection is fals
     const result = await runDevelopPipeline(opts, ctx);
 
     assert.equal(result.status, "completed");
-    assert.ok(phase3Reached, "Phase 3 should be reached when conflictDetection is false");
+    assert.ok(
+      phase3Reached,
+      "Phase 3 should be reached when conflictDetection is false",
+    );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
@@ -976,7 +990,12 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
     issue: { source: "local", id: "ISSUE-TOGGLE-ON", title: "Toggle on test" },
     repoPath: "/tmp/repo",
     activeBranches: [
-      { branch: "coder/issue-1", issueId: "#1", title: "Auth", diffStat: "src/auth.js | 10 +" },
+      {
+        branch: "coder/issue-1",
+        issueId: "#1",
+        title: "Auth",
+        diffStat: "src/auth.js | 10 +",
+      },
     ],
   };
 
@@ -1019,7 +1038,9 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
       };
     }
 
-    throw new Error("Phase 3 should not be reached when conflictDetection is true");
+    throw new Error(
+      "Phase 3 should not be reached when conflictDetection is true",
+    );
   };
 
   try {
