@@ -822,37 +822,38 @@ export async function runDevelopLoop(opts, ctx) {
     // when issue.repo_path targets a different repo).
     const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
 
-    // Build active branch context from all open PRs on the repo,
-    // supplemented by completed branches from this run that may not
-    // have PRs yet (or whose PRs aren't visible to the CLI).
-    const openPrBranches = fetchOpenPrBranches(
-      issueRepoRoot,
-      issueDefaultBranch,
-      ctx.log,
-    );
-    const seenBranches = new Set(openPrBranches.map((b) => b.branch));
+    // Build active branch context for conflict detection (skipped when disabled).
+    let activeBranches = [];
+    if (ctx.config?.workflow?.conflictDetection !== false) {
+      const openPrBranches = fetchOpenPrBranches(
+        issueRepoRoot,
+        issueDefaultBranch,
+        ctx.log,
+      );
+      const seenBranches = new Set(openPrBranches.map((b) => b.branch));
 
-    // Add current-run completed branches not already covered by open PRs,
-    // filtering to only those from the same repo to avoid cross-repo contamination.
-    for (const [id, outcome] of outcomeMap) {
-      if (
-        outcome.status === "completed" &&
-        outcome.branch &&
-        outcome.diffSummary &&
-        outcome.repoPath === repoPath &&
-        !seenBranches.has(outcome.branch)
-      ) {
-        const entry = loopState.issueQueue.find((q) => q.id === id);
-        openPrBranches.push({
-          branch: outcome.branch,
-          issueId: id,
-          title: entry?.title || "",
-          diffStat: outcome.diffSummary,
-        });
-        seenBranches.add(outcome.branch);
+      // Add current-run completed branches not already covered by open PRs,
+      // filtering to only those from the same repo to avoid cross-repo contamination.
+      for (const [id, outcome] of outcomeMap) {
+        if (
+          outcome.status === "completed" &&
+          outcome.branch &&
+          outcome.diffSummary &&
+          outcome.repoPath === repoPath &&
+          !seenBranches.has(outcome.branch)
+        ) {
+          const entry = loopState.issueQueue.find((q) => q.id === id);
+          openPrBranches.push({
+            branch: outcome.branch,
+            issueId: id,
+            title: entry?.title || "",
+            diffStat: outcome.diffSummary,
+          });
+          seenBranches.add(outcome.branch);
+        }
       }
+      activeBranches = openPrBranches;
     }
-    const activeBranches = openPrBranches;
 
     try {
       const pipelineResult = await runDevelopPipeline(
