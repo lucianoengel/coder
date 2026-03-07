@@ -860,3 +860,190 @@ test("fetchOpenPrBranches: uses refs/merge-requests/<iid>/head for GitLab MRs", 
   assert.equal(mapped[1].fetchRef, "refs/merge-requests/15/head");
   assert.equal(mapped[1].id, "!15");
 });
+
+// ---------------------------------------------------------------------------
+// workflow.conflictDetection config toggle
+// ---------------------------------------------------------------------------
+
+test("runDevelopPipeline: skips CONFLICT_DETECTED when conflictDetection is false", async () => {
+  const tmp = makeTmp();
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    config: {
+      workflow: {
+        conflictDetection: false,
+        maxMachineRetries: 0,
+        retryBackoffMs: 0,
+      },
+    },
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-TOGGLE", title: "Toggle test" },
+    repoPath: "/tmp/repo",
+    activeBranches: [],
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+  let phase3Reached = false;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      writeFileSync(
+        path.join(artifactsDir, "PLAN.md"),
+        "# Plan\n\n## CONFLICT_DETECTED\n- branch: coder/issue-1\n- reason: Both modify src/auth.js\n",
+        "utf8",
+      );
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "written" } }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.implementation") {
+      phase3Reached = true;
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: {} },
+          { status: "ok", data: {} },
+          {
+            status: "ok",
+            data: { prUrl: "https://example.test/pr/toggle", branch: "feat/toggle" },
+          },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error(`Unexpected machine: ${machineName}`);
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+
+    assert.equal(result.status, "completed");
+    assert.ok(phase3Reached, "Phase 3 should be reached when conflictDetection is false");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is true", async () => {
+  const tmp = makeTmp();
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    config: {
+      workflow: {
+        conflictDetection: true,
+        maxMachineRetries: 0,
+        retryBackoffMs: 0,
+      },
+    },
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-TOGGLE-ON", title: "Toggle on test" },
+    repoPath: "/tmp/repo",
+    activeBranches: [
+      { branch: "coder/issue-1", issueId: "#1", title: "Auth", diffStat: "src/auth.js | 10 +" },
+    ],
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      writeFileSync(
+        path.join(artifactsDir, "PLAN.md"),
+        "# Plan\n\n## CONFLICT_DETECTED\n- branch: coder/issue-1\n- reason: Both modify src/auth.js\n",
+        "utf8",
+      );
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "written" } }],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-1",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error("Phase 3 should not be reached when conflictDetection is true");
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.reason, "conflict");
+    assert.equal(result.conflictBranch, "coder/issue-1");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("config schema: workflow.conflictDetection defaults to true", async () => {
+  const { CoderConfigSchema } = await import("../src/config.js");
+  const parsed = CoderConfigSchema.parse({});
+  assert.equal(parsed.workflow.conflictDetection, true);
+});
+
+test("config schema: workflow.conflictDetection accepts false", async () => {
+  const { CoderConfigSchema } = await import("../src/config.js");
+  const parsed = CoderConfigSchema.parse({
+    workflow: { conflictDetection: false },
+  });
+  assert.equal(parsed.workflow.conflictDetection, false);
+});

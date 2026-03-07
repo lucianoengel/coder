@@ -303,23 +303,25 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Check for conflicts with active branches detected during planning.
-  // Normalize line endings and tolerate minor formatting variance from the AI.
-  const planPath = artifactPaths(ctx.artifactsDir).plan;
-  if (existsSync(planPath)) {
-    const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
-    const conflictMatch = planMd.match(
-      /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
-    );
-    if (conflictMatch) {
-      return {
-        status: "deferred",
-        reason: "conflict",
-        conflictBranch: conflictMatch[1].trim(),
-        error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
-        results: allResults,
-        runId: runner.runId,
-        durationMs: Date.now() - start,
-      };
+  // Skipped when conflict detection is disabled via config.
+  if (ctx.config?.workflow?.conflictDetection !== false) {
+    const planPath = artifactPaths(ctx.artifactsDir).plan;
+    if (existsSync(planPath)) {
+      const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
+      const conflictMatch = planMd.match(
+        /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
+      );
+      if (conflictMatch) {
+        return {
+          status: "deferred",
+          reason: "conflict",
+          conflictBranch: conflictMatch[1].trim(),
+          error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
+          results: allResults,
+          runId: runner.runId,
+          durationMs: Date.now() - start,
+        };
+      }
     }
   }
 
