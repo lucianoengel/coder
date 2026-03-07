@@ -1,10 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
-import { detectDefaultBranch } from "../helpers.js";
+import { detectDefaultBranch, detectRemoteType } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
   artifactPaths,
@@ -78,12 +84,17 @@ export function registerDevelopMachines() {
  *
  * @param {import("./_base.js").WorkflowRunner} runner
  * @param {import("../machines/_base.js").WorkflowContext} ctx
- * @param {{ planningMachine: object, planReviewMachine: object, maxRounds?: number }} opts
+ * @param {{ planningMachine: object, planReviewMachine: object, maxRounds?: number, activeBranches?: Array }} opts
  */
 export async function runPlanLoop(
   runner,
   ctx,
-  { planningMachine: pm, planReviewMachine: prm, maxRounds } = {},
+  {
+    planningMachine: pm,
+    planReviewMachine: prm,
+    maxRounds,
+    activeBranches,
+  } = {},
 ) {
   maxRounds = maxRounds ?? ctx.config?.workflow?.maxPlanRevisions ?? 3;
   const allResults = [];
@@ -97,7 +108,15 @@ export async function runPlanLoop(
     }
 
     const planRound = await runner.run(
-      [{ machine: pm, inputMapper: () => ({ priorCritique }) }],
+      [
+        {
+          machine: pm,
+          inputMapper: () => ({
+            priorCritique,
+            activeBranches: activeBranches || [],
+          }),
+        },
+      ],
       {},
     );
     allResults.push(...planRound.results);
@@ -218,6 +237,7 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
  *   prDescription?: string,
  *   prBase?: string,
  *   force?: boolean,
+ *   activeBranches?: Array<{ branch: string, issueId: string, title: string, diffStat: string }>,
  * }} opts
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
@@ -270,6 +290,7 @@ export async function runDevelopPipeline(opts, ctx) {
   const loopResult = await runPlanLoop(runner, ctx, {
     planningMachine,
     planReviewMachine,
+    activeBranches: opts.activeBranches,
   });
   allResults.push(...loopResult.results);
   if (loopResult.status !== "completed") {
@@ -292,6 +313,29 @@ export async function runDevelopPipeline(opts, ctx) {
       runId: runner.runId,
       durationMs: Date.now() - start,
     };
+  }
+
+  // Check for conflicts with active branches detected during planning.
+  // Skipped when conflict detection is disabled via config.
+  if (ctx.config?.workflow?.conflictDetection !== false) {
+    const planPath = artifactPaths(ctx.artifactsDir).plan;
+    if (existsSync(planPath)) {
+      const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
+      const conflictMatch = planMd.match(
+        /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
+      );
+      if (conflictMatch) {
+        return {
+          status: "deferred",
+          reason: "conflict",
+          conflictBranch: conflictMatch[1].trim(),
+          error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
+          results: allResults,
+          runId: runner.runId,
+          durationMs: Date.now() - start,
+        };
+      }
+    }
   }
 
   // Phase 3: implementation → quality-review → PR creation
@@ -447,6 +491,113 @@ const isRateLimitError = (text) =>
   /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
 
 /**
+ * Fetch open PR/MR branches and their diff stats from the hosting platform.
+ * Returns an array of { branch, issueId, title, diffStat } suitable for
+ * activeBranches. Best-effort: returns [] on failure.
+ *
+ * @param {string} repoRoot
+ * @param {string} defaultBranch
+ * @param {(e: object) => void} log
+ * @returns {Array<{ branch: string, issueId: string, title: string, diffStat: string }>}
+ */
+export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
+  try {
+    const platform = detectRemoteType(repoRoot);
+    let prs;
+
+    if (platform === "gitlab") {
+      const res = spawnSync(
+        "glab",
+        ["mr", "list", "--state", "opened", "--output", "json"],
+        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+      );
+      if (res.status !== 0 || !res.stdout) {
+        if (log)
+          log({
+            event: "open_prs_fetch_failed",
+            error: (res.stderr || "glab failed").trim(),
+          });
+        return [];
+      }
+      const mrs = JSON.parse(res.stdout);
+      prs = (Array.isArray(mrs) ? mrs : []).map((mr) => ({
+        branch: mr.source_branch,
+        id: `!${mr.iid}`,
+        title: mr.title || "",
+        fetchRef: `refs/merge-requests/${mr.iid}/head`,
+      }));
+    } else {
+      const res = spawnSync(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--json",
+          "headRefName,title,number",
+          "--limit",
+          "50",
+        ],
+        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+      );
+      if (res.status !== 0 || !res.stdout) {
+        if (log)
+          log({
+            event: "open_prs_fetch_failed",
+            error: (res.stderr || "gh failed").trim(),
+          });
+        return [];
+      }
+      const items = JSON.parse(res.stdout);
+      prs = (Array.isArray(items) ? items : []).map((pr) => ({
+        branch: pr.headRefName,
+        id: `#${pr.number}`,
+        title: pr.title || "",
+        fetchRef: `pull/${pr.number}/head`,
+      }));
+    }
+
+    const result = [];
+    for (const pr of prs) {
+      // Use the platform-specific PR ref to fetch; this works for both
+      // same-repo and fork-based PRs without needing the branch on origin.
+      const localRef = `pr-fetch/${pr.id}`;
+      const fetchRes = spawnSync(
+        "git",
+        ["fetch", "origin", `${pr.fetchRef}:${localRef}`],
+        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      );
+      if (fetchRes.status !== 0) continue;
+      const stat = spawnSync(
+        "git",
+        ["diff", "--stat", `${defaultBranch}...${localRef}`],
+        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      );
+      if (stat.status !== 0) continue;
+      const diffStat = (stat.stdout || "").trim();
+      if (!diffStat) continue;
+      result.push({
+        branch: pr.branch,
+        issueId: pr.id,
+        title: pr.title,
+        diffStat,
+      });
+    }
+
+    if (log) {
+      log({ event: "open_prs_fetched", platform, count: result.length });
+    }
+    return result;
+  } catch (err) {
+    if (log) {
+      log({ event: "open_prs_fetch_failed", error: err.message });
+    }
+    return [];
+  }
+}
+
+/**
  * Run the autonomous develop loop — process multiple issues.
  */
 export async function runDevelopLoop(opts, ctx) {
@@ -543,7 +694,11 @@ export async function runDevelopLoop(opts, ctx) {
     method: rationale.method,
   });
 
-  /** @type {Map<string, { status: string, branch?: string }>} */
+  // Resolve repo root and default branch once for the entire loop
+  const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
+  const defaultBranch = detectDefaultBranch(loopRepoRoot);
+
+  /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
   const outcomeMap = new Map();
   const results = [];
   let completed = 0;
@@ -551,14 +706,30 @@ export async function runDevelopLoop(opts, ctx) {
   let skipped = 0;
 
   // Seed outcomeMap from ALL terminal issues in the prior run (includes
-  // issues no longer in the active list, e.g. closed/merged)
+  // issues no longer in the active list, e.g. closed/merged).
+  // For completed branches, compute diffSummary so they can serve as
+  // fallback conflict context when open-PR fetching is unavailable.
   for (const prior of priorQueue) {
-    if (["completed", "failed", "skipped"].includes(prior.status)) {
-      outcomeMap.set(prior.id, {
-        status: prior.status,
-        branch: prior.branch || undefined,
-      });
+    if (!["completed", "failed", "skipped"].includes(prior.status)) continue;
+    const priorRepoPath = normalizeRepoPath(ctx.workspaceDir, prior.repo_path);
+    const entry = {
+      status: prior.status,
+      branch: prior.branch || undefined,
+      repoPath: priorRepoPath,
+    };
+    if (prior.status === "completed" && prior.branch) {
+      const priorRepoRoot = resolveRepoRoot(ctx.workspaceDir, priorRepoPath);
+      const priorDefault = detectDefaultBranch(priorRepoRoot);
+      const stat = spawnSync(
+        "git",
+        ["diff", "--stat", `${priorDefault}...${prior.branch}`],
+        { cwd: priorRepoRoot, encoding: "utf8", timeout: 5000 },
+      );
+      if (stat.status === 0) {
+        entry.diffSummary = (stat.stdout || "").trim() || undefined;
+      }
     }
+    outcomeMap.set(prior.id, entry);
   }
   for (const entry of loopState.issueQueue) {
     if (entry.status === "completed") completed++;
@@ -663,6 +834,58 @@ export async function runDevelopLoop(opts, ctx) {
     }
 
     const repoPath = normalizeRepoPath(ctx.workspaceDir, issue.repo_path);
+    const issueRepoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
+
+    // Pull latest default branch to pick up any PRs merged while
+    // earlier issues were being processed.
+    const pullResult = spawnSync("git", ["pull", "--ff-only"], {
+      cwd: issueRepoRoot,
+      encoding: "utf8",
+    });
+    if (pullResult.status !== 0) {
+      ctx.log({
+        event: "git_pull_failed",
+        issueId: issue.id,
+        stderr: (pullResult.stderr || "").trim().slice(0, 200),
+      });
+    }
+
+    // Resolve per-issue default branch (may differ from workspace root
+    // when issue.repo_path targets a different repo).
+    const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
+
+    // Build active branch context for conflict detection (skipped when disabled).
+    let activeBranches = [];
+    if (ctx.config?.workflow?.conflictDetection !== false) {
+      const openPrBranches = fetchOpenPrBranches(
+        issueRepoRoot,
+        issueDefaultBranch,
+        ctx.log,
+      );
+      const seenBranches = new Set(openPrBranches.map((b) => b.branch));
+
+      // Add current-run completed branches not already covered by open PRs,
+      // filtering to only those from the same repo to avoid cross-repo contamination.
+      for (const [id, outcome] of outcomeMap) {
+        if (
+          outcome.status === "completed" &&
+          outcome.branch &&
+          outcome.diffSummary &&
+          outcome.repoPath === repoPath &&
+          !seenBranches.has(outcome.branch)
+        ) {
+          const entry = loopState.issueQueue.find((q) => q.id === id);
+          openPrBranches.push({
+            branch: outcome.branch,
+            issueId: id,
+            title: entry?.title || "",
+            diffStat: outcome.diffSummary,
+          });
+          seenBranches.add(outcome.branch);
+        }
+      }
+      activeBranches = openPrBranches;
+    }
 
     try {
       const pipelineResult = await runDevelopPipeline(
@@ -677,9 +900,55 @@ export async function runDevelopLoop(opts, ctx) {
           allowNoTests,
           ppcommitPreset,
           force: true,
+          activeBranches,
         },
         ctx,
       );
+
+      // Conflict-based deferral: planner detected overlap with an active branch
+      if (pipelineResult.status === "deferred") {
+        ctx.log({
+          event: "issue_deferred_conflict",
+          issueId: issue.id,
+          conflictBranch: pipelineResult.conflictBranch,
+          error: pipelineResult.error,
+        });
+
+        // Clear planning cache so the planner re-runs on retry with updated branches
+        const deferState = await loadState(ctx.workspaceDir);
+        deferState.steps ||= {};
+        deferState.steps.wrotePlan = false;
+        deferState.steps.wroteCritique = false;
+        await saveState(ctx.workspaceDir, deferState);
+
+        const deferPaths = artifactPaths(ctx.artifactsDir);
+        if (existsSync(deferPaths.plan))
+          rmSync(deferPaths.plan, { force: true });
+        if (existsSync(deferPaths.critique))
+          rmSync(deferPaths.critique, { force: true });
+
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error = pipelineResult.error;
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+
+        // Phase 1+2 ran, so workspace is on the issue branch — reset it
+        await resetForNextIssue(ctx.workspaceDir, repoPath, {
+          destructiveReset,
+          issueStatus: "deferred",
+        });
+
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred", reason: "conflict" },
+          issueEnv,
+        );
+        return "deferred";
+      }
 
       if (pipelineResult.status === "completed") {
         const prResult =
@@ -688,7 +957,20 @@ export async function runDevelopLoop(opts, ctx) {
         loopState.issueQueue[i].status = "completed";
         loopState.issueQueue[i].branch = branch;
         loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
-        outcomeMap.set(issue.id, { status: "completed", branch });
+
+        // Record diff stats so subsequent issues can detect file overlap
+        const diffStat = spawnSync(
+          "git",
+          ["diff", "--stat", `${issueDefaultBranch}...${branch}`],
+          { cwd: issueRepoRoot, encoding: "utf8" },
+        );
+        const diffSummary = (diffStat.stdout || "").trim();
+        outcomeMap.set(issue.id, {
+          status: "completed",
+          branch,
+          diffSummary,
+          repoPath,
+        });
         completed++;
         results.push({
           ...issue,
@@ -877,9 +1159,6 @@ export async function runDevelopLoop(opts, ctx) {
     deferred: stillDeferred,
   });
 
-  const coalesceRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
-  const defaultBranch = detectDefaultBranch(coalesceRepoRoot);
-
   // Smart branch cleanup: only delete branches with no commits beyond default
   const failedOrSkipped = loopState.issueQueue.filter(
     (q) => q.status === "failed" || q.status === "skipped",
@@ -890,7 +1169,7 @@ export async function runDevelopLoop(opts, ctx) {
     for (const q of failedOrSkipped) {
       const branch = q.branch || buildIssueBranchName(q);
       const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
-        cwd: coalesceRepoRoot,
+        cwd: loopRepoRoot,
         encoding: "utf8",
       });
       if (verify.status !== 0) continue; // branch never created
@@ -898,7 +1177,7 @@ export async function runDevelopLoop(opts, ctx) {
       const log = spawnSync(
         "git",
         ["log", `${defaultBranch}..${branch}`, "--oneline"],
-        { cwd: coalesceRepoRoot, encoding: "utf8" },
+        { cwd: loopRepoRoot, encoding: "utf8" },
       );
       const hasCommits = (log.stdout || "").trim().length > 0;
 
@@ -906,7 +1185,7 @@ export async function runDevelopLoop(opts, ctx) {
         kept.push(branch);
       } else {
         spawnSync("git", ["branch", "-D", branch], {
-          cwd: coalesceRepoRoot,
+          cwd: loopRepoRoot,
           encoding: "utf8",
         });
         deleted.push(branch);
@@ -931,12 +1210,12 @@ export async function runDevelopLoop(opts, ctx) {
         const stat = spawnSync(
           "git",
           ["diff", `${defaultBranch}...${q.branch}`, "--stat"],
-          { cwd: coalesceRepoRoot, encoding: "utf8" },
+          { cwd: loopRepoRoot, encoding: "utf8" },
         );
         const diff = spawnSync(
           "git",
           ["diff", `${defaultBranch}...${q.branch}`],
-          { cwd: coalesceRepoRoot, encoding: "utf8" },
+          { cwd: loopRepoRoot, encoding: "utf8" },
         );
         branchDiffs.push({
           branch: q.branch,

@@ -255,6 +255,7 @@ export const CoderConfigSchema = z.object({
       wip: WorkflowWipSchema.prefault({}),
       scratchpad: WorkflowScratchpadSchema.prefault({}),
       timeouts: WorkflowTimeoutsSchema.prefault({}),
+      conflictDetection: z.boolean().default(true),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
