@@ -1508,7 +1508,7 @@ export async function runDevelopLoop(opts, ctx) {
 
       const log = spawnSync(
         "git",
-        ["log", `${defaultBranch}..${branch}`, "--oneline"],
+        ["log", `${loopDefaultBranch}..${branch}`, "--oneline"],
         { cwd: loopRepoRoot, encoding: "utf8" },
       );
       const hasCommits = (log.stdout || "").trim().length > 0;
@@ -1541,12 +1541,12 @@ export async function runDevelopLoop(opts, ctx) {
       for (const q of completedBranches) {
         const stat = spawnSync(
           "git",
-          ["diff", `${defaultBranch}...${q.branch}`, "--stat"],
+          ["diff", `${loopDefaultBranch}...${q.branch}`, "--stat"],
           { cwd: loopRepoRoot, encoding: "utf8" },
         );
         const diff = spawnSync(
           "git",
-          ["diff", `${defaultBranch}...${q.branch}`],
+          ["diff", `${loopDefaultBranch}...${q.branch}`],
           { cwd: loopRepoRoot, encoding: "utf8" },
         );
         branchDiffs.push({
@@ -1565,7 +1565,7 @@ export async function runDevelopLoop(opts, ctx) {
         )
         .join("\n\n---\n\n");
 
-      const prompt = `You are reviewing the combined changeset from ${completedBranches.length} feature branches that were implemented in parallel against the same base branch (${defaultBranch}).
+      const prompt = `You are reviewing the combined changeset from ${completedBranches.length} feature branches that were implemented in parallel against the same base branch (${loopDefaultBranch}).
 
 Your task is to analyze the branches for integration issues and produce a structured report.
 
