@@ -216,6 +216,12 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
     `**${failedMachine} failed — fix these issues before re-submitting:**\n\n` +
     `\`\`\`\n${message}\n\`\`\`\n`;
   await appendFile(paths.critique, note, "utf8");
+  // Clear the implementation cache so the implementation machine re-runs on retry
+  const state = await loadState(ctx.workspaceDir);
+  if (state?.steps?.implemented) {
+    state.steps.implemented = false;
+    await saveState(ctx.workspaceDir, state);
+  }
   ctx.log({ event: "retry_feedback_injected", machine: failedMachine });
 }
 
