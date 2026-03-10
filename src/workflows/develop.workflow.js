@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -24,9 +26,11 @@ import planReviewMachine from "../machines/develop/plan-review.machine.js";
 import planningMachine from "../machines/develop/planning.machine.js";
 import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
+import { ScratchpadPersistence } from "../state/persistence.js";
 import {
   loadLoopState,
   loadState,
+  loadStateFromPath,
   saveLoopState,
   saveState,
   statePathFor,
@@ -525,11 +529,179 @@ function discardWorktreeChanges(repoRoot) {
   return cleanRes.status === 0;
 }
 
+// --- Step-level resume helpers ---
+
+function backupKeyFor(issue) {
+  const source = issue.source ?? "unknown";
+  return String(`${source}-${issue.id}`).replace(/[/\\:*?"<>|]/g, "-");
+}
+
+function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
+  const artifactsDir =
+    artifactsDirOverride ?? path.join(workspaceDir, ".coder", "artifacts");
+  if (steps?.wroteIssue && !existsSync(path.join(artifactsDir, "ISSUE.md")))
+    return false;
+  if (steps?.wrotePlan && !existsSync(path.join(artifactsDir, "PLAN.md")))
+    return false;
+  if (
+    steps?.wroteCritique &&
+    !existsSync(path.join(artifactsDir, "PLANREVIEW.md"))
+  )
+    return false;
+  if (
+    steps?.reviewerCompleted &&
+    !existsSync(path.join(artifactsDir, "REVIEW_FINDINGS.md"))
+  )
+    return false;
+  return true;
+}
+
+function clearStateAndArtifacts(workspaceDir) {
+  const sp = statePathFor(workspaceDir);
+  if (existsSync(sp)) rmSync(sp, { force: true });
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  for (const name of [
+    "ISSUE.md",
+    "PLAN.md",
+    "PLANREVIEW.md",
+    "REVIEW_FINDINGS.md",
+  ]) {
+    const p = path.join(artifactsDir, name);
+    if (existsSync(p)) rmSync(p, { force: true });
+  }
+}
+
+async function saveBackup(workspaceDir, state) {
+  if (!state?.selected) return;
+  const key = backupKeyFor(state.selected);
+  const backupDir = path.join(workspaceDir, ".coder", "backups", key);
+  mkdirSync(backupDir, { recursive: true });
+  const stateDest = path.join(backupDir, "state.json");
+  writeFileSync(stateDest, JSON.stringify(state, null, 2) + "\n", "utf8");
+  const srcArtifacts = path.join(workspaceDir, ".coder", "artifacts");
+  const destArtifacts = path.join(backupDir, "artifacts");
+  if (existsSync(srcArtifacts)) {
+    mkdirSync(destArtifacts, { recursive: true });
+    for (const name of [
+      "ISSUE.md",
+      "PLAN.md",
+      "PLANREVIEW.md",
+      "REVIEW_FINDINGS.md",
+    ]) {
+      const src = path.join(srcArtifacts, name);
+      if (existsSync(src))
+        cpSync(src, path.join(destArtifacts, name), { force: true });
+    }
+  }
+  if (state.scratchpadPath) {
+    const srcMd = path.join(workspaceDir, state.scratchpadPath);
+    if (existsSync(srcMd))
+      cpSync(srcMd, path.join(backupDir, "scratchpad.md"), { force: true });
+  }
+  const scratchpadDb = path.join(workspaceDir, ".coder", "scratchpad.db");
+  if (existsSync(scratchpadDb))
+    cpSync(scratchpadDb, path.join(backupDir, "scratchpad.db"), {
+      force: true,
+    });
+}
+
+async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  mkdirSync(artifactsDir, { recursive: true });
+  const srcArtifacts = path.join(backupDir, "artifacts");
+  if (existsSync(srcArtifacts)) {
+    for (const name of [
+      "ISSUE.md",
+      "PLAN.md",
+      "PLANREVIEW.md",
+      "REVIEW_FINDINGS.md",
+    ]) {
+      const src = path.join(srcArtifacts, name);
+      if (existsSync(src))
+        cpSync(src, path.join(artifactsDir, name), { force: true });
+    }
+  }
+  const scratchpad = new ScratchpadPersistence({
+    workspaceDir,
+    scratchpadDir:
+      ctx.scratchpadDir ?? path.join(workspaceDir, ".coder", "scratchpad"),
+    sqlitePath: path.join(workspaceDir, ".coder", "scratchpad.db"),
+    sqliteSync: ctx.config?.workflow?.scratchpad?.sqliteSync ?? true,
+  });
+  const canonicalScratchpadPath = scratchpad.issueScratchpadPath(issue);
+  const backupMd = path.join(backupDir, "scratchpad.md");
+  if (existsSync(backupMd)) {
+    mkdirSync(path.dirname(canonicalScratchpadPath), { recursive: true });
+    cpSync(backupMd, canonicalScratchpadPath, { force: true });
+  }
+  const backupDb = path.join(backupDir, "scratchpad.db");
+  if (existsSync(backupDb)) {
+    cpSync(backupDb, path.join(workspaceDir, ".coder", "scratchpad.db"), {
+      force: true,
+    });
+  }
+  const restored = await loadStateFromPath(path.join(backupDir, "state.json"));
+  if (restored) {
+    if (existsSync(backupMd))
+      restored.scratchpadPath = path.relative(
+        workspaceDir,
+        canonicalScratchpadPath,
+      );
+    await saveState(workspaceDir, restored);
+  }
+}
+
+async function prepareForIssue(workspaceDir, issue, ctx) {
+  if (ctx.config?.workflow?.resumeStepState === false) {
+    clearStateAndArtifacts(workspaceDir);
+    return;
+  }
+  const state = await loadState(workspaceDir).catch(() => null);
+  const backupDir = path.join(
+    workspaceDir,
+    ".coder",
+    "backups",
+    backupKeyFor(issue),
+  );
+  if (existsSync(path.join(backupDir, "state.json"))) {
+    const restored = await loadStateFromPath(
+      path.join(backupDir, "state.json"),
+    ).catch(() => null);
+    if (
+      restored?.selected?.id === issue.id &&
+      restored?.selected?.source === issue.source &&
+      artifactConsistent(workspaceDir, restored.steps, path.join(backupDir, "artifacts"))
+    ) {
+      await restoreBackup(workspaceDir, backupDir, issue, ctx);
+      rmSync(backupDir, { recursive: true, force: true });
+      ctx.log({ event: "loop_resume_detected", issueId: issue.id, from: "backup" });
+      return;
+    }
+  }
+  if (
+    state?.selected?.id === issue.id &&
+    state?.selected?.source === issue.source &&
+    artifactConsistent(workspaceDir, state.steps)
+  ) {
+    ctx.log({ event: "loop_resume_detected", issueId: issue.id, from: "current" });
+    return;
+  }
+  if (state?.selected && state?.steps?.wrotePlan) {
+    await saveBackup(workspaceDir, state);
+  }
+  clearStateAndArtifacts(workspaceDir);
+}
+
 /**
  * Ensure the workspace is in a known-clean state before starting the loop.
  * Cleans up stale per-issue state and artifacts that a previous crashed or
  * interrupted run may have left behind. Does NOT touch loop-state.json so
  * issue-level resume information is preserved.
+ *
+ * @param {object} [opts] - Optional. When opts.ctx is not provided (old callers), uses legacy behavior (always delete state/artifacts).
+ * @param {object} [opts.ctx] - Workflow context (config, etc.)
+ * @param {Array} [opts.issues] - Current issue queue for backup pruning
+ * @param {boolean} [opts.destructiveReset] - When true, delete state, artifacts, and all backups
  */
 export function ensureCleanLoopStart(
   workspaceDir,
@@ -537,6 +709,7 @@ export function ensureCleanLoopStart(
   defaultBranch,
   log,
   knownBranches = new Set(),
+  opts = {},
 ) {
   const cleaned = {
     state: false,
@@ -546,29 +719,62 @@ export function ensureCleanLoopStart(
     worktree: false,
   };
 
-  // 1. Delete stale per-issue state (step flags from a prior issue)
-  const sp = statePathFor(workspaceDir);
-  if (existsSync(sp)) {
-    rmSync(sp, { force: true });
-    cleaned.state = true;
+  const ctx = opts.ctx;
+  const destructiveReset = opts.destructiveReset === true;
+  const resumeEnabled =
+    ctx &&
+    ctx.config?.workflow?.resumeStepState !== false &&
+    !destructiveReset;
+
+  // 1. Delete stale per-issue state and artifacts (or preserve when resume enabled)
+  if (!resumeEnabled) {
+    const sp = statePathFor(workspaceDir);
+    if (existsSync(sp)) cleaned.state = true;
+    const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+    for (const name of [
+      "ISSUE.md",
+      "PLAN.md",
+      "PLANREVIEW.md",
+      "REVIEW_FINDINGS.md",
+    ]) {
+      if (existsSync(path.join(artifactsDir, name))) {
+        cleaned.artifacts = true;
+        break;
+      }
+    }
+    clearStateAndArtifacts(workspaceDir);
+  } else {
+    log({ event: "loop_startup_resume_preserved" });
   }
 
-  // 2. Delete stale artifacts from a prior issue
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  for (const name of [
-    "ISSUE.md",
-    "PLAN.md",
-    "PLANREVIEW.md",
-    "REVIEW_FINDINGS.md",
-  ]) {
-    const p = path.join(artifactsDir, name);
-    if (existsSync(p)) {
-      rmSync(p, { force: true });
-      cleaned.artifacts = true;
+  // 2. destructiveReset: delete all backups
+  if (destructiveReset) {
+    const backupsDir = path.join(workspaceDir, ".coder", "backups");
+    if (existsSync(backupsDir)) {
+      rmSync(backupsDir, { recursive: true, force: true });
+    }
+  }
+  // 3. Prune orphan backups (issues no longer in queue)
+  else if (opts.issues && Array.isArray(opts.issues)) {
+    const validKeys = new Set(opts.issues.map((i) => backupKeyFor(i)));
+    const backupsDir = path.join(workspaceDir, ".coder", "backups");
+    if (existsSync(backupsDir)) {
+      try {
+        const entries = readdirSync(backupsDir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isDirectory() && !validKeys.has(e.name))
+            rmSync(path.join(backupsDir, e.name), {
+              recursive: true,
+              force: true,
+            });
+        }
+      } catch {
+        // Best-effort prune
+      }
     }
   }
 
-  // 3. Ensure git is on the default branch
+  // 4. Ensure git is on the default branch
   const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -865,11 +1071,20 @@ export async function runDevelopLoop(opts, ctx) {
   };
 
   loopState.status = "running";
+  const listSource = listResult.data.source || "remote";
   loopState.issueQueue = issues.map((iss) => {
     const prior = priorById.get(iss.id);
     const isCompleted = prior && prior.status === "completed";
+    const source =
+      iss.source ??
+      (listSource === "local"
+        ? "local"
+        : listSource === "forced"
+          ? issueSource
+          : "github");
     return {
       ...iss,
+      source,
       dependsOn: iss.dependsOn || iss.depends_on || [],
       status: isCompleted ? "completed" : "pending",
       branch: isCompleted ? prior.branch : null,
@@ -908,6 +1123,7 @@ export async function runDevelopLoop(opts, ctx) {
       loopDefaultBranch,
       ctx.log,
       knownBranches,
+      { ctx, issues: loopState.issueQueue, destructiveReset },
     );
   } catch (cleanupErr) {
     stateForCleanupFailure.status = "failed";
@@ -1125,6 +1341,10 @@ export async function runDevelopLoop(opts, ctx) {
       activeBranches = openPrBranches;
     }
 
+    if (ctx.config?.workflow?.resumeStepState !== false) {
+      await prepareForIssue(ctx.workspaceDir, issue, ctx);
+    }
+
     try {
       const pipelineResult = await runDevelopPipeline(
         {
@@ -1216,6 +1436,14 @@ export async function runDevelopLoop(opts, ctx) {
           prUrl: prResult?.data?.prUrl,
           branch,
         });
+        const backupDir = path.join(
+          ctx.workspaceDir,
+          ".coder",
+          "backups",
+          backupKeyFor(issue),
+        );
+        if (existsSync(backupDir))
+          rmSync(backupDir, { recursive: true, force: true });
         runHooks(
           ctx,
           loopRunId,

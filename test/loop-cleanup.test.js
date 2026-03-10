@@ -342,6 +342,72 @@ test("ensureCleanLoopStart: discards dirty files on unknown branch", () => {
   }
 });
 
+test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(
+      statePath,
+      JSON.stringify({ steps: { wroteIssue: true, wrotePlan: true } }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Test");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+    };
+    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e), new Set(), {
+      ctx,
+      issues: [],
+      destructiveReset: false,
+    });
+
+    assert.ok(existsSync(statePath), "state.json should be preserved");
+    assert.ok(existsSync(path.join(artifactsDir, "ISSUE.md")));
+    assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(
+      logEvents.some((e) => e.event === "loop_startup_resume_preserved"),
+      "should emit loop_startup_resume_preserved",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ensureCleanLoopStart: with resumeStepState false deletes state and artifacts", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(
+      statePath,
+      JSON.stringify({ steps: { wroteIssue: true, wrotePlan: true } }),
+    );
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: false } },
+    };
+    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e), new Set(), {
+      ctx,
+      issues: [],
+      destructiveReset: false,
+    });
+
+    assert.ok(!existsSync(statePath), "state.json should be deleted");
+    assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(
+      logEvents.some((e) => e.event === "loop_startup_cleanup"),
+      "should emit loop_startup_cleanup",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ensureCleanLoopStart: no WIP commit when known branch is clean", () => {
   const tmp = makeTmpRepo();
   try {
