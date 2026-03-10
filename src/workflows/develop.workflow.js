@@ -571,7 +571,7 @@ function clearStateAndArtifacts(workspaceDir) {
   }
 }
 
-async function saveBackup(workspaceDir, state) {
+function saveBackup(workspaceDir, state) {
   if (!state?.selected) return;
   const key = backupKeyFor(state.selected);
   const backupDir = path.join(workspaceDir, ".coder", "backups", key);
@@ -651,7 +651,8 @@ async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
   }
 }
 
-async function prepareForIssue(workspaceDir, issue, ctx) {
+/** @internal Exported for testing */
+export async function prepareForIssue(workspaceDir, issue, ctx) {
   if (ctx.config?.workflow?.resumeStepState === false) {
     clearStateAndArtifacts(workspaceDir);
     return;
@@ -667,14 +668,19 @@ async function prepareForIssue(workspaceDir, issue, ctx) {
     const restored = await loadStateFromPath(
       path.join(backupDir, "state.json"),
     ).catch(() => null);
+    const backupArtifactsDir = path.join(backupDir, "artifacts");
     if (
       restored?.selected?.id === issue.id &&
       restored?.selected?.source === issue.source &&
-      artifactConsistent(workspaceDir, restored.steps, path.join(backupDir, "artifacts"))
+      artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
     ) {
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
       rmSync(backupDir, { recursive: true, force: true });
-      ctx.log({ event: "loop_resume_detected", issueId: issue.id, from: "backup" });
+      ctx.log({
+        event: "loop_resume_detected",
+        issueId: issue.id,
+        from: "backup",
+      });
       return;
     }
   }
@@ -683,11 +689,15 @@ async function prepareForIssue(workspaceDir, issue, ctx) {
     state?.selected?.source === issue.source &&
     artifactConsistent(workspaceDir, state.steps)
   ) {
-    ctx.log({ event: "loop_resume_detected", issueId: issue.id, from: "current" });
+    ctx.log({
+      event: "loop_resume_detected",
+      issueId: issue.id,
+      from: "current",
+    });
     return;
   }
   if (state?.selected && state?.steps?.wrotePlan) {
-    await saveBackup(workspaceDir, state);
+    saveBackup(workspaceDir, state);
   }
   clearStateAndArtifacts(workspaceDir);
 }
@@ -755,7 +765,7 @@ export function ensureCleanLoopStart(
     }
   }
   // 3. Prune orphan backups (issues no longer in queue)
-  else if (opts.issues && Array.isArray(opts.issues)) {
+  else if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
     const validKeys = new Set(opts.issues.map((i) => backupKeyFor(i)));
     const backupsDir = path.join(workspaceDir, ".coder", "backups");
     if (existsSync(backupsDir)) {
@@ -1080,7 +1090,7 @@ export async function runDevelopLoop(opts, ctx) {
       (listSource === "local"
         ? "local"
         : listSource === "forced"
-          ? issueSource
+          ? issueSource || "github"
           : "github");
     return {
       ...iss,

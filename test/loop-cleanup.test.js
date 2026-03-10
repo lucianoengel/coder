@@ -12,6 +12,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   ensureCleanLoopStart,
+  prepareForIssue,
   resetForNextIssue,
 } from "../src/workflows/develop.workflow.js";
 
@@ -376,6 +377,46 @@ test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", 
   }
 });
 
+test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const orphanBackup = path.join(tmp, ".coder", "backups", "github-99");
+    mkdirSync(path.join(orphanBackup, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(orphanBackup, "state.json"),
+      JSON.stringify({ selected: { source: "github", id: "99" } }),
+    );
+
+    const ctxWithResume = {
+      config: { workflow: { resumeStepState: true } },
+    };
+    const ctxNoResume = {
+      config: { workflow: { resumeStepState: false } },
+    };
+
+    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+      ctx: ctxWithResume,
+      issues: [{ source: "github", id: "40" }],
+      destructiveReset: false,
+    });
+    assert.ok(!existsSync(orphanBackup), "orphan should be pruned when resume enabled");
+
+    mkdirSync(path.join(orphanBackup, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(orphanBackup, "state.json"),
+      JSON.stringify({ selected: { source: "github", id: "99" } }),
+    );
+    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+      ctx: ctxNoResume,
+      issues: [{ source: "github", id: "40" }],
+      destructiveReset: false,
+    });
+    assert.ok(existsSync(orphanBackup), "orphan should be kept when resume disabled");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ensureCleanLoopStart: with resumeStepState false deletes state and artifacts", () => {
   const tmp = makeTmpRepo();
   try {
@@ -403,6 +444,126 @@ test("ensureCleanLoopStart: with resumeStepState false deletes state and artifac
       logEvents.some((e) => e.event === "loop_startup_cleanup"),
       "should emit loop_startup_cleanup",
     );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// prepareForIssue: step-level resume
+// ---------------------------------------------------------------------------
+
+test("prepareForIssue: resumes from current state when issue matches", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    const issue = { source: "github", id: "42", title: "Test" };
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        selected: { source: "github", id: "42", title: "Test" },
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    assert.ok(existsSync(statePath), "state should be preserved");
+    assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_detected" && e.from === "current",
+      ),
+      "should emit loop_resume_detected from current",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepareForIssue: restores from backup when backup exists and is consistent", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "40", title: "Restore me" };
+    const backupKey = "github-40";
+    const backupDir = path.join(tmp, ".coder", "backups", backupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "40", title: "Restore me" },
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+    );
+    writeFileSync(path.join(backupDir, "artifacts", "ISSUE.md"), "# Backup issue");
+    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Backup plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    assert.ok(existsSync(statePath), "state should be restored");
+    assert.ok(existsSync(path.join(artifactsDir, "ISSUE.md")));
+    assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_detected" && e.from === "backup",
+      ),
+      "should emit loop_resume_detected from backup",
+    );
+    assert.ok(!existsSync(backupDir), "backup should be consumed");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepareForIssue: backs up then clears when switching to different issue", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        selected: { source: "github", id: "39", title: "Prior" },
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Prior");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Prior plan");
+
+    const issue = { source: "github", id: "40", title: "New" };
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    assert.ok(!existsSync(statePath), "state should be cleared");
+    assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
+    const backupDir = path.join(tmp, ".coder", "backups", "github-39");
+    assert.ok(existsSync(path.join(backupDir, "state.json")), "prior should be backed up");
+    assert.ok(existsSync(path.join(backupDir, "artifacts", "PLAN.md")));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
