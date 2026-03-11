@@ -669,7 +669,7 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     return;
   }
   const state = await loadState(workspaceDir).catch(() => null);
-  const normRepo = (p) => ((p ?? ".").trim() || ".");
+  const normRepo = (p) => (p ?? ".").trim() || ".";
   const backupDir = path.join(
     workspaceDir,
     ".coder",
@@ -752,9 +752,7 @@ export function ensureCleanLoopStart(
   const ctx = opts.ctx;
   const destructiveReset = opts.destructiveReset === true;
   const resumeEnabled =
-    ctx &&
-    ctx.config?.workflow?.resumeStepState !== false &&
-    !destructiveReset;
+    ctx && ctx.config?.workflow?.resumeStepState !== false && !destructiveReset;
 
   // 1. Delete stale per-issue state and artifacts (or preserve when resume enabled)
   if (!resumeEnabled) {

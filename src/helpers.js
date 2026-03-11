@@ -363,7 +363,9 @@ export function sanitizeIssueMarkdown(text) {
   const fullyCleaned = stripAgentNoise(cleaned).trim();
   if (!fullyCleaned) return "";
   // Strip outer markdown code fence if the agent wrapped the output (e.g. Gemini).
-  const fenceMatch = fullyCleaned.match(/^```(?:markdown)?\s*\n([\s\S]*?)\n?```\s*$/i);
+  const fenceMatch = fullyCleaned.match(
+    /^```(?:markdown)?\s*\n([\s\S]*?)\n?```\s*$/i,
+  );
   const unwrapped = fenceMatch ? fenceMatch[1].trim() : fullyCleaned;
   const lines = unwrapped.split("\n");
   const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));

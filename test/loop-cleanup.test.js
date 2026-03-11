@@ -360,11 +360,18 @@ test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", 
     const ctx = {
       config: { workflow: { resumeStepState: true } },
     };
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e), new Set(), {
-      ctx,
-      issues: [],
-      destructiveReset: false,
-    });
+    ensureCleanLoopStart(
+      tmp,
+      tmp,
+      "main",
+      (e) => logEvents.push(e),
+      new Set(),
+      {
+        ctx,
+        issues: [],
+        destructiveReset: false,
+      },
+    );
 
     assert.ok(existsSync(statePath), "state.json should be preserved");
     assert.ok(existsSync(path.join(artifactsDir, "ISSUE.md")));
@@ -400,7 +407,10 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
       issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
     });
-    assert.ok(!existsSync(orphanBackup), "orphan should be pruned when resume enabled");
+    assert.ok(
+      !existsSync(orphanBackup),
+      "orphan should be pruned when resume enabled",
+    );
 
     mkdirSync(path.join(orphanBackup, "artifacts"), { recursive: true });
     writeFileSync(
@@ -412,7 +422,10 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
       issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
     });
-    assert.ok(existsSync(orphanBackup), "orphan should be kept when resume disabled");
+    assert.ok(
+      existsSync(orphanBackup),
+      "orphan should be kept when resume disabled",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -433,11 +446,18 @@ test("ensureCleanLoopStart: with resumeStepState false deletes state and artifac
     const ctx = {
       config: { workflow: { resumeStepState: false } },
     };
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e), new Set(), {
-      ctx,
-      issues: [],
-      destructiveReset: false,
-    });
+    ensureCleanLoopStart(
+      tmp,
+      tmp,
+      "main",
+      (e) => logEvents.push(e),
+      new Set(),
+      {
+        ctx,
+        issues: [],
+        destructiveReset: false,
+      },
+    );
 
     assert.ok(!existsSync(statePath), "state.json should be deleted");
     assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
@@ -506,8 +526,14 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
         steps: { wroteIssue: true, wrotePlan: true },
       }),
     );
-    writeFileSync(path.join(backupDir, "artifacts", "ISSUE.md"), "# Backup issue");
-    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Backup plan");
+    writeFileSync(
+      path.join(backupDir, "artifacts", "ISSUE.md"),
+      "# Backup issue",
+    );
+    writeFileSync(
+      path.join(backupDir, "artifacts", "PLAN.md"),
+      "# Backup plan",
+    );
 
     const logEvents = [];
     const ctx = {
@@ -552,7 +578,12 @@ test("backupKeyFor: distinct repo_paths produce distinct keys (no collision)", (
 test("prepareForIssue: does not restore when repo_path differs (repo-scoped backup)", async () => {
   const tmp = makeTmpRepo();
   try {
-    const issue = { source: "github", id: "42", title: "Repo B", repo_path: "packages/b" };
+    const issue = {
+      source: "github",
+      id: "42",
+      title: "Repo B",
+      repo_path: "packages/b",
+    };
     const backupKey = "github-42-root";
     const backupDir = path.join(tmp, ".coder", "backups", backupKey);
     mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
@@ -613,7 +644,10 @@ test("prepareForIssue: backs up then clears when switching to different issue", 
     assert.ok(!existsSync(statePath), "state should be cleared");
     assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
     const backupDir = path.join(tmp, ".coder", "backups", "github-39-root");
-    assert.ok(existsSync(path.join(backupDir, "state.json")), "prior should be backed up");
+    assert.ok(
+      existsSync(path.join(backupDir, "state.json")),
+      "prior should be backed up",
+    );
     assert.ok(existsSync(path.join(backupDir, "artifacts", "PLAN.md")));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
