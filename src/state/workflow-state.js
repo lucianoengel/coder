@@ -30,6 +30,15 @@ function getWriteChain(key) {
 
 function setWriteChain(key, promise) {
   _writeChains.set(key, promise);
+  // Prune the entry once the chain settles to avoid unbounded Map growth
+  promise.then(
+    () => {
+      if (_writeChains.get(key) === promise) _writeChains.delete(key);
+    },
+    () => {
+      if (_writeChains.get(key) === promise) _writeChains.delete(key);
+    },
+  );
 }
 
 function nowIso() {

@@ -834,7 +834,8 @@ export async function runDevelopLoop(opts, ctx) {
       );
 
       results.push({
-        ...issues[j],
+        id: entry.id,
+        title: entry.title,
         status: "skipped",
         error: entry.error,
       });
