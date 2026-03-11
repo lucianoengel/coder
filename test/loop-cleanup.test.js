@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  backupKeyFor,
   ensureCleanLoopStart,
   prepareForIssue,
   resetForNextIssue,
@@ -532,6 +533,20 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("backupKeyFor: distinct repo_paths produce distinct keys (no collision)", () => {
+  const keyA = backupKeyFor({
+    source: "github",
+    id: "42",
+    repo_path: "packages/a-b",
+  });
+  const keyB = backupKeyFor({
+    source: "github",
+    id: "42",
+    repo_path: "packages/a/b",
+  });
+  assert.notEqual(keyA, keyB, "packages/a-b and packages/a/b must not collide");
 });
 
 test("prepareForIssue: does not restore when repo_path differs (repo-scoped backup)", async () => {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -531,11 +531,18 @@ function discardWorktreeChanges(repoRoot) {
 
 // --- Step-level resume helpers ---
 
-function backupKeyFor(issue) {
+/** @internal Exported for testing */
+export function backupKeyFor(issue) {
   const source = issue.source ?? "unknown";
   const raw = (issue.repo_path ?? ".").trim() || ".";
-  const repoPart = (raw === "." ? "root" : raw).replace(/[/\\:*?"<>|]/g, "-");
-  return String(`${source}-${issue.id}-${repoPart}`).replace(/[/\\:*?"<>|]/g, "-");
+  const repoPart =
+    raw === "."
+      ? "root"
+      : createHash("sha256").update(raw).digest("hex").slice(0, 12);
+  return String(`${source}-${issue.id}-${repoPart}`).replace(
+    /[/\\:*?"<>|]/g,
+    "-",
+  );
 }
 
 function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
