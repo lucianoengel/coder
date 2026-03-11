@@ -249,6 +249,9 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
  *   prBase?: string,
  *   force?: boolean,
  *   activeBranches?: Array<{ branch: string, issueId: string, title: string, diffStat: string }>,
+ *   loopState?: object,
+ *   issueIndex?: number,
+ *   resumeFromRunId?: string,
  * }} opts
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */

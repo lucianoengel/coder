@@ -80,7 +80,7 @@ export class WorkflowRunner {
    *   workflowContext: import("../machines/_base.js").WorkflowContext,
    *   onStageChange?: (stage: string, agentName?: string) => void,
    *   onHeartbeat?: () => void,
-   *   onCheckpoint?: (machineIndex: number, result: any) => void,
+   *   onCheckpoint?: (machineIndex: number, result: any, machineName: string) => void,
    * }} opts
    */
   constructor(opts) {
