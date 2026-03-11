@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import pRetry from "p-retry";
 import {
@@ -78,6 +79,32 @@ export class CliAgent extends AgentAdapter {
     this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;
     this._strictMcpStartup = opts.config.mcp.strictStartup;
+    /** @type {boolean | null} Cached: does Codex support --session? null = not yet checked */
+    this._codexSessionSupported = null;
+  }
+
+  /**
+   * Check if the installed Codex CLI supports --session for initial named-session creation.
+   * Caches result. Logs codex_session_unavailable when unsupported.
+   * @returns {boolean}
+   */
+  _checkCodexSessionSupport() {
+    if (this._codexSessionSupported !== null) return this._codexSessionSupported;
+    try {
+      const out = spawnSync("codex", ["exec", "--help"], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      const help = `${out.stdout || ""}\n${out.stderr || ""}`;
+      this._codexSessionSupported = help.includes("--session");
+      if (!this._codexSessionSupported) {
+        this._log({ event: "codex_session_unavailable" });
+      }
+    } catch {
+      this._codexSessionSupported = false;
+      this._log({ event: "codex_session_unavailable" });
+    }
+    return this._codexSessionSupported;
   }
 
   get events() {
@@ -194,6 +221,9 @@ export class CliAgent extends AgentAdapter {
     // isolation (systemd-run with NoNewPrivileges + PrivateTmp) still applies.
     if (resumeId) {
       return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    }
+    if (sessionId && this._checkCodexSessionSupport()) {
+      return `codex exec --session ${shellEscape(sessionId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
     return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }

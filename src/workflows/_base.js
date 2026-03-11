@@ -220,7 +220,7 @@ export class WorkflowRunner {
         const result = await step.machine.run(input, this.ctx);
 
         this.results.push({ machine: machineName, ...result });
-        this.onCheckpoint(i, result);
+        this.onCheckpoint(i, result, machineName);
 
         appendStepCheckpoint(workspaceDir, this.runId, this.name, {
           machine: machineName,

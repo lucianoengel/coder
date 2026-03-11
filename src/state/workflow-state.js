@@ -354,6 +354,7 @@ const LoopIssueResultSchema = z
     startedAt: z.string().nullable().default(null),
     completedAt: z.string().nullable().default(null),
     dependsOn: z.array(z.string()).default([]),
+    lastFailedRunId: z.string().nullable().default(null),
   })
   .passthrough();
 
@@ -519,6 +520,7 @@ const IssueStateSchema = z
     issuesPayload: z.any().optional(),
     steps: StepsSchema,
     claudeSessionId: z.string().nullable().default(null),
+    programmerSessionId: z.string().nullable().default(null),
     reviewerSessionId: z.string().nullable().default(null),
     lastError: z.string().nullable().default(null),
     reviewFingerprint: z.string().nullable().default(null),
@@ -542,6 +544,7 @@ const DEFAULT_ISSUE_STATE = {
   answers: null,
   steps: {},
   claudeSessionId: null,
+  programmerSessionId: null,
   reviewerSessionId: null,
   lastError: null,
   reviewFingerprint: null,
