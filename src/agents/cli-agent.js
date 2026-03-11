@@ -26,6 +26,12 @@ const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
 ];
+const CODEX_RESUME_FAILURE_PATTERNS = [
+  { pattern: "session not found", category: "auth" },
+  { pattern: "invalid session", category: "auth" },
+  { pattern: "session has expired", category: "auth" },
+  { pattern: "no such session", category: "auth" },
+];
 const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "An unexpected critical error occurred", category: "transient" },
   { pattern: "fetch failed sending request", category: "transient" },
@@ -89,7 +95,8 @@ export class CliAgent extends AgentAdapter {
    * @returns {boolean}
    */
   _checkCodexSessionSupport() {
-    if (this._codexSessionSupported !== null) return this._codexSessionSupported;
+    if (this._codexSessionSupported !== null)
+      return this._codexSessionSupported;
     try {
       const out = spawnSync("codex", ["exec", "--help"], {
         encoding: "utf8",
@@ -105,6 +112,15 @@ export class CliAgent extends AgentAdapter {
       this._log({ event: "codex_session_unavailable" });
     }
     return this._codexSessionSupported;
+  }
+
+  /**
+   * Whether this agent (Codex) supports --session for named-session creation.
+   * Used by implementation machine to decide whether to persist programmerSessionId.
+   * @returns {boolean}
+   */
+  codexSessionSupported() {
+    return this.name === "codex" ? this._checkCodexSessionSupport() : false;
   }
 
   get events() {
@@ -236,11 +252,14 @@ export class CliAgent extends AgentAdapter {
     const hangTimeoutMs = opts.hangTimeoutMs ?? 0;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
     const isClaude = this.name === "claude";
+    const isCodex = this.name === "codex";
     const defaultPatterns = isGemini
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
       : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : [];
+        : isCodex && (opts.resumeId || opts.sessionId)
+          ? CODEX_RESUME_FAILURE_PATTERNS
+          : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
     return sandbox.commands.run(cmd, {

@@ -44,19 +44,30 @@ export default defineMachine({
 
     const sessionKey =
       programmerName === "codex" ? "programmerSessionId" : "claudeSessionId";
+    const codexUsesSession =
+      programmerName === "codex" &&
+      programmerAgent.codexSessionSupported?.() === true;
     const hadSessionBefore = !!state[sessionKey];
     if (!state[sessionKey]) {
-      state[sessionKey] = randomUUID();
-      await saveState(ctx.workspaceDir, state);
+      if (programmerName === "codex") {
+        if (codexUsesSession) {
+          state[sessionKey] = randomUUID();
+          await saveState(ctx.workspaceDir, state);
+        }
+      } else {
+        // Claude: planning creates the session; never manufacture one here
+      }
     }
     const sessionOrResumeId = state[sessionKey];
     const execOpts = {
       timeoutMs: ctx.config.workflow.timeouts.implementation,
     };
     if (programmerName === "codex") {
-      if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
-      else execOpts.sessionId = sessionOrResumeId;
-    } else {
+      if (codexUsesSession) {
+        if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
+        else execOpts.sessionId = sessionOrResumeId;
+      }
+    } else if (sessionOrResumeId) {
       execOpts.resumeId = sessionOrResumeId;
     }
 

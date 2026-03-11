@@ -387,7 +387,17 @@ export async function runDevelopPipeline(opts, ctx) {
         onStageChange: (stage) => {
           ctx.log({ event: "develop_stage", stage });
         },
-        onCheckpoint: (i, result, machineName) => {
+        onResumeSkipped:
+          opts.loopState && opts.issueIndex != null
+            ? async (runId) => {
+                opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+                  runId;
+                await saveLoopState(ctx.workspaceDir, opts.loopState, {
+                  guardRunId: opts.loopState.runId,
+                });
+              }
+            : null,
+        onCheckpoint: (_i, result, machineName) => {
           if (
             machineName === "develop.implementation" &&
             result?.status === "ok"
@@ -404,24 +414,43 @@ export async function runDevelopPipeline(opts, ctx) {
           }
         },
       });
-      lastPhase3RunId = phase3Runner.runId;
+      const resumeId =
+        opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
+        opts.resumeFromRunId;
+      const runOpts =
+        isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
+      // When resuming, persist the old runId so a process crash before onResumeSkipped
+      // fires (or after) still points to the correct checkpoint. onResumeSkipped will
+      // update to the new runId if the checkpoint turns out not to be usable.
+      const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
       if (opts.loopState && opts.issueIndex != null) {
         opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-          phase3Runner.runId;
-        await saveLoopState(ctx.workspaceDir, opts.loopState);
+          runIdToPersist;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
       }
-      const runOpts = isFirstAttempt && opts.resumeFromRunId
-        ? { resumeFromRunId: opts.resumeFromRunId }
-        : {};
       isFirstAttempt = false;
-      return phase3Runner.run(phase3Steps, {}, runOpts);
+      const result = await phase3Runner.run(phase3Steps, {}, runOpts);
+      lastPhase3RunId = phase3Runner.runId;
+      if (
+        result.status !== "completed" &&
+        opts.loopState &&
+        opts.issueIndex != null
+      ) {
+        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+          phase3Runner.runId;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
+      }
+      return result;
     },
     {
       maxRetries: maxMachineRetries,
       backoffMs: retryBackoffMs,
       ctx,
       onFailedAttempt: async ({ attempt, maxRetries, result }) => {
-        if (attempt >= maxRetries) return;
         const failed = findFailedMachineResult(result);
         if (failed?.machine !== "develop.quality_review") return;
         await injectRetryFeedback(
@@ -429,6 +458,24 @@ export async function runDevelopPipeline(opts, ctx) {
           failed.machine,
           failed.error || result.error || "",
         );
+        // Overwrite the onCheckpoint backup with implemented=false so a cross-process
+        // restart after quality_review failure re-runs implementation, matching
+        // same-process retry behavior.
+        const state = await loadState(ctx.workspaceDir);
+        if (state?.selected) saveBackup(ctx.workspaceDir, state);
+        try {
+          rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+            force: true,
+          });
+        } catch {
+          // Best-effort cleanup
+        }
+        if (opts.loopState && opts.issueIndex != null) {
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+          await saveLoopState(ctx.workspaceDir, opts.loopState, {
+            guardRunId: opts.loopState.runId,
+          });
+        }
       },
     },
   );
@@ -442,7 +489,9 @@ export async function runDevelopPipeline(opts, ctx) {
     }
     if (opts.loopState && opts.issueIndex != null) {
       opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
-      await saveLoopState(ctx.workspaceDir, opts.loopState);
+      await saveLoopState(ctx.workspaceDir, opts.loopState, {
+        guardRunId: opts.loopState.runId,
+      });
     }
   }
   allResults.push(...phase3.results);
@@ -853,16 +902,18 @@ export function ensureCleanLoopStart(
   // 3b. Prune orphan checkpoints (runIds no longer in issue queue)
   if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
     const validRunIds = new Set(
-      opts.issues
-        .map((q) => q?.lastFailedRunId)
-        .filter(Boolean),
+      opts.issues.map((q) => q?.lastFailedRunId).filter(Boolean),
     );
     const coderDir = path.join(workspaceDir, ".coder");
     if (existsSync(coderDir)) {
       try {
         const entries = readdirSync(coderDir, { withFileTypes: true });
         for (const e of entries) {
-          if (e.isFile() && e.name.startsWith("checkpoint-") && e.name.endsWith(".json")) {
+          if (
+            e.isFile() &&
+            e.name.startsWith("checkpoint-") &&
+            e.name.endsWith(".json")
+          ) {
             const runId = e.name.slice("checkpoint-".length, -".json".length);
             if (!validRunIds.has(runId))
               rmSync(path.join(coderDir, e.name), { force: true });
@@ -1474,7 +1525,8 @@ export async function runDevelopLoop(opts, ctx) {
           activeBranches,
           loopState,
           issueIndex: i,
-          resumeFromRunId: loopState.issueQueue[i]?.lastFailedRunId || undefined,
+          resumeFromRunId:
+            loopState.issueQueue[i]?.lastFailedRunId || undefined,
         },
         ctx,
       );
