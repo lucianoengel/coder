@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createActor } from "xstate";
 import {
+  __setBeforeAtomicWriteJsonForTests,
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadState,
@@ -21,6 +22,42 @@ function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-wf-state-"));
   mkdirSync(path.join(dir, ".coder"), { recursive: true });
   return dir;
+}
+
+function deferred() {
+  /** @type {(value?: void | PromiseLike<void>) => void} */
+  let resolve;
+  /** @type {(reason?: unknown) => void} */
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function makeIssueState(id, title = `Issue ${id}`) {
+  return {
+    selected: { source: "github", id: String(id), title },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: null,
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    reviewerSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  };
 }
 
 test("statePathFor returns expected path", () => {
@@ -256,28 +293,7 @@ test("concurrent saveState calls serialize without errors", async () => {
   const ws = makeTmpDir();
   const writes = [];
   for (let i = 0; i < 5; i++) {
-    writes.push(
-      saveState(ws, {
-        selected: { source: "github", id: String(i), title: `Issue ${i}` },
-        selectedProject: null,
-        linearProjects: null,
-        repoPath: ".",
-        baseBranch: "main",
-        branch: null,
-        questions: null,
-        answers: null,
-        steps: {},
-        claudeSessionId: null,
-        lastError: null,
-        reviewFingerprint: null,
-        reviewedAt: null,
-        prUrl: null,
-        prBranch: null,
-        prBase: null,
-        scratchpadPath: null,
-        lastWipPushAt: null,
-      }),
-    );
+    writes.push(saveState(ws, makeIssueState(i)));
   }
   await Promise.all(writes);
   const loaded = await loadState(ws);
@@ -285,6 +301,35 @@ test("concurrent saveState calls serialize without errors", async () => {
   // Last write wins — id should be "4"
   assert.equal(loaded.selected.id, "4");
   rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveState calls for different workspaces do not share a write chain", async () => {
+  const ws1 = makeTmpDir();
+  const ws2 = makeTmpDir();
+  const startedAt = Date.now();
+  const finishedAt = {};
+  const bigState = makeIssueState("big", "x".repeat(128 * 1024 * 1024));
+
+  const slowWrite = saveState(ws1, bigState).then(() => {
+    finishedAt.big = Date.now() - startedAt;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const fastWrite = saveState(ws2, makeIssueState("small")).then(() => {
+    finishedAt.small = Date.now() - startedAt;
+  });
+
+  await Promise.all([slowWrite, fastWrite]);
+
+  assert.ok(finishedAt.small < finishedAt.big, `${JSON.stringify(finishedAt)}`);
+
+  const [state1, state2] = await Promise.all([loadState(ws1), loadState(ws2)]);
+  assert.equal(state1.selected?.id, "big");
+  assert.equal(state2.selected?.id, "small");
+
+  rmSync(ws1, { recursive: true, force: true });
+  rmSync(ws2, { recursive: true, force: true });
 });
 
 test("concurrent saveWorkflowSnapshot calls serialize without errors", async () => {
@@ -317,4 +362,42 @@ test("concurrent saveWorkflowSnapshot calls serialize without errors", async () 
 
   actor.stop();
   rmSync(ws, { recursive: true, force: true });
+});
+
+test("cross-workspace concurrent writes are isolated", async (t) => {
+  const wsA = makeTmpDir();
+  const wsB = makeTmpDir();
+  const wsAPath = statePathFor(wsA);
+  const writeBlocked = deferred();
+  const writeStarted = deferred();
+  let wsBResolved = false;
+
+  __setBeforeAtomicWriteJsonForTests(async (filePath) => {
+    if (filePath !== wsAPath) return;
+    writeStarted.resolve();
+    await writeBlocked.promise;
+  });
+  t.after(() => __setBeforeAtomicWriteJsonForTests(null));
+
+  const writeA = saveState(wsA, makeIssueState("A-0", "Issue A-0"));
+  await writeStarted.promise;
+
+  const writeB = saveState(wsB, makeIssueState("B-0", "Issue B-0")).then(() => {
+    wsBResolved = true;
+  });
+
+  await assert.doesNotReject(writeB);
+  assert.equal(wsBResolved, true);
+
+  writeBlocked.resolve();
+  await assert.doesNotReject(writeA);
+
+  const [stateA, stateB] = await Promise.all([loadState(wsA), loadState(wsB)]);
+  assert.ok(stateA.selected);
+  assert.ok(stateB.selected);
+  assert.equal(stateA.selected.id, "A-0");
+  assert.equal(stateB.selected.id, "B-0");
+
+  rmSync(wsA, { recursive: true, force: true });
+  rmSync(wsB, { recursive: true, force: true });
 });

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { formatCommandFailure } from "../../helpers.js";
+import { formatCommandFailure, stripAgentNoise } from "../../helpers.js";
 import {
   IssueItemSchema,
   IssuesPayloadSchema,
@@ -13,6 +13,14 @@ import { defineMachine } from "../_base.js";
 import { parseAgentPayload, requireExitZero } from "./_shared.js";
 
 const HANG_TIMEOUT_MS = 1000 * 60 * 2;
+
+function isNoiseOnlyGeminiResult(agentName, res) {
+  if (agentName !== "gemini") return "";
+  const cleaned = stripAgentNoise(res?.stdout || "").trim();
+  return cleaned
+    ? ""
+    : "gemini returned no response content (noise-only stdout)";
+}
 
 /**
  * Load issues from a local manifest.json + markdown files.
@@ -142,38 +150,57 @@ function fetchGithubIssues(cwd) {
  * @returns {object[]}
  */
 function fetchGitlabIssues(cwd) {
-  const res = spawnSync(
-    "glab",
-    ["issue", "list", "--output", "json", "--state", "opened"],
-    { cwd, encoding: "utf8", timeout: 15000 },
-  );
-  if (res.error) {
-    throw new Error(`glab: ${res.error.message}`);
-  }
-  if (res.status !== 0) {
-    throw new Error(
-      formatCommandFailure("glab issue list failed", {
-        exitCode: res.status ?? 1,
-        stderr: res.stderr || "",
-        stdout: res.stdout || "",
-      }),
+  const allIssues = [];
+
+  for (let page = 1; page <= 10; page++) {
+    const res = spawnSync(
+      "glab",
+      ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
+      { cwd, encoding: "utf8", timeout: 15000 },
     );
-  }
-  if (!res.stdout) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(res.stdout);
-  } catch {
-    throw new Error(
-      `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    if (res.error) {
+      throw new Error(`glab: ${res.error.message}`);
+    }
+    if (res.status !== 0) {
+      throw new Error(
+        formatCommandFailure("glab issue list failed", {
+          exitCode: res.status ?? 1,
+          stderr: res.stderr || "",
+          stdout: res.stdout || "",
+        }),
+      );
+    }
+    if (!res.stdout) break;
+    let parsed;
+    try {
+      parsed = JSON.parse(res.stdout);
+    } catch {
+      throw new Error(
+        `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+
+    allIssues.push(
+      ...parsed.map((issue) => ({
+        iid: issue.iid,
+        title: issue.title,
+        description: (issue.description || "").slice(0, 500),
+        labels: (issue.labels || []).map((label) =>
+          typeof label === "string" ? label : label.name || String(label),
+        ),
+        web_url: issue.web_url,
+      })),
     );
+
+    if (parsed.length < 100) break;
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error(
-      `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
-    );
-  }
-  return parsed;
+
+  return allIssues;
 }
 
 export default defineMachine({
@@ -321,6 +348,7 @@ Return ONLY valid JSON in this schema:
           hangTimeoutMs: HANG_TIMEOUT_MS,
           retries: 2,
           retryOnRateLimit: true,
+          isTransientResult: (res) => isNoiseOnlyGeminiResult(agentName, res),
         });
         requireExitZero(agentName, "project listing failed", projRes);
 
@@ -427,6 +455,7 @@ ${TAIL}`;
       hangTimeoutMs: HANG_TIMEOUT_MS,
       retries: 2,
       retryOnRateLimit: true,
+      isTransientResult: (r) => isNoiseOnlyGeminiResult(agentName, r),
     });
     requireExitZero(agentName, "issue listing failed", res);
 

@@ -22,7 +22,6 @@ import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -254,9 +253,12 @@ function readWorkflowEvents(
     "logs",
     `${workflowName}.jsonl`,
   );
-  if (!existsSync(logPath)) return { events: [], nextSeq: 0, totalLines: 0 };
-
-  const content = readFileSync(logPath, "utf8");
+  let content;
+  try {
+    content = readFileSync(logPath, "utf8");
+  } catch {
+    return { events: [], nextSeq: 0, totalLines: 0 };
+  }
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];
@@ -341,7 +343,7 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
-export function registerWorkflowTools(server, defaultWorkspace) {
+export function registerWorkflowTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_workflow",
     {
@@ -359,7 +361,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
         runId: z
           .string()
           .optional()
@@ -492,7 +496,16 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     },
     async (params) => {
       try {
-        const ws = resolveWorkspaceForMcp(params.workspace, defaultWorkspace);
+        let resolvedWorkspace = params.workspace;
+        if (
+          !resolvedWorkspace &&
+          params.runId &&
+          ["cancel", "pause", "resume"].includes(params.action)
+        ) {
+          const run = activeRuns.get(params.runId);
+          if (run?.workspace) resolvedWorkspace = run.workspace;
+        }
+        const ws = resolveWorkspace(resolvedWorkspace);
         const { action, workflow } = params;
 
         if (action === "status") {
@@ -540,9 +553,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "start") {
-          const { nextRunId, initialAgent } = await withStartLock(
-            ws,
-            async () => {
+          let startContext;
+          try {
+            startContext = await withStartLock(ws, async () => {
               // Cancel any active in-memory runs for this workspace
               for (const [id, run] of activeRuns) {
                 if (run.workspace !== ws) continue;
@@ -620,8 +633,26 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               });
 
               return { nextRunId, initialAgent };
-            },
-          );
+            });
+          } catch (err) {
+            if (err?.code === "WORKFLOW_START_LOCK_BUSY") {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      action,
+                      workflow,
+                      status: "blocked",
+                      reason: "workflow_start_lock_busy",
+                    }),
+                  },
+                ],
+              };
+            }
+            throw err;
+          }
+          const { nextRunId, initialAgent } = startContext;
 
           startWorkflowActor({
             workflow,
@@ -658,14 +689,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             runId: nextRunId,
           });
 
-          // Store run entry with agentPool so cancel can kill agents
-          activeRuns.set(nextRunId, {
-            cancelToken,
-            agentPool,
-            workspace: ws,
-            promise: Promise.resolve(),
-            startedAt: new Date().toISOString(),
-          });
+          const runStartedAt = new Date().toISOString();
 
           const workflowCtx = {
             workspaceDir: ws,
@@ -681,7 +705,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           };
 
           // Fire and forget — run in background
-          const runPromise = (async () => {
+          const runPromise = Promise.resolve().then(async () => {
             try {
               let result;
               if (workflow === "develop") {
@@ -768,9 +792,16 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               activeRuns.delete(nextRunId);
               await agentPool.killAll();
             }
-          })();
+          });
 
-          activeRuns.get(nextRunId).promise = runPromise;
+          // Store run entry with real promise so cancel can await it
+          activeRuns.set(nextRunId, {
+            cancelToken,
+            agentPool,
+            workspace: ws,
+            promise: runPromise,
+            startedAt: runStartedAt,
+          });
 
           return {
             content: [
