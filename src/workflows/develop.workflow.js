@@ -530,6 +530,12 @@ function discardWorktreeChanges(repoRoot) {
 }
 
 // --- Step-level resume helpers ---
+//
+// Backup lifecycle:
+// - Created: when switching away from an in-progress issue (wrotePlan=true)
+// - Consumed: when resuming an issue (deleted after restore)
+// - Pruned: at loop startup (orphans for issues no longer in queue)
+// - Deleted: when an issue completes successfully, or on destructiveReset
 
 /** @internal Exported for testing */
 export function backupKeyFor(issue) {
@@ -545,6 +551,9 @@ export function backupKeyFor(issue) {
   );
 }
 
+/** Verifies that artifact files exist for each step flag set. If a step flag is true
+ * but the corresponding file is missing (e.g. manually deleted), returns false —
+ * resume will not occur and we start fresh. */
 function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
   const artifactsDir =
     artifactsDirOverride ?? path.join(workspaceDir, ".coder", "artifacts");
@@ -681,6 +690,8 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
     ) {
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
+      // Delete backup after restore. If restore partially failed, backup is lost;
+      // errors would surface and abort the pipeline.
       rmSync(backupDir, { recursive: true, force: true });
       ctx.log({
         event: "loop_resume_detected",
@@ -1094,6 +1105,8 @@ export async function runDevelopLoop(opts, ctx) {
   loopState.issueQueue = issues.map((iss) => {
     const prior = priorById.get(iss.id);
     const isCompleted = prior && prior.status === "completed";
+    // Defensive fallback for source: local/forced list results set it per-issue;
+    // remote agent returns per-issue source. Use listSource when missing.
     const source =
       iss.source ??
       (listSource === "local"
