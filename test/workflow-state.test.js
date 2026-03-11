@@ -318,3 +318,65 @@ test("concurrent saveWorkflowSnapshot calls serialize without errors", async () 
   actor.stop();
   rmSync(ws, { recursive: true, force: true });
 });
+
+test("cross-workspace concurrent writes are isolated", async () => {
+  const wsA = makeTmpDir();
+  const wsB = makeTmpDir();
+  const writes = [];
+
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveState(wsA, {
+        selected: { source: "github", id: `A-${i}`, title: `Issue A-${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+      saveState(wsB, {
+        selected: { source: "github", id: `B-${i}`, title: `Issue B-${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+  }
+
+  await Promise.all(writes);
+
+  const [stateA, stateB] = await Promise.all([loadState(wsA), loadState(wsB)]);
+  assert.ok(stateA.selected);
+  assert.ok(stateB.selected);
+  assert.equal(stateA.selected.id, "A-4");
+  assert.equal(stateB.selected.id, "B-4");
+
+  rmSync(wsA, { recursive: true, force: true });
+  rmSync(wsB, { recursive: true, force: true });
+});
