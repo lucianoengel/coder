@@ -46,14 +46,9 @@ test("makeJsonlLogger closes previous stream when called twice with same name", 
 
   const content = readFileSync(path.join(logsDir(ws), "agent.jsonl"), "utf8");
   const lines = content.trim().split("\n");
-  // Both events must be present; order is non-deterministic because two
-  // O_APPEND streams race on the same fd path.
   assert.equal(lines.length, 2, "both events should be written");
-  assert.ok(
-    lines.some((l) => l.includes('"first"')) &&
-      lines.some((l) => l.includes('"second"')),
-    `expected both events, got: ${content}`,
-  );
+  assert.match(lines[0], /first/);
+  assert.match(lines[1], /second/);
 });
 
 test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => {
@@ -65,4 +60,29 @@ test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => 
   assert.match(event.nested.authorization, /REDACTED/);
   assert.match(event.array[0], /access_token=\[REDACTED\]/);
   assert.match(event.array[0], /token=\[REDACTED\]/);
+});
+
+test("stale logger stops writing after closeAllLoggers", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-"));
+  const log1 = makeJsonlLogger(ws, "stale");
+  log1({ event: "first" });
+  const log2 = makeJsonlLogger(ws, "stale");
+  log2({ event: "second" });
+
+  await closeAllLoggers();
+
+  const logPath = path.join(logsDir(ws), "stale.jsonl");
+  const before = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+
+  log1({ event: "after-close" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const after = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  assert.equal(after.length, before.length);
 });
