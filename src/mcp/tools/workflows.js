@@ -22,7 +22,6 @@ import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -344,7 +343,7 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
-export function registerWorkflowTools(server, defaultWorkspace) {
+export function registerWorkflowTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_workflow",
     {
@@ -362,7 +361,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
         runId: z
           .string()
           .optional()
@@ -495,7 +496,16 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     },
     async (params) => {
       try {
-        const ws = resolveWorkspaceForMcp(params.workspace, defaultWorkspace);
+        let resolvedWorkspace = params.workspace;
+        if (
+          !resolvedWorkspace &&
+          params.runId &&
+          ["cancel", "pause", "resume"].includes(params.action)
+        ) {
+          const run = activeRuns.get(params.runId);
+          if (run?.workspace) resolvedWorkspace = run.workspace;
+        }
+        const ws = resolveWorkspace(resolvedWorkspace);
         const { action, workflow } = params;
 
         if (action === "status") {

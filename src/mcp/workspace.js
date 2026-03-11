@@ -24,7 +24,41 @@ function resolveExistingRealPathOrParent(targetPath) {
   }
 }
 
-export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
+/**
+ * Create a workspace resolver with defaultWorkspace and httpMode baked in.
+ * Returns a single-arg function: (workspace?) => resolvedPath
+ */
+export function createWorkspaceResolver(
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
+  return (workspace) =>
+    resolveWorkspaceForMcp(workspace, defaultWorkspace, { httpMode });
+}
+
+export function resolveWorkspaceForMcp(
+  workspace,
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
+  if (httpMode && !workspace) {
+    throw Object.assign(
+      new Error(
+        "workspace parameter is required in HTTP mode. " +
+          "Pass the absolute path to your project root.",
+      ),
+      { code: "WORKSPACE_REQUIRED" },
+    );
+  }
+  if (httpMode && workspace && !path.isAbsolute(workspace)) {
+    throw Object.assign(
+      new Error(
+        `workspace must be an absolute path in HTTP mode, got: "${workspace}". ` +
+          "Relative paths resolve against the server cwd, not your project.",
+      ),
+      { code: "WORKSPACE_NOT_ABSOLUTE" },
+    );
+  }
   const rootPath = path.resolve(defaultWorkspace);
   const targetPath = path.resolve(workspace || defaultWorkspace);
   if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") return targetPath;

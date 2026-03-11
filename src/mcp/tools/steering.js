@@ -9,9 +9,7 @@ import {
   steeringDirFor,
   writeSteeringFiles,
 } from "../../steering.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
-
-export function registerSteeringTools(server, defaultWorkspace) {
+export function registerSteeringTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_steering_generate",
     {
@@ -23,7 +21,9 @@ export function registerSteeringTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
         force: z
           .boolean()
           .default(false)
@@ -39,7 +39,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
     async ({ workspace, force }) => {
       let pool = null;
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const ws = resolveWorkspace(workspace);
         const config = resolveConfig(ws);
 
         // Check if steering files already exist
@@ -134,7 +134,9 @@ export function registerSteeringTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -146,7 +148,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
     async ({ workspace }) => {
       let pool = null;
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const ws = resolveWorkspace(workspace);
         const config = resolveConfig(ws);
         const secrets = buildSecrets(resolvePassEnv(config));
         pool = new AgentPool({
