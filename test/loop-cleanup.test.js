@@ -380,7 +380,7 @@ test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", 
 test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () => {
   const tmp = makeTmpRepo();
   try {
-    const orphanBackup = path.join(tmp, ".coder", "backups", "github-99");
+    const orphanBackup = path.join(tmp, ".coder", "backups", "github-99-root");
     mkdirSync(path.join(orphanBackup, "artifacts"), { recursive: true });
     writeFileSync(
       path.join(orphanBackup, "state.json"),
@@ -396,7 +396,7 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
 
     ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
       ctx: ctxWithResume,
-      issues: [{ source: "github", id: "40" }],
+      issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
     });
     assert.ok(!existsSync(orphanBackup), "orphan should be pruned when resume enabled");
@@ -408,7 +408,7 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
     );
     ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
       ctx: ctxNoResume,
-      issues: [{ source: "github", id: "40" }],
+      issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
     });
     assert.ok(existsSync(orphanBackup), "orphan should be kept when resume disabled");
@@ -495,7 +495,7 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
   const tmp = makeTmpRepo();
   try {
     const issue = { source: "github", id: "40", title: "Restore me" };
-    const backupKey = "github-40";
+    const backupKey = "github-40-root";
     const backupDir = path.join(tmp, ".coder", "backups", backupKey);
     mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
     writeFileSync(
@@ -534,6 +534,42 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
   }
 });
 
+test("prepareForIssue: does not restore when repo_path differs (repo-scoped backup)", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "42", title: "Repo B", repo_path: "packages/b" };
+    const backupKey = "github-42-root";
+    const backupDir = path.join(tmp, ".coder", "backups", backupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "42", repo_path: "" },
+        steps: { wrotePlan: true },
+      }),
+    );
+    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Root plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    assert.ok(
+      !logEvents.some((e) => e.event === "loop_resume_detected"),
+      "should not resume from backup when repo_path differs",
+    );
+    const statePath = path.join(tmp, ".coder", "state.json");
+    assert.ok(!existsSync(statePath), "should clear, not restore wrong repo");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("prepareForIssue: backs up then clears when switching to different issue", async () => {
   const tmp = makeTmpRepo();
   try {
@@ -549,7 +585,7 @@ test("prepareForIssue: backs up then clears when switching to different issue", 
     writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Prior");
     writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Prior plan");
 
-    const issue = { source: "github", id: "40", title: "New" };
+    const issue = { source: "github", id: "40", title: "New", repo_path: "" };
     const logEvents = [];
     const ctx = {
       config: { workflow: { resumeStepState: true } },
@@ -561,7 +597,7 @@ test("prepareForIssue: backs up then clears when switching to different issue", 
 
     assert.ok(!existsSync(statePath), "state should be cleared");
     assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
-    const backupDir = path.join(tmp, ".coder", "backups", "github-39");
+    const backupDir = path.join(tmp, ".coder", "backups", "github-39-root");
     assert.ok(existsSync(path.join(backupDir, "state.json")), "prior should be backed up");
     assert.ok(existsSync(path.join(backupDir, "artifacts", "PLAN.md")));
   } finally {

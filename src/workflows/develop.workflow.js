@@ -533,7 +533,9 @@ function discardWorktreeChanges(repoRoot) {
 
 function backupKeyFor(issue) {
   const source = issue.source ?? "unknown";
-  return String(`${source}-${issue.id}`).replace(/[/\\:*?"<>|]/g, "-");
+  const raw = (issue.repo_path ?? ".").trim() || ".";
+  const repoPart = (raw === "." ? "root" : raw).replace(/[/\\:*?"<>|]/g, "-");
+  return String(`${source}-${issue.id}-${repoPart}`).replace(/[/\\:*?"<>|]/g, "-");
 }
 
 function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
@@ -598,11 +600,8 @@ function saveBackup(workspaceDir, state) {
     if (existsSync(srcMd))
       cpSync(srcMd, path.join(backupDir, "scratchpad.md"), { force: true });
   }
-  const scratchpadDb = path.join(workspaceDir, ".coder", "scratchpad.db");
-  if (existsSync(scratchpadDb))
-    cpSync(scratchpadDb, path.join(backupDir, "scratchpad.db"), {
-      force: true,
-    });
+  // Do NOT backup scratchpad.db — it is shared across all issues. Restoring
+  // it would wipe other issues' scratchpad state. The per-issue .md file is enough.
 }
 
 async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
@@ -626,7 +625,7 @@ async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
     scratchpadDir:
       ctx.scratchpadDir ?? path.join(workspaceDir, ".coder", "scratchpad"),
     sqlitePath: path.join(workspaceDir, ".coder", "scratchpad.db"),
-    sqliteSync: ctx.config?.workflow?.scratchpad?.sqliteSync ?? true,
+    sqliteSync: false,
   });
   const canonicalScratchpadPath = scratchpad.issueScratchpadPath(issue);
   const backupMd = path.join(backupDir, "scratchpad.md");
@@ -634,12 +633,8 @@ async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
     mkdirSync(path.dirname(canonicalScratchpadPath), { recursive: true });
     cpSync(backupMd, canonicalScratchpadPath, { force: true });
   }
-  const backupDb = path.join(backupDir, "scratchpad.db");
-  if (existsSync(backupDb)) {
-    cpSync(backupDb, path.join(workspaceDir, ".coder", "scratchpad.db"), {
-      force: true,
-    });
-  }
+  // Do NOT restore scratchpad.db — it is shared. Restoring would overwrite
+  // other issues' scratchpad rows. The .md file is enough; DB will sync on use.
   const restored = await loadStateFromPath(path.join(backupDir, "state.json"));
   if (restored) {
     if (existsSync(backupMd))
@@ -658,6 +653,7 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     return;
   }
   const state = await loadState(workspaceDir).catch(() => null);
+  const normRepo = (p) => ((p ?? ".").trim() || ".");
   const backupDir = path.join(
     workspaceDir,
     ".coder",
@@ -669,9 +665,12 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       path.join(backupDir, "state.json"),
     ).catch(() => null);
     const backupArtifactsDir = path.join(backupDir, "artifacts");
+    const repoMatch =
+      normRepo(restored?.selected?.repo_path) === normRepo(issue.repo_path);
     if (
       restored?.selected?.id === issue.id &&
       restored?.selected?.source === issue.source &&
+      repoMatch &&
       artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
     ) {
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
@@ -684,9 +683,12 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       return;
     }
   }
+  const repoMatch =
+    normRepo(state?.selected?.repo_path) === normRepo(issue.repo_path);
   if (
     state?.selected?.id === issue.id &&
     state?.selected?.source === issue.source &&
+    repoMatch &&
     artifactConsistent(workspaceDir, state.steps)
   ) {
     ctx.log({
