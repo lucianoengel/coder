@@ -575,6 +575,44 @@ test("backupKeyFor: distinct repo_paths produce distinct keys (no collision)", (
   assert.notEqual(keyA, keyB, "packages/a-b and packages/a/b must not collide");
 });
 
+test("prepareForIssue: clears when priorFailed (retry after failure)", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    const issue = { source: "github", id: "40", title: "Retry me" };
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        selected: { source: "github", id: "40", title: "Retry me" },
+        steps: { wroteIssue: true, wrotePlan: true, implemented: true },
+      }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx, { priorFailed: true });
+
+    assert.ok(!existsSync(statePath), "state should be cleared for retry");
+    assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_skipped" && e.reason === "prior_failed",
+      ),
+      "should emit loop_resume_skipped",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("prepareForIssue: does not restore when repo_path differs (repo-scoped backup)", async () => {
   const tmp = makeTmpRepo();
   try {

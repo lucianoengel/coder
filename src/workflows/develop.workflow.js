@@ -662,9 +662,19 @@ async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
   }
 }
 
-/** @internal Exported for testing */
-export async function prepareForIssue(workspaceDir, issue, ctx) {
-  if (ctx.config?.workflow?.resumeStepState === false) {
+/** @internal Exported for testing
+ * @param {object} [opts] - Options
+ * @param {boolean} [opts.priorFailed] - When true, issue failed in prior run; do not resume, clear and retry fresh
+ */
+export async function prepareForIssue(workspaceDir, issue, ctx, opts = {}) {
+  if (ctx.config?.workflow?.resumeStepState === false || opts.priorFailed) {
+    if (opts.priorFailed) {
+      ctx.log?.({
+        event: "loop_resume_skipped",
+        issueId: issue.id,
+        reason: "prior_failed",
+      });
+    }
     clearStateAndArtifacts(workspaceDir);
     return;
   }
@@ -1381,8 +1391,12 @@ export async function runDevelopLoop(opts, ctx) {
       activeBranches = openPrBranches;
     }
 
+    const prior = priorById.get(issue.id);
+    const priorFailed = prior?.status === "failed";
     if (ctx.config?.workflow?.resumeStepState !== false) {
-      await prepareForIssue(ctx.workspaceDir, issue, ctx);
+      await prepareForIssue(ctx.workspaceDir, issue, ctx, {
+        priorFailed,
+      });
     }
 
     try {
