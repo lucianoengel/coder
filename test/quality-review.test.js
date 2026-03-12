@@ -404,7 +404,11 @@ test("quality_review: committer escalation ends in REVISE -> state cleared -> ma
   };
 
   const result = await qualityReviewMachine.run({ allowNoTests: true }, ctx);
-  assert.equal(result.status, "error", "machine should fail on REVISE escalation");
+  assert.equal(
+    result.status,
+    "error",
+    "machine should fail on REVISE escalation",
+  );
   assert.match(
     result.error ?? "",
     /Review did not complete with APPROVED|Committer escalation exhausted with REVISE/,

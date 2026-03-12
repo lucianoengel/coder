@@ -332,7 +332,11 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", {
     );
   }
   const out = r.stdout || "";
-  assert.doesNotMatch(out, /NO_ERROR/, "should return exitCode 1 when gitleaks missing");
+  assert.doesNotMatch(
+    out,
+    /NO_ERROR/,
+    "should return exitCode 1 when gitleaks missing",
+  );
   assert.match(out, /gitleaks binary not found in PATH/);
   assert.match(out, /gitleaks\/gitleaks/);
   assert.match(out, /blockSecrets/);
@@ -377,7 +381,11 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
     );
   }
   const out = r.stdout || "";
-  assert.doesNotMatch(out, /NO_ERROR/, "should return exitCode 1 when gitleaks not executable");
+  assert.doesNotMatch(
+    out,
+    /NO_ERROR/,
+    "should return exitCode 1 when gitleaks not executable",
+  );
   assert.match(out, /gitleaks binary not found in PATH/);
   assert.match(out, /gitleaks\/gitleaks/);
   assert.match(out, /blockSecrets/);

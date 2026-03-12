@@ -669,8 +669,7 @@ export async function runHostTests(
       throw new Error(`Test config not found: ${abs}`);
     }
     const config = loadTestConfig(repoDir, testConfigPath);
-    const effectiveAllowNoTests =
-      allowNoTests ?? config?.allowNoTests ?? false;
+    const effectiveAllowNoTests = allowNoTests ?? config?.allowNoTests ?? false;
     return await runTestConfig(repoDir, config, effectiveAllowNoTests);
   }
   const configured = loadTestConfig(repoDir);
@@ -730,9 +729,13 @@ export async function runHostTests(
   const detected = detectTestCommand(repoDir);
   if (detected) {
     const res = runTestCommand(repoDir, detected);
-    const exitCode =
-      allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
-    return { cmd: detected, exitCode, stdout: res.stdout || "", stderr: res.stderr || "" };
+    const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
+    return {
+      cmd: detected,
+      exitCode,
+      stdout: res.stdout || "",
+      stderr: res.stderr || "",
+    };
   }
 
   // Fallback

@@ -109,7 +109,9 @@ test("detectDefaultBranch throws when only develop exists", () => {
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
     if (res.status !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+      throw new Error(
+        `git ${args.join(" ")} failed: ${res.stderr || res.stdout}`,
+      );
     }
   };
   runGit("checkout", "-b", "develop");
@@ -120,12 +122,10 @@ test("detectDefaultBranch throws when only develop exists", () => {
     });
     if (check.status === 0) runGit("branch", "-D", b);
   }
-  assert.throws(
-    () => detectDefaultBranch(repoDir),
-    {
-      message: /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
-    },
-  );
+  assert.throws(() => detectDefaultBranch(repoDir), {
+    message:
+      /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
+  });
 });
 
 test("detectDefaultBranch returns main when it exists", () => {
@@ -133,7 +133,9 @@ test("detectDefaultBranch returns main when it exists", () => {
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
     if (res.status !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+      throw new Error(
+        `git ${args.join(" ")} failed: ${res.stderr || res.stdout}`,
+      );
     }
   };
   runGit("branch", "-m", "main");
