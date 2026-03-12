@@ -36,10 +36,10 @@ test("gemini: sessionId is ignored (no Gemini equivalent)", () => {
   assert.ok(!cmd.includes("--resume"));
 });
 
-test("gemini: resumeId maps to --resume latest", () => {
+test("gemini: resumeId maps to --resume <session-id>", () => {
   const agent = makeAgent("gemini");
   const cmd = agent._buildCommand("prompt", { resumeId: "some-id" });
-  assert.ok(cmd.includes("--resume latest"));
+  assert.ok(cmd.includes("--resume 'some-id'"));
   assert.ok(!cmd.includes("--sandbox-id"));
 });
 

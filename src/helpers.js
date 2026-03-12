@@ -33,7 +33,12 @@ export function detectDefaultBranch(repoDir) {
   if (originHead.status === 0) {
     const raw = (originHead.stdout || "").trim();
     if (raw.startsWith("origin/") && raw.length > "origin/".length) {
-      return raw.slice("origin/".length);
+      const branch = raw.slice("origin/".length);
+      const verify = spawnSync("git", ["rev-parse", "--verify", raw], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      if (verify.status === 0) return branch;
     }
   }
 
@@ -41,7 +46,17 @@ export function detectDefaultBranch(repoDir) {
     cwd: repoDir,
     encoding: "utf8",
   });
-  return mainCheck.status === 0 ? "main" : "master";
+  if (mainCheck.status === 0) return "main";
+
+  const masterCheck = spawnSync("git", ["rev-parse", "--verify", "master"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (masterCheck.status === 0) return "master";
+
+  throw new Error(
+    "Could not detect default branch; origin/HEAD, main, and master are unavailable or absent.",
+  );
 }
 
 /**
@@ -653,11 +668,14 @@ export async function runHostTests(
       throw new Error(`Test config not found: ${abs}`);
     }
     const config = loadTestConfig(repoDir, testConfigPath);
-    return await runTestConfig(repoDir, config);
+    const effectiveAllowNoTests = allowNoTests ?? config?.allowNoTests ?? false;
+    return await runTestConfig(repoDir, config, effectiveAllowNoTests);
   }
   const configured = loadTestConfig(repoDir);
   if (configured) {
-    return await runTestConfig(repoDir, configured);
+    const effectiveAllowNoTests =
+      allowNoTests ?? configured.allowNoTests ?? false;
+    return await runTestConfig(repoDir, configured, effectiveAllowNoTests);
   }
 
   // Priority 2: explicit test command
@@ -710,7 +728,13 @@ export async function runHostTests(
   const detected = detectTestCommand(repoDir);
   if (detected) {
     const res = runTestCommand(repoDir, detected);
-    return { cmd: detected, ...res };
+    const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
+    return {
+      cmd: detected,
+      exitCode,
+      stdout: res.stdout || "",
+      stderr: res.stderr || "",
+    };
   }
 
   // Fallback

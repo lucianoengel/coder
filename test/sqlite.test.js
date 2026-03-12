@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  __resetSqliteAvailabilityForTests,
   runSqliteAsync,
   runSqliteAsyncIgnoreErrors,
   SqliteTimeoutError,
@@ -29,10 +30,18 @@ test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => 
 });
 
 test("sqliteAvailable returns a boolean and caches result", () => {
+  __resetSqliteAvailabilityForTests();
   const result1 = sqliteAvailable();
   const result2 = sqliteAvailable();
   assert.equal(typeof result1, "boolean");
   assert.equal(result1, result2);
+});
+
+test("__resetSqliteAvailabilityForTests clears cache", () => {
+  sqliteAvailable();
+  __resetSqliteAvailabilityForTests();
+  const after = sqliteAvailable();
+  assert.equal(typeof after, "boolean");
 });
 
 test("runSqliteAsync resolves valid SQL", { skip: !hasSqlite }, async () => {
