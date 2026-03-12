@@ -64,3 +64,14 @@ export function appendStepCheckpoint(workspaceDir, runId, workflow, step) {
   saveCheckpoint(workspaceDir, existing);
   return existing;
 }
+
+export function truncateCheckpoint(workspaceDir, runId, stepCount) {
+  const existing = loadCheckpoint(workspaceDir, runId);
+  if (!existing) return null;
+  const safeStepCount = Math.max(0, Math.min(stepCount, existing.steps.length));
+  existing.steps = existing.steps.slice(0, safeStepCount);
+  existing.currentStep = safeStepCount;
+  existing.updatedAt = new Date().toISOString();
+  saveCheckpoint(workspaceDir, existing);
+  return existing;
+}

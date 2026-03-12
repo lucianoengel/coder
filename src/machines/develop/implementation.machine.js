@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
@@ -40,6 +41,35 @@ export default defineMachine({
     ctx.log({ event: "step4_implement" });
     const { agentName: programmerName, agent: programmerAgent } =
       ctx.agentPool.getAgent("programmer", { scope: "repo" });
+
+    const sessionKey =
+      programmerName === "codex" ? "programmerSessionId" : "claudeSessionId";
+    const codexUsesSession =
+      programmerName === "codex" &&
+      programmerAgent.codexSessionSupported?.() === true;
+    const hadSessionBefore = !!state[sessionKey];
+    if (!state[sessionKey]) {
+      if (programmerName === "codex") {
+        if (codexUsesSession) {
+          state[sessionKey] = randomUUID();
+          await saveState(ctx.workspaceDir, state);
+        }
+      } else {
+        // Claude: planning creates the session; never manufacture one here
+      }
+    }
+    const sessionOrResumeId = state[sessionKey];
+    const execOpts = {
+      timeoutMs: ctx.config.workflow.timeouts.implementation,
+    };
+    if (programmerName === "codex") {
+      if (codexUsesSession) {
+        if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
+        else execOpts.sessionId = sessionOrResumeId;
+      }
+    } else if (sessionOrResumeId) {
+      execOpts.resumeId = sessionOrResumeId;
+    }
 
     // Gather branch context for recovery
     const branchDiff = spawnSync("git", ["diff", "--stat", "HEAD"], {
@@ -131,21 +161,18 @@ FORBIDDEN patterns:
 
     let res;
     try {
-      res = await programmerAgent.execute(implPrompt, {
-        resumeId: state.claudeSessionId || undefined,
-        timeoutMs: ctx.config.workflow.timeouts.implementation,
-      });
+      res = await programmerAgent.execute(implPrompt, execOpts);
     } catch (err) {
       if (
         err.name === "CommandFatalStderrError" &&
         err.category === "auth" &&
-        state.claudeSessionId
+        state[sessionKey]
       ) {
         ctx.log({
           event: "session_resume_failed",
-          sessionId: state.claudeSessionId,
+          sessionId: state[sessionKey],
         });
-        state.claudeSessionId = null;
+        state[sessionKey] = null;
         await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
         res = await programmerAgent.execute(implPrompt, {
