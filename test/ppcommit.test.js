@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -256,9 +262,19 @@ test("ppcommit all: clean repo passes", async () => {
 
 // --- gitleaks ENOENT tests (spawned subprocess for fresh module state) ---
 
-test("ppcommit: gitleaks missing from PATH produces actionable error", async () => {
+test("ppcommit: gitleaks missing from PATH produces actionable error", {
+  skip: process.platform === "win32",
+}, async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+  const shimDir = mkdtempSync(path.join(os.tmpdir(), "coder-ppcommit-path-"));
+  const gitPath = spawnSync("which", ["git"], { encoding: "utf8" })
+    .stdout?.trim()
+    ?.split(/\r?\n/)[0];
+  assert.ok(gitPath, "git must be resolvable for this test");
+  symlinkSync(gitPath, path.join(shimDir, path.basename(gitPath)));
+  const restrictedPath = shimDir;
+
   const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
   const script = `
     import { runPpcommitNative } from ${JSON.stringify("file://" + srcPath)};
@@ -269,9 +285,6 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", async () 
       process.stdout.write(e.message);
     }
   `;
-  // Exclude gitleaks (often in same dir as node, e.g. ~/.local/bin).
-  // We spawn node via process.execPath (full path), so PATH need not include it.
-  const restrictedPath = "/usr/bin:/bin";
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
     timeout: 15000,
