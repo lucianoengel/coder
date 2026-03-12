@@ -204,7 +204,7 @@ export default defineMachine({
   inputSchema: z.object({
     testCmd: z.string().default(""),
     testConfigPath: z.string().default(""),
-    allowNoTests: z.boolean().default(false),
+    allowNoTests: z.boolean().optional(),
     ppcommitPreset: z.enum(["strict", "relaxed", "minimal"]).default("strict"),
   }),
 
@@ -456,10 +456,27 @@ export default defineMachine({
         requireExitZero(committerName, "committer escalation", escalationRes);
       }
 
-      // Mark review phase complete
+      // Mark review phase complete only when APPROVED
       if (!state.steps.reviewerCompleted && !ctx.cancelToken.cancelled) {
-        state.steps.reviewerCompleted = true;
-        await saveState(ctx.workspaceDir, state);
+        if (state.steps.reviewVerdict === "APPROVED") {
+          state.steps.reviewerCompleted = true;
+          await saveState(ctx.workspaceDir, state);
+        } else {
+          // Escalation ended with REVISE — reset for fresh cycle, clear stale success, throw
+          state.steps.reviewRound = 0;
+          delete state.steps.reviewVerdict;
+          state.steps.programmerFixedRound = 0;
+          delete state.steps.testsPassed;
+          delete state.steps.ppcommitClean;
+          delete state.reviewFingerprint;
+          delete state.reviewedAt;
+          delete state.reviewerSessionId;
+          await saveState(ctx.workspaceDir, state);
+          throw new Error(
+            "Review did not complete with APPROVED. Committer escalation exhausted with REVISE. " +
+              "Re-run quality_review to start a fresh review cycle.",
+          );
+        }
       }
     }
 
@@ -525,7 +542,7 @@ Hard constraints:
     const testRes = await runHostTests(repoRoot, {
       testCmd: input.testCmd || ctx.config.test.command,
       testConfigPath: input.testConfigPath || "",
-      allowNoTests: input.allowNoTests || ctx.config.test.allowNoTests,
+      allowNoTests: input.allowNoTests ?? ctx.config.test.allowNoTests ?? false,
     });
     if (testRes.exitCode !== 0) {
       throw new Error(

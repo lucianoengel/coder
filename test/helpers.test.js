@@ -8,6 +8,7 @@ import { SandboxConfigSchema } from "../src/config.js";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
+  detectDefaultBranch,
   detectRemoteType,
   extractGeminiPayloadJson,
   extractJson,
@@ -101,6 +102,42 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
   assert.ok(result.includes("GITLAB_TOKEN"));
+});
+
+test("detectDefaultBranch throws when only develop exists", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+    }
+  };
+  runGit("checkout", "-b", "develop");
+  for (const b of ["main", "master"]) {
+    const check = spawnSync("git", ["rev-parse", "--verify", b], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+    if (check.status === 0) runGit("branch", "-D", b);
+  }
+  assert.throws(
+    () => detectDefaultBranch(repoDir),
+    {
+      message: /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
+    },
+  );
+});
+
+test("detectDefaultBranch returns main when it exists", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+    }
+  };
+  runGit("branch", "-m", "main");
+  assert.equal(detectDefaultBranch(repoDir), "main");
 });
 
 test("detectRemoteType identifies GitLab HTTPS remotes", () => {
