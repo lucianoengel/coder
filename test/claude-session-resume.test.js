@@ -55,7 +55,6 @@ test("issue-draft early-return calls setRepoRoot for monorepo (restored state + 
       stdio: "ignore",
     });
 
-    const statePath = path.join(tmp, ".coder", "state.json");
     const artifactsDir = path.join(tmp, ".coder", "artifacts");
     const repoPath = "packages/foo";
     const issue = { source: "github", id: "42", title: "Monorepo issue" };
@@ -97,7 +96,8 @@ test("issue-draft early-return calls setRepoRoot for monorepo (restored state + 
     assert.equal(result.status, "ok");
     assert.ok(
       logEvents.some(
-        (e) => e.event === "issue_draft_skipped" && e.reason === "already_drafted",
+        (e) =>
+          e.event === "issue_draft_skipped" && e.reason === "already_drafted",
       ),
       "should emit issue_draft_skipped",
     );
