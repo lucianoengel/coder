@@ -688,7 +688,10 @@ function clearStateAndArtifacts(workspaceDir) {
 
 function saveBackup(workspaceDir, state) {
   if (!state?.selected) return;
-  const key = backupKeyFor(state.selected);
+  const key = backupKeyFor({
+    ...state.selected,
+    repo_path: state.repoPath ?? state.selected?.repo_path ?? ".",
+  });
   const backupDir = path.join(workspaceDir, ".coder", "backups", key);
   mkdirSync(backupDir, { recursive: true });
   const stateDest = path.join(backupDir, "state.json");
@@ -779,7 +782,8 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     ).catch(() => null);
     const backupArtifactsDir = path.join(backupDir, "artifacts");
     const repoMatch =
-      normRepo(restored?.selected?.repo_path) === normRepo(issue.repo_path);
+      normRepo(restored?.repoPath ?? restored?.selected?.repo_path) ===
+      normRepo(issue.repo_path);
     if (
       restored?.selected?.id === issue.id &&
       restored?.selected?.source === issue.source &&
@@ -799,7 +803,8 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     }
   }
   const repoMatch =
-    normRepo(state?.selected?.repo_path) === normRepo(issue.repo_path);
+    normRepo(state?.repoPath ?? state?.selected?.repo_path) ===
+    normRepo(issue.repo_path);
   if (
     state?.selected?.id === issue.id &&
     state?.selected?.source === issue.source &&
