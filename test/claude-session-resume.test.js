@@ -164,6 +164,56 @@ test("prepareForIssue: backup uses state.repoPath when selected lacks repo_path 
   }
 });
 
+test("prepareForIssue: restores from legacy root key when monorepo backup was written before fix", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    mkdirSync(path.join(tmp, "packages", "foo"), { recursive: true });
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+
+    const issue = {
+      source: "github",
+      id: "42",
+      title: "Monorepo issue",
+      repo_path: "packages/foo",
+    };
+    const legacyBackupKey = "github-42-root";
+    const backupDir = path.join(tmp, ".coder", "backups", legacyBackupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "42", title: "Monorepo issue" },
+        repoPath: "packages/foo",
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+    );
+    writeFileSync(path.join(backupDir, "artifacts", "ISSUE.md"), "# Old");
+    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Old plan");
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_detected" && e.from === "backup",
+      ),
+      "should restore from legacy root key when primary key has no backup",
+    );
+    const statePath = path.join(tmp, ".coder", "state.json");
+    assert.ok(existsSync(statePath), "state should be restored");
+    assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
+    assert.ok(!existsSync(backupDir), "backup should be consumed");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("prepareForIssue: backup created under correct key when state has repoPath but selected lacks it", async () => {
   const tmp = makeTmpRepo();
   try {

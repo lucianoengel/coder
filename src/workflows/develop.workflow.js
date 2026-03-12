@@ -770,13 +770,16 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   }
   const state = await loadState(workspaceDir).catch(() => null);
   const normRepo = (p) => (p ?? ".").trim() || ".";
-  const backupDir = path.join(
-    workspaceDir,
-    ".coder",
-    "backups",
-    backupKeyFor(issue),
-  );
-  if (existsSync(path.join(backupDir, "state.json"))) {
+  const primaryKey = backupKeyFor(issue);
+  const legacyKey =
+    normRepo(issue.repo_path) !== "."
+      ? backupKeyFor({ ...issue, repo_path: "." })
+      : null;
+
+  for (const key of [primaryKey, legacyKey].filter(Boolean)) {
+    const backupDir = path.join(workspaceDir, ".coder", "backups", key);
+    if (!existsSync(path.join(backupDir, "state.json"))) continue;
+
     const restored = await loadStateFromPath(
       path.join(backupDir, "state.json"),
     ).catch(() => null);
@@ -791,8 +794,6 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
     ) {
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
-      // Delete backup after restore. If restore partially failed, backup is lost;
-      // errors would surface and abort the pipeline.
       rmSync(backupDir, { recursive: true, force: true });
       ctx.log({
         event: "loop_resume_detected",
