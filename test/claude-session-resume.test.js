@@ -38,14 +38,20 @@ function makeTmpRepo() {
 test("issue-draft early-return calls setRepoRoot for monorepo (restored state + fresh AgentPool)", async () => {
   const tmp = makeTmpRepo();
   try {
-    mkdirSync(path.join(tmp, "packages", "foo"), { recursive: true });
-    execSync("git init -b main", {
-      cwd: path.join(tmp, "packages", "foo"),
+    const packagesFoo = path.join(tmp, "packages", "foo");
+    mkdirSync(packagesFoo, { recursive: true });
+    execSync("git init -b main", { cwd: packagesFoo, stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: packagesFoo,
       stdio: "ignore",
     });
-    writeFileSync(path.join(tmp, "packages", "foo", "README.md"), "# foo\n");
+    execSync("git config user.name 'Test User'", {
+      cwd: packagesFoo,
+      stdio: "ignore",
+    });
+    writeFileSync(path.join(packagesFoo, "README.md"), "# foo\n");
     execSync("git add -A && git commit -m init", {
-      cwd: path.join(tmp, "packages", "foo"),
+      cwd: packagesFoo,
       stdio: "ignore",
     });
 
