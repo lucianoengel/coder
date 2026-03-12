@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -26,7 +22,11 @@ function setupWorkspace() {
   const artifactsDir = path.join(tmp, ".coder", "artifacts");
   mkdirSync(artifactsDir, { recursive: true });
   writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n", "utf8");
-  writeFileSync(path.join(artifactsDir, "PLANREVIEW.md"), "# Critique\n", "utf8");
+  writeFileSync(
+    path.join(artifactsDir, "PLANREVIEW.md"),
+    "# Critique\n",
+    "utf8",
+  );
   mkdirSync(path.join(tmp, ".coder"), { recursive: true });
   writeFileSync(
     path.join(tmp, ".coder", "state.json"),

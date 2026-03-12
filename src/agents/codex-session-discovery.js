@@ -16,8 +16,7 @@ const RETRY_DELAY_MS = 200;
  * @returns {string|null} - sessionId or null if not found
  */
 export async function discoverCodexSessionId(workspaceDir, runStartTimeMs) {
-  const codexHome =
-    process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const sessionsDir = path.join(codexHome, "sessions");
   const workspaceResolved = path.resolve(workspaceDir);
 

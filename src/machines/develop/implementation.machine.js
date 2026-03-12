@@ -63,8 +63,7 @@ export default defineMachine({
     const execOpts = {
       timeoutMs: ctx.config.workflow.timeouts.implementation,
     };
-    const codexWithoutSession =
-      programmerName === "codex" && !codexUsesSession;
+    const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
     if (programmerName === "codex") {
       if (codexUsesSession) {
         if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;

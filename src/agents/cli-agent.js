@@ -51,7 +51,10 @@ function parseThreadStartedFromJsonl(stdout) {
     if (!trimmed) continue;
     try {
       const obj = JSON.parse(trimmed);
-      if (obj?.type === "thread.started" && typeof obj?.thread_id === "string") {
+      if (
+        obj?.type === "thread.started" &&
+        typeof obj?.thread_id === "string"
+      ) {
         return obj.thread_id;
       }
     } catch {
@@ -222,7 +225,15 @@ export class CliAgent extends AgentAdapter {
     // This allows individual machine calls to succeed even when MCP health is degraded
   }
 
-  _buildCommand(prompt, { structured = false, sessionId, resumeId, execWithJsonCapture = false } = {}) {
+  _buildCommand(
+    prompt,
+    {
+      structured = false,
+      sessionId,
+      resumeId,
+      execWithJsonCapture = false,
+    } = {},
+  ) {
     if (this.steeringContext) {
       prompt = `<steering_context>\n${this.steeringContext}\n</steering_context>\n\n${prompt}`;
     }
@@ -301,7 +312,6 @@ export class CliAgent extends AgentAdapter {
     }
     return result;
   }
-
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, { ...opts, structured: true });
