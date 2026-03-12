@@ -3,16 +3,31 @@ import { spawn, spawnSync } from "node:child_process";
 let _sqliteAvailableCache = null;
 
 /**
- * Check if sqlite3 CLI is available. Result is cached for process lifetime.
+ * Check if we can run SQLite (sqlite3 CLI OR python3+sqlite3). Result is cached.
  */
 export function sqliteAvailable() {
   if (_sqliteAvailableCache !== null) return _sqliteAvailableCache;
-  const probe = spawnSync("sqlite3", ["--version"], {
+  const sqlite3Probe = spawnSync("sqlite3", ["--version"], {
     encoding: "utf8",
     stdio: "pipe",
   });
-  _sqliteAvailableCache = probe.status === 0;
+  if (sqlite3Probe.status === 0) {
+    _sqliteAvailableCache = true;
+    return _sqliteAvailableCache;
+  }
+  const pythonProbe = spawnSync("python3", ["-c", "import sqlite3"], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  _sqliteAvailableCache = pythonProbe.status === 0;
   return _sqliteAvailableCache;
+}
+
+/**
+ * Reset the sqlite availability cache. For tests only.
+ */
+export function __resetSqliteAvailabilityForTests() {
+  _sqliteAvailableCache = null;
 }
 
 /**
@@ -63,7 +78,11 @@ finally:
 `;
 
 function spawnSqliteProcess(dbPath) {
-  if (sqliteAvailable()) {
+  const sqlite3Probe = spawnSync("sqlite3", ["--version"], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  if (sqlite3Probe.status === 0) {
     return spawn("sqlite3", [dbPath], {
       stdio: ["pipe", "pipe", "pipe"],
     });

@@ -245,8 +245,7 @@ export class CliAgent extends AgentAdapter {
       let cmd = modelName
         ? `gemini --yolo -m ${shellEscape(modelName)}`
         : "gemini --yolo";
-      // Gemini CLI doesn't support named sessions; use --resume for continuation
-      if (resumeId) cmd += " --resume latest";
+      if (resumeId) cmd += ` --resume ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, cmd);
     }
 
