@@ -449,3 +449,89 @@ test("WorkflowRunner: resumes from checkpoint when resumeFromRunId provided", as
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+test("WorkflowRunner: repeated resumes do not skip a previously failed step", async () => {
+  const ws = path.join(os.tmpdir(), `wf-resume-repeat-${Date.now()}`);
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    let attempts = 0;
+    const failTwiceThenSucceed = defineMachine({
+      name: "test.failTwice",
+      description: "Fails twice, then succeeds",
+      inputSchema: z.object({}),
+      async execute() {
+        attempts++;
+        if (attempts < 3) throw new Error(`intentional-${attempts}`);
+        return { status: "ok", data: { attempts } };
+      },
+    });
+
+    const steps = [
+      { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+      { machine: failTwiceThenSucceed, inputMapper: () => ({}) },
+      {
+        machine: doubleMachine,
+        inputMapper: (prev) => ({ value: prev.data.attempts }),
+      },
+    ];
+
+    const first = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps);
+    assert.equal(first.status, "failed");
+
+    const second = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps, {}, { resumeFromRunId: first.runId });
+    assert.equal(second.status, "failed");
+
+    const checkpointAfterSecond = loadCheckpoint(ws, first.runId);
+    assert.ok(checkpointAfterSecond, "checkpoint should still exist");
+    assert.equal(checkpointAfterSecond.steps.length, 2);
+    assert.equal(checkpointAfterSecond.currentStep, 2);
+    assert.equal(checkpointAfterSecond.steps[1].machine, "test.failTwice");
+    assert.equal(checkpointAfterSecond.steps[1].status, "error");
+
+    const third = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps, {}, { resumeFromRunId: first.runId });
+    assert.equal(third.status, "completed");
+    assert.equal(third.results.length, 3);
+    assert.equal(third.results[1].data.attempts, 3);
+    assert.equal(third.results[2].data.result, 6);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowRunner: calls onResumeSkipped when checkpoint missing and persists fresh runId", async () => {
+  const ws = path.join(os.tmpdir(), `wf-resume-skip-${Date.now()}`);
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    const runIds = [];
+    const runner = new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+      onResumeSkipped: async (runId) => {
+        runIds.push(runId);
+      },
+    });
+
+    const result = await runner.run(
+      [{ machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) }],
+      {},
+      { resumeFromRunId: "nonexistent-run-id" },
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(runIds.length, 1);
+    assert.equal(runIds[0], runner.runId);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});

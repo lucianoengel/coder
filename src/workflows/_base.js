@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   appendStepCheckpoint,
   loadCheckpoint,
+  truncateCheckpoint,
 } from "../state/machine-state.js";
 import { pollControlSignal } from "../state/workflow-state.js";
 
@@ -80,7 +81,8 @@ export class WorkflowRunner {
    *   workflowContext: import("../machines/_base.js").WorkflowContext,
    *   onStageChange?: (stage: string, agentName?: string) => void,
    *   onHeartbeat?: () => void,
-   *   onCheckpoint?: (machineIndex: number, result: any) => void,
+   *   onCheckpoint?: (machineIndex: number, result: any, machineName: string) => void,
+   *   onResumeSkipped?: (runId: string) => Promise<void> | void,
    * }} opts
    */
   constructor(opts) {
@@ -89,6 +91,7 @@ export class WorkflowRunner {
     this.onStageChange = opts.onStageChange || (() => {});
     this.onHeartbeat = opts.onHeartbeat || (() => {});
     this.onCheckpoint = opts.onCheckpoint || (() => {});
+    this.onResumeSkipped = opts.onResumeSkipped || null;
 
     this.runId = randomUUID().slice(0, 8);
     this.results = [];
@@ -122,6 +125,7 @@ export class WorkflowRunner {
           reason: checkpoint ? "workflow_mismatch" : "checkpoint_not_found",
           runId: opts.resumeFromRunId,
         });
+        if (this.onResumeSkipped) await this.onResumeSkipped(this.runId);
       } else if (
         checkpoint.steps.length > 0 &&
         checkpoint.currentStep <= steps.length
@@ -141,6 +145,7 @@ export class WorkflowRunner {
           : checkpoint.currentStep;
         if (retryFailed) {
           this.results.pop();
+          truncateCheckpoint(workspaceDir, checkpoint.runId, startIndex);
         }
         prevResult =
           startIndex > 0 ? this.results[startIndex - 1] : initialInput;
@@ -150,6 +155,8 @@ export class WorkflowRunner {
           runId: this.runId,
           fromStep: startIndex,
         });
+      } else if (this.onResumeSkipped) {
+        await this.onResumeSkipped(this.runId);
       }
     }
 
@@ -220,7 +227,7 @@ export class WorkflowRunner {
         const result = await step.machine.run(input, this.ctx);
 
         this.results.push({ machine: machineName, ...result });
-        this.onCheckpoint(i, result);
+        this.onCheckpoint(i, result, machineName);
 
         appendStepCheckpoint(workspaceDir, this.runId, this.name, {
           machine: machineName,

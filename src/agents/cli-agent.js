@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import pRetry from "p-retry";
 import {
@@ -24,6 +25,12 @@ const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
+];
+const CODEX_RESUME_FAILURE_PATTERNS = [
+  { pattern: "session not found", category: "auth" },
+  { pattern: "invalid session", category: "auth" },
+  { pattern: "session has expired", category: "auth" },
+  { pattern: "no such session", category: "auth" },
 ];
 const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "An unexpected critical error occurred", category: "transient" },
@@ -78,6 +85,42 @@ export class CliAgent extends AgentAdapter {
     this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;
     this._strictMcpStartup = opts.config.mcp.strictStartup;
+    /** @type {boolean | null} Cached: does Codex support --session? null = not yet checked */
+    this._codexSessionSupported = null;
+  }
+
+  /**
+   * Check if the installed Codex CLI supports --session for initial named-session creation.
+   * Caches result. Logs codex_session_unavailable when unsupported.
+   * @returns {boolean}
+   */
+  _checkCodexSessionSupport() {
+    if (this._codexSessionSupported !== null)
+      return this._codexSessionSupported;
+    try {
+      const out = spawnSync("codex", ["exec", "--help"], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      const help = `${out.stdout || ""}\n${out.stderr || ""}`;
+      this._codexSessionSupported = help.includes("--session");
+      if (!this._codexSessionSupported) {
+        this._log({ event: "codex_session_unavailable" });
+      }
+    } catch {
+      this._codexSessionSupported = false;
+      this._log({ event: "codex_session_unavailable" });
+    }
+    return this._codexSessionSupported;
+  }
+
+  /**
+   * Whether this agent (Codex) supports --session for named-session creation.
+   * Used by implementation machine to decide whether to persist programmerSessionId.
+   * @returns {boolean}
+   */
+  codexSessionSupported() {
+    return this.name === "codex" ? this._checkCodexSessionSupport() : false;
   }
 
   get events() {
@@ -195,6 +238,9 @@ export class CliAgent extends AgentAdapter {
     if (resumeId) {
       return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
+    if (sessionId && this._checkCodexSessionSupport()) {
+      return `codex exec --session ${shellEscape(sessionId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    }
     return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
@@ -206,11 +252,14 @@ export class CliAgent extends AgentAdapter {
     const hangTimeoutMs = opts.hangTimeoutMs ?? 0;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
     const isClaude = this.name === "claude";
+    const isCodex = this.name === "codex";
     const defaultPatterns = isGemini
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
       : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : [];
+        : isCodex && (opts.resumeId || opts.sessionId)
+          ? CODEX_RESUME_FAILURE_PATTERNS
+          : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
     return sandbox.commands.run(cmd, {

@@ -26,6 +26,7 @@ import planReviewMachine from "../machines/develop/plan-review.machine.js";
 import planningMachine from "../machines/develop/planning.machine.js";
 import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
+import { checkpointPathFor } from "../state/machine-state.js";
 import { ScratchpadPersistence } from "../state/persistence.js";
 import {
   loadLoopState,
@@ -248,6 +249,9 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
  *   prBase?: string,
  *   force?: boolean,
  *   activeBranches?: Array<{ branch: string, issueId: string, title: string, diffStat: string }>,
+ *   loopState?: object,
+ *   issueIndex?: number,
+ *   resumeFromRunId?: string,
  * }} opts
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
@@ -351,42 +355,102 @@ export async function runDevelopPipeline(opts, ctx) {
   // Phase 3: implementation → quality-review → PR creation
   const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
   const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
+  let lastPhase3RunId = null;
+  let isFirstAttempt = true;
+  const phase3Steps = [
+    { machine: implementationMachine, inputMapper: () => ({}) },
+    {
+      machine: qualityReviewMachine,
+      inputMapper: () => ({
+        testCmd: opts.testCmd || "",
+        testConfigPath: opts.testConfigPath || "",
+        allowNoTests: opts.allowNoTests ?? false,
+        ppcommitPreset: opts.ppcommitPreset || "strict",
+      }),
+    },
+    {
+      machine: prCreationMachine,
+      inputMapper: () => ({
+        type: opts.prType || "feat",
+        semanticName: opts.prSemanticName || "",
+        title: opts.prTitle || "",
+        description: opts.prDescription || "",
+        base: opts.prBase || "",
+      }),
+    },
+  ];
   const phase3 = await runWithMachineRetry(
-    () =>
-      runner.run(
-        [
-          {
-            machine: implementationMachine,
-            inputMapper: () => ({}),
-          },
-          {
-            machine: qualityReviewMachine,
-            inputMapper: () => ({
-              testCmd: opts.testCmd || "",
-              testConfigPath: opts.testConfigPath || "",
-              allowNoTests: opts.allowNoTests ?? false,
-              ppcommitPreset: opts.ppcommitPreset || "strict",
-            }),
-          },
-          {
-            machine: prCreationMachine,
-            inputMapper: () => ({
-              type: opts.prType || "feat",
-              semanticName: opts.prSemanticName || "",
-              title: opts.prTitle || "",
-              description: opts.prDescription || "",
-              base: opts.prBase || "",
-            }),
-          },
-        ],
-        {},
-      ),
+    async () => {
+      const phase3Runner = new WorkflowRunner({
+        name: "develop",
+        workflowContext: ctx,
+        onStageChange: (stage) => {
+          ctx.log({ event: "develop_stage", stage });
+        },
+        onResumeSkipped:
+          opts.loopState && opts.issueIndex != null
+            ? async (runId) => {
+                opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+                  runId;
+                await saveLoopState(ctx.workspaceDir, opts.loopState, {
+                  guardRunId: opts.loopState.runId,
+                });
+              }
+            : null,
+        onCheckpoint: (_i, result, machineName) => {
+          if (
+            machineName === "develop.implementation" &&
+            result?.status === "ok"
+          ) {
+            try {
+              const statePath = statePathFor(ctx.workspaceDir);
+              if (existsSync(statePath)) {
+                const state = JSON.parse(readFileSync(statePath, "utf8"));
+                saveBackup(ctx.workspaceDir, state);
+              }
+            } catch (err) {
+              ctx.log({ event: "post_impl_backup_failed", error: err.message });
+            }
+          }
+        },
+      });
+      const resumeId =
+        opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
+        opts.resumeFromRunId;
+      const runOpts =
+        isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
+      // When resuming, persist the old runId so a process crash before onResumeSkipped
+      // fires (or after) still points to the correct checkpoint. onResumeSkipped will
+      // update to the new runId if the checkpoint turns out not to be usable.
+      const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
+      if (opts.loopState && opts.issueIndex != null) {
+        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+          runIdToPersist;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
+      }
+      isFirstAttempt = false;
+      const result = await phase3Runner.run(phase3Steps, {}, runOpts);
+      lastPhase3RunId = phase3Runner.runId;
+      if (
+        result.status !== "completed" &&
+        opts.loopState &&
+        opts.issueIndex != null
+      ) {
+        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+          phase3Runner.runId;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
+      }
+      return result;
+    },
     {
       maxRetries: maxMachineRetries,
       backoffMs: retryBackoffMs,
       ctx,
       onFailedAttempt: async ({ attempt, maxRetries, result }) => {
-        if (attempt >= maxRetries) return;
         const failed = findFailedMachineResult(result);
         if (failed?.machine !== "develop.quality_review") return;
         await injectRetryFeedback(
@@ -394,9 +458,42 @@ export async function runDevelopPipeline(opts, ctx) {
           failed.machine,
           failed.error || result.error || "",
         );
+        // Overwrite the onCheckpoint backup with implemented=false so a cross-process
+        // restart after quality_review failure re-runs implementation, matching
+        // same-process retry behavior.
+        const state = await loadState(ctx.workspaceDir);
+        if (state?.selected) saveBackup(ctx.workspaceDir, state);
+        try {
+          rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+            force: true,
+          });
+        } catch {
+          // Best-effort cleanup
+        }
+        if (opts.loopState && opts.issueIndex != null) {
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+          await saveLoopState(ctx.workspaceDir, opts.loopState, {
+            guardRunId: opts.loopState.runId,
+          });
+        }
       },
     },
   );
+  if (phase3.status === "completed" && lastPhase3RunId) {
+    try {
+      rmSync(checkpointPathFor(ctx.workspaceDir, lastPhase3RunId), {
+        force: true,
+      });
+    } catch {
+      // Best-effort cleanup
+    }
+    if (opts.loopState && opts.issueIndex != null) {
+      opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+      await saveLoopState(ctx.workspaceDir, opts.loopState, {
+        guardRunId: opts.loopState.runId,
+      });
+    }
+  }
   allResults.push(...phase3.results);
 
   // Heartbeat after phase 3 (implementation + review + PR)
@@ -802,6 +899,32 @@ export function ensureCleanLoopStart(
     }
   }
 
+  // 3b. Prune orphan checkpoints (runIds no longer in issue queue)
+  if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
+    const validRunIds = new Set(
+      opts.issues.map((q) => q?.lastFailedRunId).filter(Boolean),
+    );
+    const coderDir = path.join(workspaceDir, ".coder");
+    if (existsSync(coderDir)) {
+      try {
+        const entries = readdirSync(coderDir, { withFileTypes: true });
+        for (const e of entries) {
+          if (
+            e.isFile() &&
+            e.name.startsWith("checkpoint-") &&
+            e.name.endsWith(".json")
+          ) {
+            const runId = e.name.slice("checkpoint-".length, -".json".length);
+            if (!validRunIds.has(runId))
+              rmSync(path.join(coderDir, e.name), { force: true });
+          }
+        }
+      } catch {
+        // Best-effort prune
+      }
+    }
+  }
+
   // 4. Ensure git is on the default branch
   const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd: repoRoot,
@@ -1127,6 +1250,7 @@ export async function runDevelopLoop(opts, ctx) {
       baseBranch: isTerminal ? prior.baseBranch : null,
       startedAt: isTerminal ? prior.startedAt : null,
       completedAt: isTerminal ? prior.completedAt : null,
+      lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
     };
   });
   loopState.currentIndex = 0;
@@ -1399,6 +1523,10 @@ export async function runDevelopLoop(opts, ctx) {
           ppcommitPreset,
           force: true,
           activeBranches,
+          loopState,
+          issueIndex: i,
+          resumeFromRunId:
+            loopState.issueQueue[i]?.lastFailedRunId || undefined,
         },
         ctx,
       );
