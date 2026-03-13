@@ -399,7 +399,9 @@ test("isStaleUpstreamRefError detects no such ref was fetched", () => {
 
 test("isStaleUpstreamRefError returns false for generic fetch error", () => {
   assert.equal(
-    isStaleUpstreamRefError("fatal: unable to access 'https://x/': Could not resolve host: x"),
+    isStaleUpstreamRefError(
+      "fatal: unable to access 'https://x/': Could not resolve host: x",
+    ),
     false,
   );
 });

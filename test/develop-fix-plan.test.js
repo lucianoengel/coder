@@ -4,7 +4,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -687,7 +686,10 @@ test("start after blocked run processes deferred issues (blocked treated as term
 
     assert.equal(result.status, "completed");
     assert.equal(result.completed, 1);
-    assert.ok(processedIds.includes("A"), "blocked-run deferred issue A should be retried on next start");
+    assert.ok(
+      processedIds.includes("A"),
+      "blocked-run deferred issue A should be retried on next start",
+    );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(ws, { recursive: true, force: true });

@@ -32,6 +32,7 @@ import planReviewMachine from "../machines/develop/plan-review.machine.js";
 import planningMachine from "../machines/develop/planning.machine.js";
 import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
+import { runPreflight } from "../preflight.js";
 import { checkpointPathFor } from "../state/machine-state.js";
 import { ScratchpadPersistence } from "../state/persistence.js";
 import {
@@ -42,7 +43,6 @@ import {
   saveState,
   statePathFor,
 } from "../state/workflow-state.js";
-import { runPreflight } from "../preflight.js";
 import { buildIssueBranchName } from "../worktrees.js";
 import { runHooks, WorkflowRunner } from "./_base.js";
 
@@ -1521,7 +1521,8 @@ export async function runDevelopLoop(opts, ctx) {
         suggestion,
       });
       loopState.issueQueue[i].status = "deferred";
-      loopState.issueQueue[i].error = `Default branch has no tracking config. ${suggestion}`;
+      loopState.issueQueue[i].error =
+        `Default branch has no tracking config. ${suggestion}`;
       loopState.issueQueue[i].deferredReason = "git_tracking";
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
@@ -1564,7 +1565,8 @@ export async function runDevelopLoop(opts, ctx) {
           reason: "stale_upstream_ref",
         });
         loopState.issueQueue[i].status = "deferred";
-        loopState.issueQueue[i].error = `Git pull failed: upstream ref not found. ${suggestion}`;
+        loopState.issueQueue[i].error =
+          `Git pull failed: upstream ref not found. ${suggestion}`;
         loopState.issueQueue[i].deferredReason = "git_tracking";
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
@@ -2016,16 +2018,18 @@ export async function runDevelopLoop(opts, ctx) {
 
   // Retry pass for deferred issues whose dependencies are now resolved.
   // Exclude infra/plan_blocked — those require operator action and next start.
-  const DEFERRED_SAME_RUN_RETRY_REASONS = ["conflict", "rate_limit", "dependency"];
+  const DEFERRED_SAME_RUN_RETRY_REASONS = [
+    "conflict",
+    "rate_limit",
+    "dependency",
+  ];
   const deferredIndices = issues
     .map((_, i) => i)
     .filter((i) => {
       const entry = loopState.issueQueue[i];
       if (entry.status !== "deferred") return false;
       const reason = entry.deferredReason;
-      return (
-        !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason)
-      );
+      return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
     });
 
   if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
