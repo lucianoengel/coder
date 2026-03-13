@@ -54,6 +54,7 @@ export {
   qualityReviewMachine,
   prCreationMachine,
 };
+// ensureCleanLoopStart and resetForNextIssue are exported at their definitions
 
 export const developMachines = [
   issueListMachine,
@@ -495,6 +496,9 @@ export async function runDevelopLoop(opts, ctx) {
       results: [],
     };
   }
+
+  // Recover from crashes / stale state before building the queue
+  await ensureCleanLoopStart(ctx.workspaceDir, ctx);
 
   const issueListSource = listResult.data.source || "remote";
   let rawIssues;
@@ -1057,9 +1061,21 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 }
 
 /**
+ * Check if the repo has any tracked files (to guard against `git restore` on empty repos).
+ */
+function hasTrackedFiles(repoRoot) {
+  const res = spawnSync("git", ["ls-files", "--error-unmatch", "."], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  return res.status === 0;
+}
+
+/**
  * Reset workspace for next issue in autonomous loop.
  */
-async function resetForNextIssue(
+export async function resetForNextIssue(
   workspaceDir,
   repoPath,
   { destructiveReset = false, issueStatus = "completed" } = {},
@@ -1093,21 +1109,39 @@ async function resetForNextIssue(
         encoding: "utf8",
       });
       if ((status.stdout || "").trim()) {
-        // Commit partial work to the current (issue) branch so it's not lost
-        spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
-        spawnSync(
+        // Best-effort WIP commit — log warning on failure, don't throw
+        const addRes = spawnSync("git", ["add", "-A"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (addRes.status !== 0) {
+          console.warn(
+            `[coder] resetForNextIssue: git add failed: ${(addRes.stderr || "").trim()}`,
+          );
+        }
+        const commitRes = spawnSync(
           "git",
           ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
           { cwd: repoRoot, encoding: "utf8" },
         );
+        if (commitRes.status !== 0) {
+          console.warn(
+            `[coder] resetForNextIssue: git commit failed: ${(commitRes.stderr || "").trim()}`,
+          );
+        }
       }
     }
 
     const defaultBranch = detectDefaultBranch(repoRoot);
-    spawnSync("git", ["checkout", defaultBranch], {
+    const checkoutRes = spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    if (checkoutRes.status !== 0) {
+      throw new Error(
+        `resetForNextIssue: git checkout ${defaultBranch} failed: ${(checkoutRes.stderr || "").trim()}`,
+      );
+    }
 
     if (destructiveReset) {
       const status = spawnSync("git", ["status", "--porcelain"], {
@@ -1115,15 +1149,162 @@ async function resetForNextIssue(
         encoding: "utf8",
       });
       if ((status.stdout || "").trim()) {
+        if (hasTrackedFiles(repoRoot)) {
+          const restoreRes = spawnSync(
+            "git",
+            ["restore", "--staged", "--worktree", "."],
+            {
+              cwd: repoRoot,
+              encoding: "utf8",
+            },
+          );
+          if (restoreRes.status !== 0) {
+            throw new Error(
+              `resetForNextIssue: git restore failed: ${(restoreRes.stderr || "").trim()}`,
+            );
+          }
+        }
+        const cleanRes = spawnSync(
+          "git",
+          ["clean", "-fd", "--exclude=.coder/"],
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+          },
+        );
+        if (cleanRes.status !== 0) {
+          throw new Error(
+            `resetForNextIssue: git clean failed: ${(cleanRes.stderr || "").trim()}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Ensure the loop starts from a clean state — recover from crashes, stale branches,
+ * and interrupted runs.
+ *
+ * Called at loop start after issue listing. No-op when already clean.
+ */
+export async function ensureCleanLoopStart(workspaceDir, ctx) {
+  const repoRoot = resolveRepoRoot(workspaceDir, ".");
+  if (!existsSync(repoRoot)) return;
+
+  const defaultBranch = detectDefaultBranch(repoRoot);
+
+  // 1. Detect current branch
+  const headRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const currentBranch = (headRes.stdout || "").trim();
+
+  // 2. If on wrong branch, recover
+  if (
+    currentBranch &&
+    currentBranch !== defaultBranch &&
+    currentBranch !== "HEAD"
+  ) {
+    const loopState = await loadLoopState(workspaceDir);
+    const knownBranches = new Set(
+      (loopState.issueQueue || []).filter((q) => q.branch).map((q) => q.branch),
+    );
+
+    const isDirty = (() => {
+      const st = spawnSync("git", ["status", "--porcelain"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      return (st.stdout || "").trim().length > 0;
+    })();
+
+    if (knownBranches.has(currentBranch) && isDirty) {
+      // WIP-commit dirty state on known branches (best-effort)
+      spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
+      spawnSync(
+        "git",
+        ["commit", "-m", "wip: crash recovery (ensureCleanLoopStart)"],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+        },
+      );
+      ctx.log({ event: "clean_loop_start_wip_commit", branch: currentBranch });
+    } else if (isDirty) {
+      // Discard dirty state on unknown branches
+      if (hasTrackedFiles(repoRoot)) {
         spawnSync("git", ["restore", "--staged", "--worktree", "."], {
           cwd: repoRoot,
           encoding: "utf8",
         });
-        spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+      }
+      spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      ctx.log({ event: "clean_loop_start_discard", branch: currentBranch });
+    }
+
+    // Switch to default branch
+    const coRes = spawnSync("git", ["checkout", defaultBranch], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (coRes.status !== 0) {
+      throw new Error(
+        `ensureCleanLoopStart: git checkout ${defaultBranch} failed: ${(coRes.stderr || "").trim()}`,
+      );
+    }
+    ctx.log({
+      event: "clean_loop_start_checkout",
+      from: currentBranch,
+      to: defaultBranch,
+    });
+  }
+
+  // 3. Reset stale in_progress entries to pending
+  const loopState = await loadLoopState(workspaceDir);
+  let resetCount = 0;
+  for (const entry of loopState.issueQueue || []) {
+    if (entry.status === "in_progress") {
+      entry.status = "pending";
+      resetCount++;
+    }
+  }
+  if (resetCount > 0) {
+    await saveLoopState(workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+    ctx.log({ event: "clean_loop_start_reset_stale", count: resetCount });
+  }
+
+  // 4. If on default branch but dirty, clean up
+  if (
+    !currentBranch ||
+    currentBranch === defaultBranch ||
+    currentBranch === "HEAD"
+  ) {
+    const st = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if ((st.stdout || "").trim()) {
+      if (hasTrackedFiles(repoRoot)) {
+        spawnSync("git", ["restore", "--staged", "--worktree", "."], {
           cwd: repoRoot,
           encoding: "utf8",
         });
       }
+      spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      ctx.log({
+        event: "clean_loop_start_dirty_default",
+        branch: defaultBranch,
+      });
     }
   }
 }
