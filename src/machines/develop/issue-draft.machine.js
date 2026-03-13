@@ -363,6 +363,13 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
             issueMd =
               sanitizeIssueMarkdown(lines.slice(mdStart).join("\n").trimEnd()) +
               "\n";
+          } else if (fallback.length > 100) {
+            // Content present but no header — synthesize one from issue metadata
+            issueMd = `# ${input.issue.id}: ${input.issue.title}\n\n${fallback}\n`;
+            ctx.log({
+              event: "issue_draft_header_synthesized",
+              issue: input.issue,
+            });
           } else {
             const rawPreview = (res.stdout || "")
               .slice(0, 300)

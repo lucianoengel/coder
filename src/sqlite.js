@@ -16,6 +16,14 @@ export function sqliteAvailable() {
 }
 
 /**
+ * Returns "cli" when the sqlite3 CLI is available, null otherwise.
+ * Useful for diagnostics.
+ */
+export function sqliteBackend() {
+  return sqliteAvailable() ? "cli" : null;
+}
+
+/**
  * Escape a value for safe interpolation into a SQLite string literal.
  * Handles single quotes and strips NUL bytes (which can truncate strings
  * in some SQLite interfaces).
