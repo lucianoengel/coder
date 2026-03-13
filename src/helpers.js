@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { jsonrepair } from "jsonrepair";
+import { DEFAULT_PASS_ENV } from "./pass-env.js";
 import { runPpcommitBranch, runPpcommitNative } from "./ppcommit.js";
 import { runShellSync } from "./systemd-run.js";
 import {
@@ -64,8 +65,6 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
   return "github";
 }
 
-// Single source of truth for sandbox passEnv defaults (shared with config.js)
-import { DEFAULT_PASS_ENV } from "./pass-env.js";
 export { DEFAULT_PASS_ENV };
 
 /**
