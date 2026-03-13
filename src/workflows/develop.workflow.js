@@ -348,6 +348,12 @@ export async function runDevelopPipeline(opts, ctx) {
           failed.machine,
           failed.error || result.error || "",
         );
+        // Clear implemented flag so retry re-runs implementation
+        const retryState = await loadState(ctx.workspaceDir);
+        if (retryState?.steps) {
+          retryState.steps.implemented = false;
+          await saveState(ctx.workspaceDir, retryState);
+        }
       },
     },
   );

@@ -340,6 +340,33 @@ test("shellEscape coerces number to string", () => {
   assert.equal(shellEscape(42), "'42'");
 });
 
+test("sanitizeIssueMarkdown strips outer ```markdown fence", () => {
+  const raw = "```markdown\n# Title\n\nBody text\n```";
+  const cleaned = sanitizeIssueMarkdown(raw);
+  assert.equal(cleaned.startsWith("# Title"), true);
+  assert.doesNotMatch(cleaned, /```/);
+});
+
+test("sanitizeIssueMarkdown strips outer ``` fence without language tag", () => {
+  const raw = "```\n# Title\n\nBody text\n```";
+  const cleaned = sanitizeIssueMarkdown(raw);
+  assert.equal(cleaned.startsWith("# Title"), true);
+  assert.doesNotMatch(cleaned, /```/);
+});
+
+test("sanitizeIssueMarkdown preserves inner fences", () => {
+  const raw = "# Title\n\n```js\nconst x = 1;\n```\n\nMore text";
+  const cleaned = sanitizeIssueMarkdown(raw);
+  assert.match(cleaned, /```js/);
+  assert.match(cleaned, /const x = 1/);
+});
+
+test("sanitizeIssueMarkdown returns empty for empty fence", () => {
+  const raw = "```markdown\n\n```";
+  const cleaned = sanitizeIssueMarkdown(raw);
+  assert.equal(cleaned, "");
+});
+
 test("buildPrBodyFromIssue returns a sanitized top section", () => {
   const issue = `Warning: startup
 MCP server 'linear' rejected stored OAuth token.

@@ -352,8 +352,13 @@ export function sanitizeIssueMarkdown(text) {
   // Drop leading startup noise (common) and then remove any remaining noise lines
   // anywhere in the document (MCP notifications can leak mid/late output).
   const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
-  const fullyCleaned = stripAgentNoise(cleaned).trim();
+  let fullyCleaned = stripAgentNoise(cleaned).trim();
   if (!fullyCleaned) return "";
+  // Strip outer markdown code fence wrapper (Gemini sometimes wraps entire output)
+  const fenceMatch = fullyCleaned.match(
+    /^```(?:markdown)?\s*\n([\s\S]*?)\n\s*```\s*$/,
+  );
+  if (fenceMatch) fullyCleaned = fenceMatch[1].trim();
   const lines = fullyCleaned.split("\n");
   const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
   if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
