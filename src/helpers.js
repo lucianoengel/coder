@@ -60,6 +60,84 @@ export function detectDefaultBranch(repoDir) {
 }
 
 /**
+ * Check if the default branch has tracking config. If missing, log a warning.
+ * Skips check when repo has no origin (local-only); pull would fail anyway.
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} defaultBranch - Default branch name (e.g. main)
+ * @param {(obj: object) => void} log - Logger function
+ * @returns {boolean} true if tracking is configured or no remote exists
+ */
+export function checkDefaultBranchTracking(repoDir, defaultBranch, log) {
+  const hasOrigin = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (hasOrigin.status !== 0) return true; // No remote; tracking check N/A
+
+  const remote = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.remote`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  const merge = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.merge`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  if (remote.status !== 0 || merge.status !== 0) {
+    const remoteName = getDefaultBranchRemoteName(repoDir, defaultBranch);
+    log({
+      event: "git_tracking_missing",
+      defaultBranch,
+      suggestion: `Run: git branch --set-upstream-to=${remoteName}/${defaultBranch} ${defaultBranch}`,
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Get the remote name for the default branch's upstream, or a fallback.
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} defaultBranch - Default branch name (e.g. main)
+ * @returns {string} Remote name (e.g. origin, upstream)
+ */
+export function getDefaultBranchRemoteName(repoDir, defaultBranch) {
+  const res = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.remote`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  const configured = (res.stdout || "").trim();
+  if (configured) return configured;
+  const remotes = spawnSync("git", ["remote"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const list = (remotes.stdout || "").trim().split(/\s+/).filter(Boolean);
+  return list.includes("origin") ? "origin" : list[0] || "origin";
+}
+
+/** Patterns indicating upstream ref was deleted or never existed (stale tracking). */
+const STALE_UPSTREAM_PATTERNS = [
+  /couldn't find remote ref/i,
+  /no such ref was fetched/i,
+  /no such ref/i,
+  /your configuration specifies to merge with .* from the remote, but no such ref was fetched/i,
+  /refs\/heads\/[^\s]+ does not exist/i,
+];
+
+/**
+ * Detect if git pull stderr indicates a stale/deleted upstream ref.
+ * @param {string} stderr - Git pull stderr output
+ * @returns {boolean}
+ */
+export function isStaleUpstreamRefError(stderr) {
+  const text = String(stderr || "").trim();
+  return STALE_UPSTREAM_PATTERNS.some((re) => re.test(text));
+}
+
+/**
  * Detect repository hosting type from remote URL.
  *
  * @param {string} repoDir - Path to the git repository

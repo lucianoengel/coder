@@ -15,7 +15,13 @@ import {
   buildDependencyGraph,
   getTransitiveDependents,
 } from "../github/dependencies.js";
-import { detectDefaultBranch, detectRemoteType } from "../helpers.js";
+import {
+  checkDefaultBranchTracking,
+  detectDefaultBranch,
+  detectRemoteType,
+  getDefaultBranchRemoteName,
+  isStaleUpstreamRefError,
+} from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
   artifactPaths,
@@ -29,6 +35,7 @@ import planReviewMachine from "../machines/develop/plan-review.machine.js";
 import planningMachine from "../machines/develop/planning.machine.js";
 import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
+import { runPreflight } from "../preflight.js";
 import { checkpointPathFor } from "../state/machine-state.js";
 import { ScratchpadPersistence } from "../state/persistence.js";
 import {
@@ -166,6 +173,12 @@ export async function runPlanLoop(
           roundsUsed: round + 1,
           maxRounds,
         });
+        return {
+          status: "failed",
+          error: "plan_review_exhausted",
+          planReviewExhausted: true,
+          results: allResults,
+        };
       }
       break;
     }
@@ -611,6 +624,12 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
 const isRateLimitError = (text) =>
   /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+
+/** Detect infra errors (DB down, connection refused) that should yield deferred, not failed. */
+const isInfraError = (text) =>
+  /connection refused|ECONNREFUSED|ConnectionRefusedError|connect.*failed|connection.*refused/i.test(
+    String(text || ""),
+  );
 
 /** Unstage, restore tracked files, and remove untracked files. Returns true only if all steps succeeded. */
 function discardWorktreeChanges(repoRoot) {
@@ -1239,6 +1258,21 @@ export async function runDevelopLoop(opts, ctx) {
     };
   }
 
+  // Pre-flight checks (DB, ports, etc.) — fail fast before processing
+  const preflight = ctx.config?.workflow?.preflight;
+  if (preflight?.checks?.length > 0) {
+    const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
+    try {
+      await runPreflight(preflight.checks, loopRepoRoot);
+    } catch (err) {
+      return {
+        status: "failed",
+        error: `Pre-flight check failed: ${err.message}`,
+        results: [],
+      };
+    }
+  }
+
   // Build dependency-aware queue
   const { queue: issues, rationale } = buildIssueQueue(rawIssues, {
     source: issueListSource,
@@ -1500,6 +1534,43 @@ export async function runDevelopLoop(opts, ctx) {
     const repoPath = normalizeRepoPath(ctx.workspaceDir, issue.repo_path);
     const issueRepoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
 
+    // Resolve per-issue default branch before git ops
+    const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
+    const trackingOk = checkDefaultBranchTracking(
+      issueRepoRoot,
+      issueDefaultBranch,
+      ctx.log,
+    );
+    if (!trackingOk) {
+      const remoteName = getDefaultBranchRemoteName(
+        issueRepoRoot,
+        issueDefaultBranch,
+      );
+      const suggestion = `Run: git branch --set-upstream-to=${remoteName}/${issueDefaultBranch} ${issueDefaultBranch}`;
+      ctx.log({
+        event: "issue_deferred_git_tracking",
+        issueId: issue.id,
+        defaultBranch: issueDefaultBranch,
+        suggestion,
+      });
+      loopState.issueQueue[i].status = "deferred";
+      loopState.issueQueue[i].error =
+        `Default branch has no tracking config. ${suggestion}`;
+      loopState.issueQueue[i].deferredReason = "git_tracking";
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_deferred",
+        "",
+        { status: "deferred", reason: "git_tracking", suggestion },
+        issueEnv,
+      );
+      return "deferred";
+    }
+
     // Pull latest default branch to pick up any PRs merged while
     // earlier issues were being processed.
     const pullResult = spawnSync("git", ["pull", "--ff-only"], {
@@ -1507,16 +1578,43 @@ export async function runDevelopLoop(opts, ctx) {
       encoding: "utf8",
     });
     if (pullResult.status !== 0) {
+      const stderr = (pullResult.stderr || "").trim();
       ctx.log({
         event: "git_pull_failed",
         issueId: issue.id,
-        stderr: (pullResult.stderr || "").trim().slice(0, 200),
+        stderr: stderr.slice(0, 200),
       });
+      if (isStaleUpstreamRefError(stderr)) {
+        const remoteName = getDefaultBranchRemoteName(
+          issueRepoRoot,
+          issueDefaultBranch,
+        );
+        const suggestion = `Run: git branch --set-upstream-to=${remoteName}/${issueDefaultBranch} ${issueDefaultBranch}`;
+        ctx.log({
+          event: "issue_deferred_git_tracking",
+          issueId: issue.id,
+          defaultBranch: issueDefaultBranch,
+          suggestion,
+          reason: "stale_upstream_ref",
+        });
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error =
+          `Git pull failed: upstream ref not found. ${suggestion}`;
+        loopState.issueQueue[i].deferredReason = "git_tracking";
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred", reason: "git_tracking", suggestion },
+          issueEnv,
+        );
+        return "deferred";
+      }
     }
-
-    // Resolve per-issue default branch (may differ from workspace root
-    // when issue.repo_path targets a different repo).
-    const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
 
     // Build active branch context for conflict detection (skipped when disabled).
     let activeBranches = [];
@@ -1601,6 +1699,7 @@ export async function runDevelopLoop(opts, ctx) {
 
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = pipelineResult.error;
+        loopState.issueQueue[i].deferredReason = "conflict";
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
@@ -1667,12 +1766,20 @@ export async function runDevelopLoop(opts, ctx) {
           { status: "completed", prUrl: prResult?.data?.prUrl, branch },
           issueEnv,
         );
+      } else if (pipelineResult.status === "cancelled") {
+        loopState.issueQueue[i].status = "pending";
+        loopState.issueQueue[i].error = null;
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        return "cancelled";
       } else {
         const errText = pipelineResult.error || "";
         if (isRateLimitError(errText) && !isRetry) {
           ctx.log({ event: "issue_rate_limited", issueId: issue.id });
           loopState.issueQueue[i].status = "deferred";
           loopState.issueQueue[i].error = errText;
+          loopState.issueQueue[i].deferredReason = "rate_limit";
           await saveLoopState(ctx.workspaceDir, loopState, {
             guardRunId: loopState.runId,
           });
@@ -1682,6 +1789,53 @@ export async function runDevelopLoop(opts, ctx) {
             "issue_deferred",
             "",
             { status: "deferred" },
+            issueEnv,
+          );
+          return "deferred";
+        }
+        if (pipelineResult.planReviewExhausted) {
+          ctx.log({
+            event: "issue_deferred_plan_blocked",
+            issueId: issue.id,
+            reason: "plan_review_exhausted",
+          });
+          loopState.issueQueue[i].status = "deferred";
+          loopState.issueQueue[i].error = errText;
+          loopState.issueQueue[i].deferredReason = "plan_blocked";
+          await saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_deferred",
+            "",
+            { status: "deferred", reason: "plan_blocked" },
+            issueEnv,
+          );
+          return "deferred";
+        }
+        if (
+          ctx.config?.workflow?.infraDetection === true &&
+          isInfraError(errText)
+        ) {
+          ctx.log({
+            event: "issue_deferred_infra",
+            issueId: issue.id,
+            reason: "infra",
+          });
+          loopState.issueQueue[i].status = "deferred";
+          loopState.issueQueue[i].error = errText;
+          loopState.issueQueue[i].deferredReason = "infra";
+          await saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_deferred",
+            "",
+            { status: "deferred", reason: "infra" },
             issueEnv,
           );
           return "deferred";
@@ -1705,10 +1859,19 @@ export async function runDevelopLoop(opts, ctx) {
         );
       }
     } catch (err) {
+      if (ctx.cancelToken.cancelled) {
+        loopState.issueQueue[i].status = "pending";
+        loopState.issueQueue[i].error = null;
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        return "cancelled";
+      }
       if (isRateLimitError(err.message) && !isRetry) {
         ctx.log({ event: "issue_rate_limited", issueId: issue.id });
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = err.message;
+        loopState.issueQueue[i].deferredReason = "rate_limit";
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
@@ -1718,6 +1881,31 @@ export async function runDevelopLoop(opts, ctx) {
           "issue_deferred",
           "",
           { status: "deferred" },
+          issueEnv,
+        );
+        return "deferred";
+      }
+      if (
+        ctx.config?.workflow?.infraDetection === true &&
+        isInfraError(err.message)
+      ) {
+        ctx.log({
+          event: "issue_deferred_infra",
+          issueId: issue.id,
+          reason: "infra",
+        });
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error = err.message;
+        loopState.issueQueue[i].deferredReason = "infra";
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred", reason: "infra" },
           issueEnv,
         );
         return "deferred";
@@ -1803,6 +1991,7 @@ export async function runDevelopLoop(opts, ctx) {
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
     const issueStatus = await processIssue(issues[i], i);
+    if (issueStatus === "cancelled") break;
     if (issueStatus !== "failed") continue;
 
     // Skip only transitive dependents of the failed issue; independent issues continue.
@@ -1862,10 +2051,21 @@ export async function runDevelopLoop(opts, ctx) {
     }
   }
 
-  // Retry pass for deferred issues whose dependencies are now resolved
+  // Retry pass for deferred issues whose dependencies are now resolved.
+  // Exclude infra/plan_blocked — those require operator action and next start.
+  const DEFERRED_SAME_RUN_RETRY_REASONS = [
+    "conflict",
+    "rate_limit",
+    "dependency",
+  ];
   const deferredIndices = issues
     .map((_, i) => i)
-    .filter((i) => loopState.issueQueue[i].status === "deferred");
+    .filter((i) => {
+      const entry = loopState.issueQueue[i];
+      if (entry.status !== "deferred") return false;
+      const reason = entry.deferredReason;
+      return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
+    });
 
   if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
     ctx.log({
@@ -2061,7 +2261,18 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
   }
 
   if (loopState.status === "running") {
-    loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
+    if (ctx.cancelToken.cancelled) {
+      loopState.status = "cancelled";
+    } else {
+      const hasBlockedDeferrals = loopState.issueQueue.some(
+        (q) =>
+          q.status === "deferred" &&
+          ["infra", "plan_blocked", "git_tracking"].includes(
+            q.deferredReason || "",
+          ),
+      );
+      loopState.status = hasBlockedDeferrals ? "blocked" : "completed";
+    }
   }
   loopState.completedAt = new Date().toISOString();
   await saveLoopState(ctx.workspaceDir, loopState, {
