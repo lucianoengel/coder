@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,7 +13,9 @@ import {
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
+  getDefaultBranchRemoteName,
   gitCleanOrThrow,
+  isStaleUpstreamRefError,
   resolvePassEnv,
   runHostTests,
   sanitizeIssueMarkdown,
@@ -377,6 +379,53 @@ test("shellEscape handles empty string", () => {
 
 test("shellEscape coerces number to string", () => {
   assert.equal(shellEscape(42), "'42'");
+});
+
+test("isStaleUpstreamRefError detects couldn't find remote ref", () => {
+  assert.equal(
+    isStaleUpstreamRefError("fatal: Couldn't find remote ref refs/heads/main"),
+    true,
+  );
+});
+
+test("isStaleUpstreamRefError detects no such ref was fetched", () => {
+  assert.equal(
+    isStaleUpstreamRefError(
+      "Your configuration specifies to merge with refs/heads/main from the remote, but no such ref was fetched.",
+    ),
+    true,
+  );
+});
+
+test("isStaleUpstreamRefError returns false for generic fetch error", () => {
+  assert.equal(
+    isStaleUpstreamRefError("fatal: unable to access 'https://x/': Could not resolve host: x"),
+    false,
+  );
+});
+
+test("getDefaultBranchRemoteName returns configured remote when set", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hi" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) throw new Error(`git ${args.join(" ")} failed`);
+  };
+  runGit("remote", "add", "upstream", "https://example.com/upstream.git");
+  runGit("config", "branch.main.remote", "upstream");
+  try {
+    assert.equal(getDefaultBranchRemoteName(repoDir, "main"), "upstream");
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("getDefaultBranchRemoteName falls back to origin when no config", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hi" });
+  try {
+    assert.equal(getDefaultBranchRemoteName(repoDir, "main"), "origin");
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
 });
 
 test("buildPrBodyFromIssue returns a sanitized top section", () => {

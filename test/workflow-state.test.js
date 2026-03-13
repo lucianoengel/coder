@@ -16,6 +16,7 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
   statePathFor,
+  TERMINAL_RUN_STATUSES,
 } from "../src/state/workflow-state.js";
 
 function makeTmpDir() {
@@ -69,6 +70,34 @@ test("loopStatePathFor returns expected path", () => {
     loopStatePathFor("/foo"),
     path.join("/foo", ".coder", "loop-state.json"),
   );
+});
+
+test("TERMINAL_RUN_STATUSES includes blocked for start-path handling", () => {
+  assert.ok(
+    TERMINAL_RUN_STATUSES.includes("blocked"),
+    "blocked must be terminal so start treats prior blocked run as finished",
+  );
+  assert.deepEqual(
+    TERMINAL_RUN_STATUSES.sort(),
+    ["blocked", "cancelled", "completed", "failed"].sort(),
+  );
+});
+
+test("createWorkflowLifecycleMachine: BLOCKED transitions to blocked state", () => {
+  const machine = createWorkflowLifecycleMachine();
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "blocked-run",
+    workflow: "develop",
+    at: new Date().toISOString(),
+  });
+  assert.equal(actor.getSnapshot().value, "running");
+  actor.send({ type: "BLOCKED", at: new Date().toISOString() });
+  assert.equal(actor.getSnapshot().value, "blocked");
+  assert.equal(actor.getSnapshot().status, "done");
+  actor.stop();
 });
 
 test("loadState returns defaults for nonexistent workspace", async () => {

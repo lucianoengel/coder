@@ -304,6 +304,7 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       paused: {
@@ -314,6 +315,7 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       cancelling: {
@@ -322,16 +324,26 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       completed: { type: "final" },
       failed: { type: "final" },
       cancelled: { type: "final" },
+      blocked: { type: "final" },
     },
   });
 }
 
 // --- Loop state (for develop workflow's multi-issue loop) ---
+
+/** Terminal run statuses — used for start-path cleanup, schema, and lifecycle. Keep synchronized. */
+export const TERMINAL_RUN_STATUSES = [
+  "completed",
+  "failed",
+  "cancelled",
+  "blocked",
+];
 
 const LoopIssueResultSchema = z
   .object({
@@ -355,6 +367,7 @@ const LoopIssueResultSchema = z
     completedAt: z.string().nullable().default(null),
     dependsOn: z.array(z.string()).default([]),
     lastFailedRunId: z.string().nullable().default(null),
+    deferredReason: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -362,7 +375,15 @@ const LoopStateSchema = z.object({
   runId: z.string().nullable().default(null),
   goal: z.string().default(""),
   status: z
-    .enum(["idle", "running", "paused", "completed", "failed", "cancelled"])
+    .enum([
+      "idle",
+      "running",
+      "paused",
+      "completed",
+      "failed",
+      "cancelled",
+      "blocked",
+    ])
     .default("idle"),
   projectFilter: z.string().nullable().default(null),
   maxIssues: z.number().int().nullable().default(null),
