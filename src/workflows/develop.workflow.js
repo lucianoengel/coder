@@ -1116,7 +1116,8 @@ export async function resetForNextIssue(
       });
       if ((status.stdout || "").trim()) {
         // Best-effort WIP commit — log warning on failure, don't throw
-        const addRes = spawnSync("git", ["add", "-A"], {
+        // Exclude .coder/ so workspace state isn't captured in WIP commits
+        const addRes = spawnSync("git", ["add", "-A", "--", ".", ":!.coder/"], {
           cwd: repoRoot,
           encoding: "utf8",
         });
@@ -1228,7 +1229,11 @@ export async function ensureCleanLoopStart(workspaceDir, ctx) {
 
     if (knownBranches.has(currentBranch) && isDirty) {
       // WIP-commit dirty state on known branches (best-effort)
-      spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
+      // Exclude .coder/ so workspace state isn't captured in WIP commits
+      spawnSync("git", ["add", "-A", "--", ".", ":!.coder/"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
       spawnSync(
         "git",
         ["commit", "-m", "wip: crash recovery (ensureCleanLoopStart)"],
