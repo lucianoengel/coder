@@ -161,7 +161,7 @@ Three backends, assigned to roles via config:
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
 
-XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled`.
+XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled/blocked`.
 
 ### State
 
