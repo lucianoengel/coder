@@ -1,12 +1,28 @@
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadLoopState, saveLoopState } from "../src/state/workflow-state.js";
+import {
+  loadLoopState,
+  loadState,
+  saveLoopState,
+  saveState,
+} from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
-import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
+import {
+  ensureCleanLoopStart,
+  resetForNextIssue,
+  runDevelopLoop,
+  runWithMachineRetry,
+} from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "destructive-reset-"));
@@ -311,6 +327,250 @@ test("without destructiveReset, failed/skipped issues are preserved from prior r
     assert.equal(issueB.error, "quality review failed");
   } finally {
     WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// --- resetForNextIssue tests ---
+
+test("resetForNextIssue throws when git checkout fails", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // Create and switch to a branch, then delete the default branch so checkout fails
+    spawnSync("git", ["checkout", "-b", "feat/test"], {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    spawnSync("git", ["branch", "-D", "main"], { cwd: ws, stdio: "ignore" });
+    spawnSync("git", ["branch", "-D", "master"], { cwd: ws, stdio: "ignore" });
+
+    await assert.rejects(
+      () => resetForNextIssue(ws, ".", { destructiveReset: false }),
+      (err) => {
+        assert.match(err.message, /git checkout.*failed/i);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("resetForNextIssue skips git restore on empty-commit repo", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // ws was init'd with --allow-empty, so there are no tracked files.
+    // Create an untracked file so status is dirty.
+    writeFileSync(path.join(ws, "untracked.txt"), "hello");
+
+    // Should not throw — git restore is skipped, only git clean runs
+    await resetForNextIssue(ws, ".", { destructiveReset: true });
+    assert.ok(
+      !existsSync(path.join(ws, "untracked.txt")),
+      "untracked file should be cleaned",
+    );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// --- ensureCleanLoopStart tests ---
+
+function makeLogCtx(workspaceDir) {
+  const logEvents = [];
+  return {
+    workspaceDir,
+    log: (event) => logEvents.push(event),
+    logEvents,
+  };
+}
+
+test("ensureCleanLoopStart: WIP-preserves known branch, switches to default", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // Seed loop state with a known branch
+    await saveLoopState(ws, {
+      runId: "run-1",
+      issueQueue: [
+        {
+          id: "A",
+          title: "A",
+          source: "local",
+          status: "in_progress",
+          branch: "feat/known",
+          dependsOn: [],
+        },
+      ],
+    });
+
+    // Create the known branch and make it dirty
+    spawnSync("git", ["checkout", "-b", "feat/known"], {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    writeFileSync(path.join(ws, "dirty.txt"), "wip");
+    spawnSync("git", ["add", "dirty.txt"], { cwd: ws, stdio: "ignore" });
+
+    const ctx = makeLogCtx(ws);
+    await ensureCleanLoopStart(ws, ctx);
+
+    // Should have committed and switched to master/main
+    const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: ws,
+      encoding: "utf8",
+    });
+    assert.ok(["main", "master"].includes(head.stdout.trim()));
+    assert.ok(
+      ctx.logEvents.some((e) => e.event === "clean_loop_start_wip_commit"),
+    );
+    assert.ok(
+      ctx.logEvents.some((e) => e.event === "clean_loop_start_checkout"),
+    );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("ensureCleanLoopStart: discards dirty unknown branch", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // No loop state (unknown branch)
+    spawnSync("git", ["checkout", "-b", "feat/unknown"], {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    writeFileSync(path.join(ws, "junk.txt"), "junk");
+
+    const ctx = makeLogCtx(ws);
+    await ensureCleanLoopStart(ws, ctx);
+
+    const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: ws,
+      encoding: "utf8",
+    });
+    assert.ok(["main", "master"].includes(head.stdout.trim()));
+    assert.ok(
+      ctx.logEvents.some((e) => e.event === "clean_loop_start_discard"),
+    );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("ensureCleanLoopStart: resets stale in_progress to pending", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    await saveLoopState(ws, {
+      runId: "run-1",
+      issueQueue: [
+        {
+          id: "A",
+          title: "A",
+          source: "local",
+          status: "in_progress",
+          dependsOn: [],
+        },
+        {
+          id: "B",
+          title: "B",
+          source: "local",
+          status: "completed",
+          dependsOn: [],
+        },
+        {
+          id: "C",
+          title: "C",
+          source: "local",
+          status: "in_progress",
+          dependsOn: [],
+        },
+      ],
+    });
+
+    const ctx = makeLogCtx(ws);
+    await ensureCleanLoopStart(ws, ctx);
+
+    const ls = await loadLoopState(ws);
+    assert.equal(ls.issueQueue[0].status, "pending");
+    assert.equal(ls.issueQueue[1].status, "completed");
+    assert.equal(ls.issueQueue[2].status, "pending");
+    assert.ok(
+      ctx.logEvents.some(
+        (e) => e.event === "clean_loop_start_reset_stale" && e.count === 2,
+      ),
+    );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("ensureCleanLoopStart: no-op when clean", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    const ctx = makeLogCtx(ws);
+    await ensureCleanLoopStart(ws, ctx);
+
+    // No recovery events should have been logged
+    assert.equal(ctx.logEvents.length, 0);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// --- Retry implemented flag test ---
+
+test("quality-review retry clears state.steps.implemented", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // Seed state with implemented=true
+    await saveState(ws, { steps: { implemented: true } });
+
+    const logEvents = [];
+    const ctx = {
+      workspaceDir: ws,
+      artifactsDir: path.join(ws, ".coder", "artifacts"),
+      log: (e) => logEvents.push(e),
+      cancelToken: { cancelled: false },
+    };
+
+    let attempt = 0;
+    const result = await runWithMachineRetry(
+      () => {
+        attempt++;
+        if (attempt === 1) {
+          return {
+            status: "failed",
+            error: "quality issues",
+            results: [
+              {
+                machine: "develop.quality_review",
+                status: "error",
+                error: "quality issues",
+              },
+            ],
+          };
+        }
+        return { status: "completed", results: [] };
+      },
+      {
+        maxRetries: 1,
+        backoffMs: 0,
+        ctx,
+        onFailedAttempt: async () => {
+          // Simulate the real callback: clear implemented flag
+          const retryState = await loadState(ctx.workspaceDir);
+          if (retryState?.steps) {
+            retryState.steps.implemented = false;
+            await saveState(ctx.workspaceDir, retryState);
+          }
+        },
+      },
+    );
+
+    assert.equal(result.status, "completed");
+    const finalState = await loadState(ws);
+    assert.equal(finalState.steps.implemented, false);
+  } finally {
     rmSync(ws, { recursive: true, force: true });
   }
 });

@@ -9,6 +9,7 @@ import {
   SqliteTimeoutError,
   sqlEscape,
   sqliteAvailable,
+  sqliteBackend,
 } from "../src/sqlite.js";
 
 test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => {
@@ -106,4 +107,14 @@ test("SqliteTimeoutError is an instance of Error with structured properties", ()
   assert.equal(err.dbPath, "/tmp/test.db");
   assert.equal(err.timeoutMs, 5000);
   assert.equal(err.graceMs, 3000);
+});
+
+test("sqliteBackend returns 'cli' or null", () => {
+  const result = sqliteBackend();
+  assert.ok(
+    result === "cli" || result === null,
+    `Expected "cli" or null, got: ${result}`,
+  );
+  // Must be consistent with sqliteAvailable
+  assert.equal(sqliteAvailable(), result !== null);
 });
