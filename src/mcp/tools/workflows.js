@@ -177,11 +177,10 @@ export async function readWorkflowStatus(workspaceDir) {
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 
-  // Status contract: when currentStage is ${workflow}_starting, we are pre-merge.
+  // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
-  const isPreMerge =
-    typeof loopState.currentStage === "string" &&
-    loopState.currentStage.endsWith("_starting");
+  // Scoped to develop only; other workflows may have different semantics.
+  const isPreMerge = loopState.currentStage === "develop_starting";
   const queueForStatus = isPreMerge
     ? loopState.issueQueue.filter(
         (e) => e.status !== "failed" && e.status !== "skipped",

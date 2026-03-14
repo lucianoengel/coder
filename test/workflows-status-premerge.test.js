@@ -54,6 +54,36 @@ test("develop_starting: status suppresses stale failed and skipped entries", asy
   }
 });
 
+test("research_starting: status shows all entries (suppression scoped to develop only)", async () => {
+  const ws = makeTmpDir();
+  try {
+    await saveLoopState(ws, {
+      version: 1,
+      runId: "test-run",
+      status: "running",
+      goal: "test",
+      currentStage: "research_starting",
+      currentStageStartedAt: new Date().toISOString(),
+      activeAgent: "gemini",
+      lastHeartbeatAt: new Date().toISOString(),
+      issueQueue: [
+        { id: "A", title: "Issue A", status: "completed", source: "github" },
+        { id: "B", title: "Issue B", status: "failed", error: "quota", source: "github" },
+      ],
+      currentIndex: 0,
+      startedAt: new Date().toISOString(),
+    });
+
+    const status = await readWorkflowStatus(ws);
+
+    assert.equal(status.currentStage, "research_starting");
+    assert.equal(status.issueQueue.length, 2, "other workflows: no suppression");
+    assert.equal(status.counts.failed, 1);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test("non-starting stage: status shows all entries including failed and skipped", async () => {
   const ws = makeTmpDir();
   try {

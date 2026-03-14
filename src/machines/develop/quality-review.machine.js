@@ -275,19 +275,26 @@ export default defineMachine({
     if (!state.steps.reviewerCompleted) {
       ctx.log({ event: "review_loop_start" });
 
-      // Agent-change invalidation: clear session when reviewer agent changes
-      if (
-        state.reviewerAgentName &&
-        state.reviewerAgentName !== reviewerName
-      ) {
-        delete state.reviewerSessionId;
-        state.reviewerAgentName = reviewerName;
-        await saveState(ctx.workspaceDir, state);
-      }
-      if (!state.reviewerSessionId) {
-        state.reviewerSessionId = randomUUID();
-        state.reviewerAgentName = reviewerName;
-        await saveState(ctx.workspaceDir, state);
+      // Session only for agents that support create/resume (claude, codex with --session).
+      // Gemini and codex without --session: non-resumable this iteration.
+      const reviewerSupportsSession =
+        reviewerName === "claude" ||
+        (reviewerName === "codex" &&
+          reviewerAgent.codexSessionSupported?.() === true);
+      if (reviewerSupportsSession) {
+        if (
+          state.reviewerAgentName &&
+          state.reviewerAgentName !== reviewerName
+        ) {
+          delete state.reviewerSessionId;
+          state.reviewerAgentName = reviewerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+        if (!state.reviewerSessionId) {
+          state.reviewerSessionId = randomUUID();
+          state.reviewerAgentName = reviewerName;
+          await saveState(ctx.workspaceDir, state);
+        }
       }
 
       // Initialize review round tracking if not set (recovery-safe)
@@ -337,10 +344,11 @@ export default defineMachine({
           );
 
           // Round 1: new session; Round 2+: resume to retain review context
-          const reviewSessionOpts =
-            round === 1
+          const reviewSessionOpts = reviewerSupportsSession
+            ? round === 1
               ? { sessionId: state.reviewerSessionId }
-              : { resumeId: state.reviewerSessionId };
+              : { resumeId: state.reviewerSessionId }
+            : {};
 
           let reviewRes;
           try {
@@ -350,6 +358,7 @@ export default defineMachine({
             });
           } catch (err) {
             if (
+              reviewerSupportsSession &&
               err.name === "CommandFatalStderrError" &&
               err.category === "auth" &&
               reviewSessionOpts.resumeId
@@ -360,7 +369,6 @@ export default defineMachine({
               });
               state.reviewerSessionId = randomUUID();
               await saveState(ctx.workspaceDir, state);
-              // Fresh session loses prior review context — acceptable per GH-89
               reviewRes = await reviewerAgent.execute(reviewPrompt, {
                 sessionId: state.reviewerSessionId,
                 timeoutMs: ctx.config.workflow.timeouts.reviewRound,
@@ -403,26 +411,33 @@ export default defineMachine({
 
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
 
+        const programmerSupportsSession =
+          programmerName === "claude" ||
+          (programmerName === "codex" &&
+            programmerAgent.codexSessionSupported?.() === true);
         const fixSessionKey = "programmerFixSessionId";
-        if (
-          state.programmerFixAgentName &&
-          state.programmerFixAgentName !== programmerName
-        ) {
-          delete state[fixSessionKey];
-          state.programmerFixAgentName = programmerName;
-          await saveState(ctx.workspaceDir, state);
-        }
-        const hadFixSession = !!state[fixSessionKey];
-        if (!state[fixSessionKey]) {
-          state[fixSessionKey] = randomUUID();
-          state.programmerFixAgentName = programmerName;
-          await saveState(ctx.workspaceDir, state);
+        let fixSessionOpts = {};
+        if (programmerSupportsSession) {
+          if (
+            state.programmerFixAgentName &&
+            state.programmerFixAgentName !== programmerName
+          ) {
+            delete state[fixSessionKey];
+            state.programmerFixAgentName = programmerName;
+            await saveState(ctx.workspaceDir, state);
+          }
+          const hadFixSession = !!state[fixSessionKey];
+          if (!state[fixSessionKey]) {
+            state[fixSessionKey] = randomUUID();
+            state.programmerFixAgentName = programmerName;
+            await saveState(ctx.workspaceDir, state);
+          }
+          fixSessionOpts = hadFixSession
+            ? { resumeId: state[fixSessionKey] }
+            : { sessionId: state[fixSessionKey] };
         }
 
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
-        const fixSessionOpts = hadFixSession
-          ? { resumeId: state[fixSessionKey] }
-          : { sessionId: state[fixSessionKey] };
         let fixRes;
         try {
           fixRes = await programmerAgent.execute(fixPrompt, {
@@ -431,6 +446,7 @@ export default defineMachine({
           });
         } catch (err) {
           if (
+            programmerSupportsSession &&
             err.name === "CommandFatalStderrError" &&
             err.category === "auth" &&
             state[fixSessionKey]

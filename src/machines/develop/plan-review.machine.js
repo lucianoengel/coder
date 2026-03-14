@@ -119,24 +119,33 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      const planReviewSessionKey = "planReviewSessionId";
-      if (
-        state.planReviewAgentName &&
-        state.planReviewAgentName !== planReviewerName
-      ) {
-        delete state[planReviewSessionKey];
-        state.planReviewAgentName = planReviewerName;
-        await saveState(ctx.workspaceDir, state);
+      // Session only for agents that support create/resume (claude, codex with --session).
+      // Gemini uses native runPlanreview above; codex without --session: non-resumable.
+      const planReviewSupportsSession =
+        planReviewerName === "claude" ||
+        (planReviewerName === "codex" &&
+          planReviewerAgent.codexSessionSupported?.() === true);
+      let planReviewSessionOpts = {};
+      if (planReviewSupportsSession) {
+        const planReviewSessionKey = "planReviewSessionId";
+        if (
+          state.planReviewAgentName &&
+          state.planReviewAgentName !== planReviewerName
+        ) {
+          delete state[planReviewSessionKey];
+          state.planReviewAgentName = planReviewerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+        const hadPlanReviewSession = !!state[planReviewSessionKey];
+        if (!state[planReviewSessionKey]) {
+          state[planReviewSessionKey] = randomUUID();
+          state.planReviewAgentName = planReviewerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+        planReviewSessionOpts = hadPlanReviewSession
+          ? { resumeId: state.planReviewSessionId }
+          : { sessionId: state.planReviewSessionId };
       }
-      const hadPlanReviewSession = !!state[planReviewSessionKey];
-      if (!state[planReviewSessionKey]) {
-        state[planReviewSessionKey] = randomUUID();
-        state.planReviewAgentName = planReviewerName;
-        await saveState(ctx.workspaceDir, state);
-      }
-      const planReviewSessionOpts = hadPlanReviewSession
-        ? { resumeId: state[planReviewSessionKey] }
-        : { sessionId: state[planReviewSessionKey] };
 
       const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
         ...planReviewSessionOpts,
