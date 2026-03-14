@@ -714,11 +714,13 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
 // fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
 // ---------------------------------------------------------------------------
 
-test("glabMrListArgs: does not use --state, uses --output json", () => {
+test("glabMrListArgs: exact args per docs.gitlab.com/cli/mr/list", () => {
   const args = glabMrListArgs();
-  assert.ok(!args.includes("--state"), "glab mr list must not use --state (not in official CLI)");
-  const outIdx = args.indexOf("--output");
-  assert.ok(outIdx >= 0 && args[outIdx + 1] === "json", "must use --output json");
+  assert.deepEqual(
+    args,
+    ["mr", "list", "--output", "json"],
+    "must match exact CLI form; no --state",
+  );
 });
 
 // ---------------------------------------------------------------------------
