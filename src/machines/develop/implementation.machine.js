@@ -87,7 +87,8 @@ export default defineMachine({
         else execOpts.execWithJsonCapture = true;
       }
     } else if (sessionOrResumeId) {
-      execOpts.resumeId = sessionOrResumeId;
+      if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
+      else execOpts.sessionId = sessionOrResumeId;
     }
 
     // Gather branch context for recovery
