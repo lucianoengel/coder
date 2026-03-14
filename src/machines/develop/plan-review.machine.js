@@ -82,11 +82,14 @@ export default defineMachine({
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
     ctx.log({ event: "step3b_plan_review" });
 
+    // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
     const { agentName: planReviewerName, agent: planReviewerAgent } =
-      ctx.agentPool.getAgent("planReviewer", { scope: "repo" });
+      ctx.agentPool.getAgent("planReviewer", { scope: "workspace" });
 
     if (planReviewerName === "gemini") {
-      const rc = runPlanreview(repoRoot, paths.plan, paths.critique);
+      // Use workspaceDir as cwd so Gemini can access .coder/artifacts/ when repo_path is subdir
+      const runReview = ctx._runPlanreviewForTest ?? runPlanreview;
+      const rc = runReview(ctx.workspaceDir, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
         if (!existsSync(paths.critique)) {

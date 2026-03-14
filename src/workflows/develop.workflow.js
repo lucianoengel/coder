@@ -1073,6 +1073,15 @@ export function ensureCleanLoopStart(
 }
 
 /**
+ * Build args for glab mr list. Exported for testing.
+ * Per docs.gitlab.com/cli/mr/list: default is open MRs; --state is not a valid flag.
+ * @returns {string[]}
+ */
+export function glabMrListArgs() {
+  return ["mr", "list", "--output", "json"];
+}
+
+/**
  * Fetch open PR/MR branches and their diff stats from the hosting platform.
  * Returns an array of { branch, issueId, title, diffStat } suitable for
  * activeBranches. Best-effort: returns [] on failure.
@@ -1088,11 +1097,11 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
     let prs;
 
     if (platform === "gitlab") {
-      const res = spawnSync(
-        "glab",
-        ["mr", "list", "--state", "opened", "--output", "json"],
-        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
-      );
+      const res = spawnSync("glab", glabMrListArgs(), {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15000,
+      });
       if (res.status !== 0 || !res.stdout) {
         if (log)
           log({
@@ -1188,6 +1197,7 @@ export async function runDevelopLoop(opts, ctx) {
     projectFilter,
     maxIssues = 10,
     destructiveReset = false,
+    preserveFailedIssues = false, // Internal: when true, preserve failed/skipped from prior run (test-only)
     testCmd,
     testConfigPath,
     allowNoTests = false,
@@ -1256,14 +1266,15 @@ export async function runDevelopLoop(opts, ctx) {
   });
 
   // Initialize loop state — merge terminal statuses from prior run.
-  // When destructiveReset is true, only preserve "completed" (don't re-process
-  // successes) but reset "failed"/"skipped" to "pending" so they are retried.
+  // By default, only preserve "completed"; failed/skipped are retried on new start.
+  // When preserveFailedIssues is true (internal/test-only), preserve failed/skipped too.
   const loopState = await loadLoopState(ctx.workspaceDir);
   const priorQueue = loopState.issueQueue || [];
   const priorById = new Map(priorQueue.map((q) => [q.id, q]));
-  const terminalStatuses = destructiveReset
-    ? ["completed"]
-    : ["completed", "failed", "skipped"];
+  const terminalStatuses =
+    destructiveReset || !preserveFailedIssues
+      ? ["completed"]
+      : ["completed", "failed", "skipped"];
 
   // Keep original state for cleanup-failure path so we don't persist overwritten
   // queue (which would erase branch metadata needed for WIP preservation).

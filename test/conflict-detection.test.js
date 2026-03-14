@@ -6,6 +6,7 @@ import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
   fetchOpenPrBranches,
+  glabMrListArgs,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -707,6 +708,19 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
+// ---------------------------------------------------------------------------
+
+test("glabMrListArgs: exact args per docs.gitlab.com/cli/mr/list", () => {
+  const args = glabMrListArgs();
+  assert.deepEqual(
+    args,
+    ["mr", "list", "--output", "json"],
+    "must match exact CLI form; no --state",
+  );
 });
 
 // ---------------------------------------------------------------------------
