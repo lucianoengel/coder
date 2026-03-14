@@ -282,10 +282,7 @@ export default defineMachine({
         (reviewerName === "codex" &&
           reviewerAgent.codexSessionSupported?.() === true);
       // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
-      if (
-        state.reviewerAgentName &&
-        state.reviewerAgentName !== reviewerName
-      ) {
+      if (state.reviewerAgentName && state.reviewerAgentName !== reviewerName) {
         delete state.reviewerSessionId;
         state.reviewerAgentName = reviewerName;
         await saveState(ctx.workspaceDir, state);

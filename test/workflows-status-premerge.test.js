@@ -26,7 +26,13 @@ test("develop_starting: status suppresses stale failed and skipped entries", asy
       lastHeartbeatAt: new Date().toISOString(),
       issueQueue: [
         { id: "A", title: "Issue A", status: "completed", source: "github" },
-        { id: "B", title: "Issue B", status: "failed", error: "quota", source: "github" },
+        {
+          id: "B",
+          title: "Issue B",
+          status: "failed",
+          error: "quota",
+          source: "github",
+        },
         { id: "C", title: "Issue C", status: "skipped", source: "github" },
         { id: "D", title: "Issue D", status: "pending", source: "github" },
       ],
@@ -37,7 +43,11 @@ test("develop_starting: status suppresses stale failed and skipped entries", asy
     const status = await readWorkflowStatus(ws);
 
     assert.equal(status.currentStage, "develop_starting");
-    assert.equal(status.issueQueue.length, 2, "failed and skipped must be filtered out");
+    assert.equal(
+      status.issueQueue.length,
+      2,
+      "failed and skipped must be filtered out",
+    );
     const ids = status.issueQueue.map((e) => e.id);
     assert.ok(ids.includes("A"), "completed must remain");
     assert.ok(ids.includes("D"), "pending must remain");
@@ -68,7 +78,13 @@ test("research_starting: status shows all entries (suppression scoped to develop
       lastHeartbeatAt: new Date().toISOString(),
       issueQueue: [
         { id: "A", title: "Issue A", status: "completed", source: "github" },
-        { id: "B", title: "Issue B", status: "failed", error: "quota", source: "github" },
+        {
+          id: "B",
+          title: "Issue B",
+          status: "failed",
+          error: "quota",
+          source: "github",
+        },
       ],
       currentIndex: 0,
       startedAt: new Date().toISOString(),
@@ -77,7 +93,11 @@ test("research_starting: status shows all entries (suppression scoped to develop
     const status = await readWorkflowStatus(ws);
 
     assert.equal(status.currentStage, "research_starting");
-    assert.equal(status.issueQueue.length, 2, "other workflows: no suppression");
+    assert.equal(
+      status.issueQueue.length,
+      2,
+      "other workflows: no suppression",
+    );
     assert.equal(status.counts.failed, 1);
   } finally {
     rmSync(ws, { recursive: true, force: true });
@@ -98,7 +118,13 @@ test("non-starting stage: status shows all entries including failed and skipped"
       lastHeartbeatAt: new Date().toISOString(),
       issueQueue: [
         { id: "A", title: "Issue A", status: "completed", source: "github" },
-        { id: "B", title: "Issue B", status: "failed", error: "quota", source: "github" },
+        {
+          id: "B",
+          title: "Issue B",
+          status: "failed",
+          error: "quota",
+          source: "github",
+        },
         { id: "C", title: "Issue C", status: "skipped", source: "github" },
       ],
       currentIndex: 0,
