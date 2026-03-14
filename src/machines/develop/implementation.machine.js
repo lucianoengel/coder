@@ -43,21 +43,35 @@ export default defineMachine({
     const { agentName: programmerName, agent: programmerAgent } =
       ctx.agentPool.getAgent("programmer", { scope: "repo" });
 
-    const sessionKey =
-      programmerName === "codex" ? "programmerSessionId" : "claudeSessionId";
+    const sessionKey = "implementationSessionId";
     const codexUsesSession =
       programmerName === "codex" &&
       programmerAgent.codexSessionSupported?.() === true;
+
+    // Agent-change invalidation: clear session when programmer agent changes
+    if (
+      state.implementationAgentName &&
+      state.implementationAgentName !== programmerName
+    ) {
+      delete state[sessionKey];
+      state.implementationAgentName = programmerName;
+      await saveState(ctx.workspaceDir, state);
+    }
+
     const hadSessionBefore = !!state[sessionKey];
     if (!state[sessionKey]) {
       if (programmerName === "codex") {
         if (codexUsesSession) {
           state[sessionKey] = randomUUID();
+          state.implementationAgentName = programmerName;
           await saveState(ctx.workspaceDir, state);
         }
-      } else {
-        // Claude: planning creates the session; never manufacture one here
+      } else if (programmerName === "claude") {
+        state[sessionKey] = randomUUID();
+        state.implementationAgentName = programmerName;
+        await saveState(ctx.workspaceDir, state);
       }
+      // gemini: no session create path in this iteration
     }
     const sessionOrResumeId = state[sessionKey];
     const execOpts = {

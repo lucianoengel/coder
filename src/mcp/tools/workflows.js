@@ -172,10 +172,21 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
-async function readWorkflowStatus(workspaceDir) {
+export async function readWorkflowStatus(workspaceDir) {
   const loopState = await loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+
+  // Status contract: when currentStage is ${workflow}_starting, we are pre-merge.
+  // Suppress stale failed/skipped entries so status shows a fresh retryable view.
+  const isPreMerge =
+    typeof loopState.currentStage === "string" &&
+    loopState.currentStage.endsWith("_starting");
+  const queueForStatus = isPreMerge
+    ? loopState.issueQueue.filter(
+        (e) => e.status !== "failed" && e.status !== "skipped",
+      )
+    : loopState.issueQueue;
 
   const counts = {
     total: 0,
@@ -185,7 +196,7 @@ async function readWorkflowStatus(workspaceDir) {
     pending: 0,
     inProgress: 0,
   };
-  for (const entry of loopState.issueQueue) {
+  for (const entry of queueForStatus) {
     counts.total++;
     if (entry.status === "completed") counts.completed++;
     else if (entry.status === "failed") counts.failed++;
@@ -194,7 +205,7 @@ async function readWorkflowStatus(workspaceDir) {
     else counts.pending++;
   }
 
-  const issueQueue = loopState.issueQueue.map((e) => ({
+  const issueQueue = queueForStatus.map((e) => ({
     source: e.source,
     id: e.id,
     title: e.title,

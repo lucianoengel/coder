@@ -275,9 +275,18 @@ export default defineMachine({
     if (!state.steps.reviewerCompleted) {
       ctx.log({ event: "review_loop_start" });
 
-      // Generate reviewer session ID for session continuity across rounds
+      // Agent-change invalidation: clear session when reviewer agent changes
+      if (
+        state.reviewerAgentName &&
+        state.reviewerAgentName !== reviewerName
+      ) {
+        delete state.reviewerSessionId;
+        state.reviewerAgentName = reviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
       if (!state.reviewerSessionId) {
         state.reviewerSessionId = randomUUID();
+        state.reviewerAgentName = reviewerName;
         await saveState(ctx.workspaceDir, state);
       }
 
@@ -394,26 +403,44 @@ export default defineMachine({
 
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
 
+        const fixSessionKey = "programmerFixSessionId";
+        if (
+          state.programmerFixAgentName &&
+          state.programmerFixAgentName !== programmerName
+        ) {
+          delete state[fixSessionKey];
+          state.programmerFixAgentName = programmerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+        const hadFixSession = !!state[fixSessionKey];
+        if (!state[fixSessionKey]) {
+          state[fixSessionKey] = randomUUID();
+          state.programmerFixAgentName = programmerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
+        const fixSessionOpts = hadFixSession
+          ? { resumeId: state[fixSessionKey] }
+          : { sessionId: state[fixSessionKey] };
         let fixRes;
         try {
           fixRes = await programmerAgent.execute(fixPrompt, {
-            resumeId: state.claudeSessionId || undefined,
+            ...fixSessionOpts,
             timeoutMs: ctx.config.workflow.timeouts.programmerFix,
           });
         } catch (err) {
           if (
             err.name === "CommandFatalStderrError" &&
             err.category === "auth" &&
-            state.claudeSessionId
+            state[fixSessionKey]
           ) {
             ctx.log({
               event: "session_resume_failed",
-              sessionId: state.claudeSessionId,
+              sessionId: state[fixSessionKey],
             });
-            state.claudeSessionId = null;
+            state[fixSessionKey] = null;
             await saveState(ctx.workspaceDir, state);
-            // Fresh session loses prior context — acceptable per GH-89
             fixRes = await programmerAgent.execute(fixPrompt, {
               timeoutMs: ctx.config.workflow.timeouts.programmerFix,
             });

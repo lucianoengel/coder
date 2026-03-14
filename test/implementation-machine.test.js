@@ -70,7 +70,7 @@ test("Codex without --session: persists null when capture fails on execute failu
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, null);
+  assert.equal(state.implementationSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });
 
@@ -107,7 +107,7 @@ test("Codex without --session: persists null when capture fails on execute throw
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, null);
+  assert.equal(state.implementationSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });
 
@@ -155,13 +155,13 @@ test("Codex without --session: persists null when capture fails on auth retry ex
       steps: { wrotePlan: true, wroteCritique: true },
       repoPath: "",
       branch: "main",
-      programmerSessionId: "stale-session",
+      implementationSessionId: "stale-session",
     }),
   );
 
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, null);
+  assert.equal(state.implementationSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });

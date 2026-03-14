@@ -141,7 +141,7 @@ export class CliAgent extends AgentAdapter {
 
   /**
    * Whether this agent (Codex) supports --session for named-session creation.
-   * Used by implementation machine to decide whether to persist programmerSessionId.
+   * Used by implementation machine to decide whether to persist implementationSessionId.
    * @returns {boolean}
    */
   codexSessionSupported() {
@@ -250,7 +250,9 @@ export class CliAgent extends AgentAdapter {
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p --no-session-persistence";
+      const needsPersistence = sessionId || resumeId;
+      let flags = "claude -p";
+      if (!needsPersistence) flags += " --no-session-persistence";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${shellEscape(claudeModel)}`;

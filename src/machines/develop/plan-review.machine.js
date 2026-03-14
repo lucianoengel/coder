@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -118,7 +119,27 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
+      const planReviewSessionKey = "planReviewSessionId";
+      if (
+        state.planReviewAgentName &&
+        state.planReviewAgentName !== planReviewerName
+      ) {
+        delete state[planReviewSessionKey];
+        state.planReviewAgentName = planReviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
+      const hadPlanReviewSession = !!state[planReviewSessionKey];
+      if (!state[planReviewSessionKey]) {
+        state[planReviewSessionKey] = randomUUID();
+        state.planReviewAgentName = planReviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
+      const planReviewSessionOpts = hadPlanReviewSession
+        ? { resumeId: state[planReviewSessionKey] }
+        : { sessionId: state[planReviewSessionKey] };
+
       const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+        ...planReviewSessionOpts,
         timeoutMs: ctx.config.workflow.timeouts.planReview,
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
