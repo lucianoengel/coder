@@ -131,9 +131,9 @@ export default defineMachine({
         action: "creating_fresh_session",
       });
     }
-    const creatingSession = !state.claudeSessionId || agentChanged;
+    const creatingSession = !state.planningSessionId || agentChanged;
     if (creatingSession) {
-      state.claudeSessionId = randomUUID();
+      state.planningSessionId = randomUUID();
       state.plannerAgentName = plannerName;
       await saveState(ctx.workspaceDir, state);
     }
@@ -252,8 +252,8 @@ ${branchSections}`;
 
       const sessionOpts =
         creatingSession && attempt === 0
-          ? { sessionId: state.claudeSessionId }
-          : { resumeId: state.claudeSessionId };
+          ? { sessionId: state.planningSessionId }
+          : { resumeId: state.planningSessionId };
 
       let res;
       try {
@@ -270,9 +270,9 @@ ${branchSections}`;
           ) {
             ctx.log({
               event: "session_resume_failed",
-              sessionId: state.claudeSessionId,
+              sessionId: state.planningSessionId,
             });
-            state.claudeSessionId = randomUUID();
+            state.planningSessionId = randomUUID();
             await saveState(ctx.workspaceDir, state);
             // Fresh session needs full planPrompt even during REVISE/constraint rounds
             const retryPrompt =
@@ -280,7 +280,7 @@ ${branchSections}`;
                 ? prompt
                 : `${planPrompt}\n\n${prompt}`;
             res = await plannerAgent.execute(retryPrompt, {
-              sessionId: state.claudeSessionId,
+              sessionId: state.planningSessionId,
               timeoutMs: ctx.config.workflow.timeouts.planning,
             });
           } else {
@@ -289,7 +289,7 @@ ${branchSections}`;
         }
         requireExitZero(plannerName, "plan generation failed", res);
       } catch (err) {
-        state.claudeSessionId = null;
+        state.planningSessionId = null;
         await saveState(ctx.workspaceDir, state);
         throw err;
       }
