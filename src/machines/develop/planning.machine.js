@@ -51,8 +51,9 @@ export default defineMachine({
     ensureBranch(repoRoot, state.branch);
 
     ctx.log({ event: "step3a_create_plan" });
+    // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
     const { agentName: plannerName, agent: plannerAgent } =
-      ctx.agentPool.getAgent("planner", { scope: "repo" });
+      ctx.agentPool.getAgent("planner", { scope: "workspace" });
 
     const artifactFiles = [
       "ISSUE.md",
