@@ -281,20 +281,19 @@ export default defineMachine({
         reviewerName === "claude" ||
         (reviewerName === "codex" &&
           reviewerAgent.codexSessionSupported?.() === true);
-      if (reviewerSupportsSession) {
-        if (
-          state.reviewerAgentName &&
-          state.reviewerAgentName !== reviewerName
-        ) {
-          delete state.reviewerSessionId;
-          state.reviewerAgentName = reviewerName;
-          await saveState(ctx.workspaceDir, state);
-        }
-        if (!state.reviewerSessionId) {
-          state.reviewerSessionId = randomUUID();
-          state.reviewerAgentName = reviewerName;
-          await saveState(ctx.workspaceDir, state);
-        }
+      // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
+      if (
+        state.reviewerAgentName &&
+        state.reviewerAgentName !== reviewerName
+      ) {
+        delete state.reviewerSessionId;
+        state.reviewerAgentName = reviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
+      if (reviewerSupportsSession && !state.reviewerSessionId) {
+        state.reviewerSessionId = randomUUID();
+        state.reviewerAgentName = reviewerName;
+        await saveState(ctx.workspaceDir, state);
       }
 
       // Initialize review round tracking if not set (recovery-safe)
@@ -417,15 +416,16 @@ export default defineMachine({
             programmerAgent.codexSessionSupported?.() === true);
         const fixSessionKey = "programmerFixSessionId";
         let fixSessionOpts = {};
+        // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
+        if (
+          state.programmerFixAgentName &&
+          state.programmerFixAgentName !== programmerName
+        ) {
+          delete state[fixSessionKey];
+          state.programmerFixAgentName = programmerName;
+          await saveState(ctx.workspaceDir, state);
+        }
         if (programmerSupportsSession) {
-          if (
-            state.programmerFixAgentName &&
-            state.programmerFixAgentName !== programmerName
-          ) {
-            delete state[fixSessionKey];
-            state.programmerFixAgentName = programmerName;
-            await saveState(ctx.workspaceDir, state);
-          }
           const hadFixSession = !!state[fixSessionKey];
           if (!state[fixSessionKey]) {
             state[fixSessionKey] = randomUUID();

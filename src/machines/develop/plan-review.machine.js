@@ -125,17 +125,18 @@ Constraints:
         planReviewerName === "claude" ||
         (planReviewerName === "codex" &&
           planReviewerAgent.codexSessionSupported?.() === true);
+      const planReviewSessionKey = "planReviewSessionId";
+      // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
+      if (
+        state.planReviewAgentName &&
+        state.planReviewAgentName !== planReviewerName
+      ) {
+        delete state[planReviewSessionKey];
+        state.planReviewAgentName = planReviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
       let planReviewSessionOpts = {};
       if (planReviewSupportsSession) {
-        const planReviewSessionKey = "planReviewSessionId";
-        if (
-          state.planReviewAgentName &&
-          state.planReviewAgentName !== planReviewerName
-        ) {
-          delete state[planReviewSessionKey];
-          state.planReviewAgentName = planReviewerName;
-          await saveState(ctx.workspaceDir, state);
-        }
         const hadPlanReviewSession = !!state[planReviewSessionKey];
         if (!state[planReviewSessionKey]) {
           state[planReviewSessionKey] = randomUUID();
@@ -147,10 +148,33 @@ Constraints:
           : { sessionId: state.planReviewSessionId };
       }
 
-      const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-        ...planReviewSessionOpts,
-        timeoutMs: ctx.config.workflow.timeouts.planReview,
-      });
+      let reviewRes;
+      try {
+        reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+          ...planReviewSessionOpts,
+          timeoutMs: ctx.config.workflow.timeouts.planReview,
+        });
+      } catch (err) {
+        if (
+          planReviewSupportsSession &&
+          err.name === "CommandFatalStderrError" &&
+          err.category === "auth" &&
+          planReviewSessionOpts.resumeId
+        ) {
+          ctx.log({
+            event: "session_resume_failed",
+            sessionId: state.planReviewSessionId,
+          });
+          state[planReviewSessionKey] = randomUUID();
+          await saveState(ctx.workspaceDir, state);
+          reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+            sessionId: state.planReviewSessionId,
+            timeoutMs: ctx.config.workflow.timeouts.planReview,
+          });
+        } else {
+          throw err;
+        }
+      }
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
       if (!existsSync(paths.critique)) {
