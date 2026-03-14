@@ -6,6 +6,7 @@ import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
   fetchOpenPrBranches,
+  glabMrListArgs,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -707,6 +708,17 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
+// ---------------------------------------------------------------------------
+
+test("glabMrListArgs: does not use --state, uses --output json", () => {
+  const args = glabMrListArgs();
+  assert.ok(!args.includes("--state"), "glab mr list must not use --state (not in official CLI)");
+  const outIdx = args.indexOf("--output");
+  assert.ok(outIdx >= 0 && args[outIdx + 1] === "json", "must use --output json");
 });
 
 // ---------------------------------------------------------------------------
