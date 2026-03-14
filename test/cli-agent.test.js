@@ -64,10 +64,24 @@ test("claude: malicious sessionId is shell-escaped", () => {
   assert.ok(!cmd.includes(`--session-id '; touch`));
 });
 
-test("claude: command includes --no-session-persistence", () => {
+test("claude: command includes --no-session-persistence when no session", () => {
   const agent = makeAgent("claude");
   const cmd = agent._buildCommand("prompt", {});
   assert.ok(cmd.includes("--no-session-persistence"));
+});
+
+test("claude: omits --no-session-persistence when sessionId provided", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { sessionId: "sess-123" });
+  assert.ok(!cmd.includes("--no-session-persistence"));
+  assert.ok(cmd.includes("--session-id"));
+});
+
+test("claude: omits --no-session-persistence when resumeId provided", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { resumeId: "resume-456" });
+  assert.ok(!cmd.includes("--no-session-persistence"));
+  assert.ok(cmd.includes("--resume"));
 });
 
 test("claude: malicious resumeId is shell-escaped", () => {
