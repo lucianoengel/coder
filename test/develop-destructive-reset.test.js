@@ -402,7 +402,10 @@ test("default: failed issues are retried on new start (no preserveFailedIssues)"
     );
 
     // A (completed) should not be re-processed; B (failed) should be retried
-    assert.ok(!processedIds.includes("A"), "completed A should not be re-processed");
+    assert.ok(
+      !processedIds.includes("A"),
+      "completed A should not be re-processed",
+    );
     assert.ok(processedIds.includes("B"), "failed B should be retried");
     assert.equal(result.completed, 2);
     assert.equal(result.failed, 0);

@@ -10,9 +10,9 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { saveState } from "../src/state/workflow-state.js";
 import planReviewMachine from "../src/machines/develop/plan-review.machine.js";
 import planningMachine from "../src/machines/develop/planning.machine.js";
+import { saveState } from "../src/state/workflow-state.js";
 
 test("planning machine uses workspace scope for agent when repo_path is subdir", async () => {
   const ws = mkdtempSync(path.join(os.tmpdir(), "repo-path-artifact-"));
@@ -63,7 +63,9 @@ test("planning machine uses workspace scope for agent when repo_path is subdir",
     await planningMachine.run({}, ctx);
 
     assert.ok(
-      getAgentCalls.some((c) => c.role === "planner" && c.scope === "workspace"),
+      getAgentCalls.some(
+        (c) => c.role === "planner" && c.scope === "workspace",
+      ),
       "planner must use scope workspace for artifact access when repo_path is subdir",
     );
     assert.ok(
@@ -84,7 +86,10 @@ test("plan-review Gemini path uses workspaceDir as cwd for artifact access", asy
     execSync("git init -b main", { cwd: apiDir, stdio: "ignore" });
     execSync("git config user.email t@t.com", { cwd: apiDir, stdio: "ignore" });
     execSync("git config user.name T", { cwd: apiDir, stdio: "ignore" });
-    execSync("git commit --allow-empty -m init", { cwd: apiDir, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", {
+      cwd: apiDir,
+      stdio: "ignore",
+    });
 
     const artifactsDir = path.join(ws, ".coder", "artifacts");
     writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n\nDo it.");
@@ -97,7 +102,7 @@ test("plan-review Gemini path uses workspaceDir as cwd for artifact access", asy
     });
 
     let runPlanreviewCwd = null;
-    const mockRunPlanreview = (cwd, planPath, critiquePath) => {
+    const mockRunPlanreview = (cwd, _planPath, critiquePath) => {
       runPlanreviewCwd = cwd;
       writeFileSync(critiquePath, "## Verdict\nAPPROVED\n", "utf8");
       return 0;

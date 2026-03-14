@@ -88,8 +88,7 @@ export default defineMachine({
 
     if (planReviewerName === "gemini") {
       // Use workspaceDir as cwd so Gemini can access .coder/artifacts/ when repo_path is subdir
-      const runReview =
-        ctx._runPlanreviewForTest ?? runPlanreview;
+      const runReview = ctx._runPlanreviewForTest ?? runPlanreview;
       const rc = runReview(ctx.workspaceDir, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
