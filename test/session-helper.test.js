@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, beforeEach, afterEach } from "node:test";
-import { loadState, saveState } from "../src/state/workflow-state.js";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   supportsSession,
   withSessionResume,
 } from "../src/machines/develop/_session.js";
+import { loadState, saveState } from "../src/state/workflow-state.js";
 
 describe("supportsSession", () => {
   it("returns true for claude", () => {
