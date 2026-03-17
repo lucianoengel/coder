@@ -21,12 +21,17 @@ function makeCommandFatalStderrError(message) {
 }
 
 test("planning: retries with fresh session when session ID is already in use (create path)", async () => {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "planning-session-collision-"));
+  const tmp = mkdtempSync(
+    path.join(os.tmpdir(), "planning-session-collision-"),
+  );
   try {
     const repoRoot = path.join(tmp, "repo");
     mkdirSync(repoRoot, { recursive: true });
     execSync("git init -b main", { cwd: repoRoot, stdio: "ignore" });
-    execSync("git config user.email t@t.com", { cwd: repoRoot, stdio: "ignore" });
+    execSync("git config user.email t@t.com", {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
     execSync("git config user.name T", { cwd: repoRoot, stdio: "ignore" });
     writeFileSync(path.join(repoRoot, "README.md"), "# repo\n");
     execSync("git add README.md && git commit -m init", {
@@ -48,7 +53,7 @@ test("planning: retries with fresh session when session ID is already in use (cr
     let callCount = 0;
     const logEvents = [];
     const mockAgent = {
-      async execute(prompt, opts) {
+      async execute(_prompt, _opts) {
         callCount++;
         if (callCount === 1) {
           throw makeCommandFatalStderrError(
@@ -76,8 +81,7 @@ test("planning: retries with fresh session when session ID is already in use (cr
     assert.equal(callCount, 2, "should retry once after session collision");
     assert.ok(
       logEvents.some(
-        (e) =>
-          e.event === "session_auth_failed" && e.wasCreating === true,
+        (e) => e.event === "session_auth_failed" && e.wasCreating === true,
       ),
       "should log session_auth_failed with wasCreating",
     );

@@ -4,8 +4,8 @@ import os from "node:os";
 import test from "node:test";
 
 import {
-  CliAgent,
   CLAUDE_RESUME_FAILURE_PATTERNS,
+  CliAgent,
   resolveAgentName,
 } from "../src/agents/cli-agent.js";
 

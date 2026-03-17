@@ -213,7 +213,7 @@ describe("withSessionResume", () => {
       agentNameKey: "testAgentName",
       workspaceDir: tmp,
       log: () => {},
-      executeFn: (opts) => {
+      executeFn: (_opts) => {
         callCount++;
         if (callCount === 1) throw authErr;
         return Promise.resolve({ stdout: "ok" });
