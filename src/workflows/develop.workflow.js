@@ -471,7 +471,8 @@ export async function runDevelopPipeline(opts, ctx) {
       maxRetries: maxMachineRetries,
       backoffMs: retryBackoffMs,
       ctx,
-      onFailedAttempt: async ({ result }) => {
+      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
+        if (attempt >= maxRetries) return;
         const failed = findFailedMachineResult(result);
         if (failed?.machine !== "develop.quality_review") return;
         await injectRetryFeedback(

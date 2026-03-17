@@ -144,8 +144,8 @@ Constraints:
           await saveState(ctx.workspaceDir, state);
         }
         planReviewSessionOpts = hadPlanReviewSession
-          ? { resumeId: state.planReviewSessionId }
-          : { sessionId: state.planReviewSessionId };
+          ? { resumeId: state[planReviewSessionKey] }
+          : { sessionId: state[planReviewSessionKey] };
       }
 
       let reviewRes;
@@ -163,12 +163,12 @@ Constraints:
         ) {
           ctx.log({
             event: "session_resume_failed",
-            sessionId: state.planReviewSessionId,
+            sessionId: state[planReviewSessionKey],
           });
           state[planReviewSessionKey] = randomUUID();
           await saveState(ctx.workspaceDir, state);
           reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-            sessionId: state.planReviewSessionId,
+            sessionId: state[planReviewSessionKey],
             timeoutMs: ctx.config.workflow.timeouts.planReview,
           });
         } else {
