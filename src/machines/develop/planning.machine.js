@@ -287,6 +287,13 @@ ${branchSections}`;
               err.name === "CommandFatalStdoutError") &&
             err.category === "auth";
           const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+          ctx.log({
+            event: "planning_auth_catch",
+            isAuthError,
+            hadSessionOpts,
+            errName: err.name,
+            errCategory: err?.category,
+          });
           if (isAuthError && hadSessionOpts) {
             ctx.log({
               event: "session_auth_failed",
@@ -295,13 +302,31 @@ ${branchSections}`;
             });
             clearAllSessionIdsAndDisable(state);
             await saveState(ctx.workspaceDir, state);
-            // Full planPrompt needed when retrying without session
+            const retryOpts = {
+              timeoutMs: ctx.config.workflow.timeouts.planning,
+              sessionId: undefined,
+              resumeId: undefined,
+              killOnStderrPatterns: [],
+              killOnStdoutPatterns: [],
+            };
+            ctx.log({
+              event: "session_retry_no_session",
+              step: "planning",
+              retryOptsKeys: Object.keys(retryOpts),
+              hasSessionInRetry:
+                retryOpts.sessionId != null || retryOpts.resumeId != null,
+            });
+            // Full planPrompt needed when retrying without session.
             const retryPrompt =
               prompt === planPrompt || prompt.startsWith(planPrompt)
                 ? prompt
                 : `${planPrompt}\n\n${prompt}`;
-            res = await plannerAgent.execute(retryPrompt, {
-              timeoutMs: ctx.config.workflow.timeouts.planning,
+            res = await plannerAgent.execute(retryPrompt, retryOpts);
+            ctx.log({
+              event: "session_retry_done",
+              step: "planning",
+              exitCode: res?.exitCode,
+              ok: res?.exitCode === 0,
             });
           } else {
             throw err;

@@ -99,6 +99,7 @@ export async function withSessionResume({
       });
       clearAllSessionIdsAndDisable(state);
       await saveState(workspaceDir, state);
+      log({ event: "session_retry_no_session", sessionKey });
       return await executeFn({});
     }
     throw err;
