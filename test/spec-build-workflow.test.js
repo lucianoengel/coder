@@ -486,9 +486,10 @@ test("spec_render ingest mode: writes bridge manifest without spec dir", async (
   }
 });
 
-test("spec_render build mode: duplicate-title issueSpecs get distinct phase issueIds", async () => {
+test("spec_render build mode: duplicate-title issueSpecs get distinct phase issueIds via all-field match", async () => {
   const dirs = makeTempDirs();
   try {
+    // Flat order: [First, Second] — phases reference by distinct objective field
     const result = await specRenderMachine.run(
       {
         runDir: dirs.runDir,
@@ -505,12 +506,16 @@ test("spec_render build mode: duplicate-title issueSpecs get distinct phase issu
           {
             id: "phase-1",
             title: "Phase A",
-            issueSpecs: [{ title: "Same title" }],
+            issueSpecs: [
+              { title: "Same title", objective: "Second", priority: "P2" },
+            ],
           },
           {
             id: "phase-2",
             title: "Phase B",
-            issueSpecs: [{ title: "Same title" }],
+            issueSpecs: [
+              { title: "Same title", objective: "First", priority: "P1" },
+            ],
           },
         ],
         issueSpecs: [
@@ -533,16 +538,66 @@ test("spec_render build mode: duplicate-title issueSpecs get distinct phase issu
       readFileSync(path.join(dirs.runDir, "spec", "manifest.json"), "utf8"),
     );
 
-    // Each phase should get a distinct issue ID
+    // Phase A references Second (flat[1] = SPEC-02)
+    // Phase B references First  (flat[0] = SPEC-01)
     assert.equal(specManifest.phases[0].issueIds.length, 1);
     assert.equal(specManifest.phases[1].issueIds.length, 1);
-    assert.notEqual(
-      specManifest.phases[0].issueIds[0],
-      specManifest.phases[1].issueIds[0],
-      "duplicate-title issues must resolve to distinct IDs across phases",
+    assert.equal(specManifest.phases[0].issueIds[0], "SPEC-02");
+    assert.equal(specManifest.phases[1].issueIds[0], "SPEC-01");
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test("spec_render build mode: phase entries with _issueId bypass matching", async () => {
+  const dirs = makeTempDirs();
+  try {
+    const result = await specRenderMachine.run(
+      {
+        runDir: dirs.runDir,
+        stepsDir: dirs.stepsDir,
+        issuesDir: dirs.issuesDir,
+        scratchpadPath: dirs.scratchpadPath,
+        pipelinePath: dirs.pipelinePath,
+        repoRoot: dirs.workspace,
+        repoPath: ".",
+        mode: "build",
+        domains: [],
+        decisions: [],
+        phases: [
+          {
+            id: "phase-1",
+            title: "Phase A",
+            issueSpecs: [{ title: "Same title", _issueId: "SPEC-02" }],
+          },
+          {
+            id: "phase-2",
+            title: "Phase B",
+            issueSpecs: [{ title: "Same title", _issueId: "SPEC-01" }],
+          },
+        ],
+        issueSpecs: [
+          { title: "Same title", objective: "First", priority: "P1" },
+          { title: "Same title", objective: "Second", priority: "P2" },
+        ],
+        parsedDomains: [],
+        parsedDecisions: [],
+      },
+      {
+        workspaceDir: dirs.workspace,
+        log: () => {},
+      },
     );
-    assert.equal(specManifest.phases[0].issueIds[0], "SPEC-01");
-    assert.equal(specManifest.phases[1].issueIds[0], "SPEC-02");
+
+    assert.equal(result.status, "ok");
+
+    const specManifest = JSON.parse(
+      readFileSync(path.join(dirs.runDir, "spec", "manifest.json"), "utf8"),
+    );
+
+    // Pre-assigned _issueId is used directly — no title matching needed
+    assert.equal(specManifest.phases[0].issueIds[0], "SPEC-02");
+    assert.equal(specManifest.phases[1].issueIds[0], "SPEC-01");
   } finally {
     dirs.cleanup();
   }

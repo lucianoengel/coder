@@ -13,23 +13,54 @@ import {
 } from "./_shared.js";
 
 /**
- * Build a phase→issueId[] mapping from phases that carry issueSpecs.
- * Matches by title with greedy consumption so duplicate titles resolve
- * to distinct generated issue IDs.
+ * Check if every own-key of `subset` matches the same key in `superset`.
+ * Keys starting with `_` are skipped (internal annotations).
  */
-function buildPhaseIssueIds(phases, generatedIssues) {
+function isSubsetMatch(subset, superset) {
+  for (const key of Object.keys(subset)) {
+    if (key.startsWith("_")) continue;
+    if (subset[key] !== superset[key]) return false;
+  }
+  return true;
+}
+
+/**
+ * Build a phase→issueId[] mapping.
+ *
+ * Each flat issueSpec is tagged with `_issueId` (stable, index-based).
+ * Phase entries that already carry `_issueId` use it directly.
+ * Abbreviated phase entries are matched against the tagged flat specs
+ * using ALL shared fields (not just title) to find the correct ID.
+ */
+function buildPhaseIssueIds(phases, issueSpecs, generatedIssues) {
+  // Tag each flat spec with its assigned issue ID
+  for (let i = 0; i < issueSpecs.length; i++) {
+    if (i < generatedIssues.length) {
+      issueSpecs[i]._issueId = generatedIssues[i].id;
+    }
+  }
+
   const used = new Set();
   return phases.map((ph) => {
     const specs = Array.isArray(ph.issueSpecs) ? ph.issueSpecs : [];
     const ids = [];
     for (const s of specs) {
-      const title = String(s?.title || "").trim();
-      const idx = generatedIssues.findIndex(
-        (gi, i) => !used.has(i) && gi.title === title,
-      );
+      // If the phase entry carries a pre-assigned _issueId, use it directly
+      if (s._issueId) {
+        if (!used.has(s._issueId)) {
+          used.add(s._issueId);
+          ids.push(s._issueId);
+        }
+        continue;
+      }
+      // Match against tagged flat specs using all shared fields
+      const idx = issueSpecs.findIndex((flat) => {
+        if (!flat._issueId || used.has(flat._issueId)) return false;
+        return isSubsetMatch(s, flat);
+      });
       if (idx >= 0) {
-        used.add(idx);
-        ids.push(generatedIssues[idx].id);
+        used.add(issueSpecs[idx]._issueId);
+        ids.push(issueSpecs[idx]._issueId);
       }
     }
     return ids;
@@ -243,8 +274,12 @@ export default defineMachine({
         );
       }
 
-      // Phases — derive issueIds from phase.issueSpecs matched against generated issues
-      const phaseIssueIds = buildPhaseIssueIds(phases, generatedIssues);
+      // Phases — derive issueIds via stable _issueId tags on flat issueSpecs
+      const phaseIssueIds = buildPhaseIssueIds(
+        phases,
+        issueSpecs,
+        generatedIssues,
+      );
 
       for (let i = 0; i < phases.length; i++) {
         const ph = phases[i];
