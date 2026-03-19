@@ -4,6 +4,17 @@ import process from "node:process";
 
 const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRLEN (128KB)
 
+/**
+ * Write a large command to a temp file and return a bash command that
+ * executes it then cleans up. Avoids kernel E2BIG on execve().
+ */
+function maybeTmpFile(command) {
+  if (command.length <= LARGE_COMMAND_THRESHOLD) return command;
+  const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
+  writeFileSync(tmpPath, command, { mode: 0o600 });
+  return `bash "${tmpPath}" ; rm -f "${tmpPath}"`;
+}
+
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;
 let cachedSystemdAvailability = null;
 
@@ -88,13 +99,7 @@ export function buildSystemdRunArgs(
     );
   }
 
-  if (command.length > LARGE_COMMAND_THRESHOLD) {
-    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
-    writeFileSync(tmpPath, command, { mode: 0o600 });
-    args.push("bash", "-lc", `bash ${tmpPath} ; rm -f ${tmpPath}`);
-  } else {
-    args.push("bash", "-lc", command);
-  }
+  args.push("bash", "-lc", maybeTmpFile(command));
   return args;
 }
 
@@ -152,13 +157,7 @@ export function runShellSync(
 
   const fallbackEnv = { ...(env || process.env) };
   delete fallbackEnv.CLAUDECODE;
-  let effectiveCommand = command;
-  if (command.length > LARGE_COMMAND_THRESHOLD) {
-    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
-    writeFileSync(tmpPath, command, { mode: 0o600 });
-    effectiveCommand = `bash ${tmpPath} ; rm -f ${tmpPath}`;
-  }
-  const res = spawnSync("bash", ["-lc", effectiveCommand], {
+  const res = spawnSync("bash", ["-lc", maybeTmpFile(command)], {
     cwd,
     env: fallbackEnv,
     encoding: "utf8",

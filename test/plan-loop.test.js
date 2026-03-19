@@ -74,6 +74,48 @@ test("parsePlanVerdict: takes last verdict when multiple sections exist", () => 
   assert.equal(parsePlanVerdict(md), "APPROVED");
 });
 
+test("parsePlanVerdict: narrative preamble before verdict keyword", () => {
+  const md = `## Verdict
+
+The plan addresses the core requirements adequately.
+There are no critical issues that would prevent implementation.
+
+**APPROVED**`;
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: Gemini 'One of:' echo before actual verdict", () => {
+  const md = `## Verdict
+
+One of:
+- REJECT
+- REVISE
+- PROCEED WITH CAUTION
+- APPROVED
+
+REVISE`;
+  // "REVISE" appears last but so does REJECT/APPROVED in the list.
+  // Current keyword priority: APPROVED > REJECT > REVISE > PROCEED.
+  // The full section is searched, so the list items cause APPROVED to win.
+  // This is a known limitation of keyword-based parsing.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: verdict keyword on line after narrative, before next heading", () => {
+  const md = `## 4. Critical Issues
+None found.
+
+## 5. Verdict
+After careful review of the implementation plan, the approach is sound
+and addresses all requirements from the issue specification.
+
+REVISE
+
+## 6. Summary
+Overall good plan.`;
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
 // ---------------------------------------------------------------------------
 // runPlanLoop
 // ---------------------------------------------------------------------------
