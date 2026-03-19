@@ -745,7 +745,9 @@ test("extractGitLabProjectPath: parses gitlab.com and self-hosted URLs", () => {
     "group/proj",
   );
   assert.equal(
-    extractGitLabProjectPath("ssh://git@gitlab.company.com/group/subgroup/proj"),
+    extractGitLabProjectPath(
+      "ssh://git@gitlab.company.com/group/subgroup/proj",
+    ),
     "group/subgroup/proj",
   );
   assert.equal(extractGitLabProjectPath("https://github.com/owner/repo"), null);

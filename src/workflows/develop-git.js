@@ -84,7 +84,7 @@ export function extractGitLabProjectPath(url) {
  * @param {(e: object) => void} [log]
  * @returns {Array<{ source_branch: string, iid: number, title: string }>}
  */
-function fetchMergeRequestsViaApi(repoRoot, log) {
+function fetchMergeRequestsViaApi(repoRoot, _log) {
   try {
     const urlRes = spawnSync("git", ["remote", "get-url", "origin"], {
       cwd: repoRoot,
@@ -94,7 +94,9 @@ function fetchMergeRequestsViaApi(repoRoot, log) {
     const url = (urlRes.stdout || "").trim();
     const projectPathRaw = extractGitLabProjectPath(url);
     if (!projectPathRaw || !projectPathRaw.includes("/")) return [];
-    const projectPath = encodeURIComponent(projectPathRaw.replace(/\.git$/, ""));
+    const projectPath = encodeURIComponent(
+      projectPathRaw.replace(/\.git$/, ""),
+    );
     const res = spawnSync(
       "glab",
       [
@@ -145,8 +147,9 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
           }
         }
         const stderr = (res.stderr || "").trim();
-        const isUnknownFlag =
-          /unknown flag|unrecognized|invalid.*flag/i.test(stderr);
+        const isUnknownFlag = /unknown flag|unrecognized|invalid.*flag/i.test(
+          stderr,
+        );
         if (!isUnknownFlag && log) {
           log({
             event: "open_prs_fetch_failed",

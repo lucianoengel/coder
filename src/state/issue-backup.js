@@ -76,11 +76,7 @@ export function archivePlanFailureArtifacts(workspaceDir, issue, reason = "") {
       cpSync(src, path.join(archiveDir, name), { force: true });
   }
   if (reason)
-    writeFileSync(
-      path.join(archiveDir, "reason.txt"),
-      `${reason}\n`,
-      "utf8",
-    );
+    writeFileSync(path.join(archiveDir, "reason.txt"), `${reason}\n`, "utf8");
 }
 
 export function clearStateAndArtifacts(workspaceDir) {

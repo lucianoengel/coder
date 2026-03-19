@@ -617,7 +617,11 @@ test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures",
       "## Verdict\nREJECT\n\n## Critique\nToo vague.",
     );
 
-    archivePlanFailureArtifacts(tmp, { source: "gitlab", id: "#34" }, "plan_review_exhausted");
+    archivePlanFailureArtifacts(
+      tmp,
+      { source: "gitlab", id: "#34" },
+      "plan_review_exhausted",
+    );
 
     const failuresDir = path.join(tmp, ".coder", "plan-failures");
     assert.ok(existsSync(failuresDir));
@@ -648,7 +652,10 @@ test("archivePlanFailureArtifacts: no-op when PLANREVIEW.md missing", () => {
     archivePlanFailureArtifacts(tmp, { id: "#34" }, "failed");
 
     const failuresDir = path.join(tmp, ".coder", "plan-failures");
-    assert.ok(!existsSync(failuresDir), "should not create archive without critique");
+    assert.ok(
+      !existsSync(failuresDir),
+      "should not create archive without critique",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -664,7 +671,10 @@ test("resolveRepoRoot: file path resolves to its directory for git cwd", () => {
     const fileRel = "lib/foo/bar.ex";
     const resolved = resolveRepoRoot(tmp, fileRel);
     assert.equal(resolved, path.join(tmp, "lib", "foo"));
-    assert.ok(existsSync(resolved), "resolved path must exist and be a directory");
+    assert.ok(
+      existsSync(resolved),
+      "resolved path must exist and be a directory",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

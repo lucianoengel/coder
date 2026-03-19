@@ -704,7 +704,6 @@ test("planReviewExhausted defer preserves state; next start retries and complete
   const ws = makeTmpWorkspace();
   const originalRun = WorkflowRunner.prototype.run;
   const processedIds = [];
-  let runCount = 0;
 
   try {
     const issuesDir = writeLocalManifest(ws, [
@@ -726,7 +725,6 @@ test("planReviewExhausted defer preserves state; next start retries and complete
         };
       }
       if (machineName === "develop.plan_review") {
-        runCount++;
         return {
           status: "completed",
           results: [
@@ -780,7 +778,6 @@ test("planReviewExhausted defer preserves state; next start retries and complete
       "state.json must exist after planReviewExhausted defer (no reset)",
     );
 
-    runCount = 0;
     processedIds.length = 0;
     WorkflowRunner.prototype.run = async function runStub2(steps) {
       const machineName = steps[0]?.machine?.name;
