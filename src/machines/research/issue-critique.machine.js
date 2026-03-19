@@ -108,20 +108,20 @@ export default defineMachine({
         ? `## Prior Feedback (address these)\n${input.priorFeedback.map((f) => `- ${f}`).join("\n")}`
         : "";
 
-    const briefSummary =
-      typeof analysisBrief === "object" && analysisBrief
-        ? JSON.stringify(analysisBrief).slice(0, 3000)
-        : "";
+    const hasContent = (v) =>
+      v != null && typeof v === "object" && Object.keys(v).length > 0;
 
-    const refSummary =
-      typeof webReferenceMap === "object" && webReferenceMap
-        ? JSON.stringify(webReferenceMap).slice(0, 2000)
-        : "";
+    const briefSummary = hasContent(analysisBrief)
+      ? JSON.stringify(analysisBrief).slice(0, 3000)
+      : "";
 
-    const validationSummary =
-      typeof validationResults === "object" && validationResults
-        ? JSON.stringify(validationResults).slice(0, 2000)
-        : "";
+    const refSummary = hasContent(webReferenceMap)
+      ? JSON.stringify(webReferenceMap).slice(0, 2000)
+      : "";
+
+    const validationSummary = hasContent(validationResults)
+      ? JSON.stringify(validationResults).slice(0, 2000)
+      : "";
 
     const prompt = `You are a senior engineering reviewer. Critique this issue backlog for completeness, correctness, and actionability.
 
