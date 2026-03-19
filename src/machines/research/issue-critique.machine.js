@@ -37,8 +37,16 @@ export default defineMachine({
       history: [],
       steps: {},
     };
-    resolveArtifact(input.analysisBrief, input.stepsDir, "analysis-brief");
-    resolveArtifact(input.webReferenceMap, input.stepsDir, "web-references");
+    const analysisBrief = resolveArtifact(
+      input.analysisBrief,
+      input.stepsDir,
+      "analysis-brief",
+    );
+    const webReferenceMap = resolveArtifact(
+      input.webReferenceMap,
+      input.stepsDir,
+      "web-references",
+    );
     const validationResults = resolveArtifact(
       input.validationResults,
       input.stepsDir,
@@ -47,15 +55,52 @@ export default defineMachine({
 
     checkCancel(ctx);
 
+    const asLines = (v) =>
+      Array.isArray(v)
+        ? v.map((x) => String(x || "").trim()).filter(Boolean)
+        : [];
+
     const issuesSummary = input.issues
-      .map(
-        (issue, i) =>
-          `### Issue ${i + 1}: ${issue.title || issue.id || `issue-${i}`}\n` +
-          `- Priority: ${issue.priority || "P2"}\n` +
-          `- Objective: ${(issue.objective || "").slice(0, 200)}\n` +
-          `- Changes: ${(issue.changes || []).join(", ").slice(0, 200)}\n` +
+      .map((issue, i) => {
+        const parts = [
+          `### Issue ${i + 1}: ${issue.title || issue.id || `issue-${i}`}`,
+          `- Priority: ${issue.priority || "P2"}`,
+          `- Objective: ${(issue.objective || "").slice(0, 300)}`,
+          `- Changes: ${(issue.changes || []).join(", ").slice(0, 300)}`,
           `- Dependencies: ${(issue.depends_on || []).join(", ") || "none"}`,
-      )
+        ];
+        const ac = asLines(issue.acceptance_criteria);
+        if (ac.length > 0)
+          parts.push(`- Acceptance criteria: ${ac.join("; ")}`);
+        if (issue.verification)
+          parts.push(
+            `- Verification: ${String(issue.verification).slice(0, 200)}`,
+          );
+        const risks = asLines(issue.risks);
+        if (risks.length > 0) parts.push(`- Risks: ${risks.join("; ")}`);
+        const ts = issue.testing_strategy;
+        if (ts) {
+          const existing = asLines(ts.existing_tests);
+          const newTests = asLines(ts.new_tests);
+          if (existing.length > 0 || newTests.length > 0) {
+            parts.push(
+              `- Testing: ${existing.length} existing, ${newTests.length} new` +
+                (ts.test_patterns
+                  ? ` (${String(ts.test_patterns).slice(0, 100)})`
+                  : ""),
+            );
+          }
+        }
+        const refs = Array.isArray(issue.references) ? issue.references : [];
+        if (refs.length > 0)
+          parts.push(
+            `- References: ${refs.length} (${refs
+              .map((r) => r.title || r.url || "")
+              .join(", ")
+              .slice(0, 200)})`,
+          );
+        return parts.join("\n");
+      })
       .join("\n\n");
 
     const priorFeedbackSection =
@@ -63,10 +108,20 @@ export default defineMachine({
         ? `## Prior Feedback (address these)\n${input.priorFeedback.map((f) => `- ${f}`).join("\n")}`
         : "";
 
-    const validationSummary =
-      typeof validationResults === "object" && validationResults
-        ? JSON.stringify(validationResults).slice(0, 2000)
-        : "";
+    const hasContent = (v) =>
+      v != null && typeof v === "object" && Object.keys(v).length > 0;
+
+    const briefSummary = hasContent(analysisBrief)
+      ? JSON.stringify(analysisBrief).slice(0, 3000)
+      : "";
+
+    const refSummary = hasContent(webReferenceMap)
+      ? JSON.stringify(webReferenceMap).slice(0, 2000)
+      : "";
+
+    const validationSummary = hasContent(validationResults)
+      ? JSON.stringify(validationResults).slice(0, 2000)
+      : "";
 
     const prompt = `You are a senior engineering reviewer. Critique this issue backlog for completeness, correctness, and actionability.
 
@@ -74,6 +129,12 @@ export default defineMachine({
 ${issuesSummary}
 
 ${priorFeedbackSection}
+
+## Research Context
+${briefSummary || "No analysis brief available."}
+
+## Web References
+${refSummary || "No web references available."}
 
 ## Validation Results
 ${validationSummary || "No validation data available."}
