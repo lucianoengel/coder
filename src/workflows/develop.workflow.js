@@ -34,6 +34,7 @@ import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import { runPreflight } from "../preflight.js";
 import {
+  archivePlanFailureArtifacts,
   backupKeyFor,
   prepareForIssue,
   saveBackup,
@@ -1279,6 +1280,22 @@ export async function runDevelopLoop(opts, ctx) {
             { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
+          // Archive plan artifacts for debugging before reset
+          archivePlanFailureArtifacts(
+            ctx.workspaceDir,
+            issue,
+            "plan_review_exhausted",
+          );
+          ctx.log({
+            event: "plan_failure_archived",
+            issueId: issue.id,
+            path: ".coder/plan-failures/",
+          });
+          const doReset = resetForNextIssueOverride ?? resetForNextIssue;
+          await doReset(ctx.workspaceDir, repoPath, {
+            destructiveReset,
+            issueStatus: "deferred",
+          });
           return "deferred";
         }
         if (
@@ -1398,6 +1415,15 @@ export async function runDevelopLoop(opts, ctx) {
     // Reset between issues — if this fails, abort the loop because
     // subsequent issues would run from the wrong branch/worktree.
     const issueStatus = loopState.issueQueue[i].status;
+    if (issueStatus === "failed" || issueStatus === "skipped") {
+      archivePlanFailureArtifacts(ctx.workspaceDir, issue, issueStatus);
+      ctx.log({
+        event: "plan_failure_archived",
+        issueId: issue.id,
+        reason: issueStatus,
+        path: ".coder/plan-failures/",
+      });
+    }
     const doReset = resetForNextIssueOverride ?? resetForNextIssue;
     try {
       await doReset(ctx.workspaceDir, repoPath, {

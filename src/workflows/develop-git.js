@@ -38,10 +38,52 @@ function discardWorktreeChanges(repoRoot) {
 /**
  * Build args for glab mr list. Exported for testing.
  * Per docs.gitlab.com/cli/mr/list: default is open MRs; --state is not a valid flag.
+ * Uses --output json (or -F json fallback for older glab that lacks --output).
  * @returns {string[]}
  */
 export function glabMrListArgs() {
   return ["mr", "list", "--output", "json"];
+}
+
+/** Fallback args for older glab that lacks --output (uses -F json). */
+export function glabMrListArgsLegacy() {
+  return ["mr", "list", "-F", "json"];
+}
+
+/**
+ * Fallback: fetch open MRs via glab api when mr list lacks --output/-F json.
+ * Uses GitLab API projects/:id/merge_requests. Returns [] on failure.
+ * @param {string} repoRoot
+ * @param {(e: object) => void} [log]
+ * @returns {Array<{ source_branch: string, iid: number, title: string }>}
+ */
+function fetchMergeRequestsViaApi(repoRoot, log) {
+  try {
+    const urlRes = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (urlRes.status !== 0) return [];
+    const url = (urlRes.stdout || "").trim();
+    const sshMatch = url.match(/:([^/]+\/[^/].*)\.git$/);
+    const httpsMatch = url.match(/gitlab\.com[/:]([^/]+\/[^/].*?)(?:\.git)?$/i);
+    const pathMatch = sshMatch || httpsMatch;
+    if (!pathMatch) return [];
+    const projectPath = encodeURIComponent(pathMatch[1].replace(/\.git$/, ""));
+    const res = spawnSync(
+      "glab",
+      [
+        "api",
+        `projects/${projectPath}/merge_requests?state=opened&per_page=50`,
+      ],
+      { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+    );
+    if (res.status !== 0 || !res.stdout) return [];
+    const parsed = JSON.parse(res.stdout);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -60,21 +102,38 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
     let prs;
 
     if (platform === "gitlab") {
-      const res = spawnSync("glab", glabMrListArgs(), {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 15000,
-      });
-      if (res.status !== 0 || !res.stdout) {
-        if (log)
+      let mrs = [];
+      const argsList = [glabMrListArgs(), glabMrListArgsLegacy()];
+      for (const args of argsList) {
+        const res = spawnSync("glab", args, {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 15000,
+        });
+        if (res.status === 0 && res.stdout) {
+          try {
+            const parsed = JSON.parse(res.stdout);
+            mrs = Array.isArray(parsed) ? parsed : [];
+            break;
+          } catch {
+            continue;
+          }
+        }
+        const stderr = (res.stderr || "").trim();
+        const isUnknownFlag =
+          /unknown flag|unrecognized|invalid.*flag/i.test(stderr);
+        if (!isUnknownFlag && log) {
           log({
             event: "open_prs_fetch_failed",
-            error: (res.stderr || "glab failed").trim(),
+            error: stderr || "glab failed",
           });
-        return [];
+          return [];
+        }
       }
-      const mrs = JSON.parse(res.stdout);
-      prs = (Array.isArray(mrs) ? mrs : []).map((mr) => ({
+      if (mrs.length === 0) {
+        mrs = fetchMergeRequestsViaApi(repoRoot, log);
+      }
+      prs = mrs.map((mr) => ({
         branch: mr.source_branch,
         id: `!${mr.iid}`,
         title: mr.title || "",
