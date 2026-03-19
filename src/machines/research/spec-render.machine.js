@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { SpecManifestSchema } from "../../schemas.js";
@@ -13,18 +13,25 @@ import {
 } from "./_shared.js";
 
 /**
- * Build a domain→issueId mapping from phases that carry issueSpecs.
- * Each phase's issueSpecs are matched by title against the generated issue list.
+ * Build a phase→issueId[] mapping from phases that carry issueSpecs.
+ * Matches by title with greedy consumption so duplicate titles resolve
+ * to distinct generated issue IDs.
  */
 function buildPhaseIssueIds(phases, generatedIssues) {
-  const titleToId = new Map();
-  for (const gi of generatedIssues) titleToId.set(gi.title, gi.id);
-
+  const used = new Set();
   return phases.map((ph) => {
     const specs = Array.isArray(ph.issueSpecs) ? ph.issueSpecs : [];
-    const ids = specs
-      .map((s) => titleToId.get(String(s?.title || "").trim()))
-      .filter(Boolean);
+    const ids = [];
+    for (const s of specs) {
+      const title = String(s?.title || "").trim();
+      const idx = generatedIssues.findIndex(
+        (gi, i) => !used.has(i) && gi.title === title,
+      );
+      if (idx >= 0) {
+        used.add(idx);
+        ids.push(generatedIssues[idx].id);
+      }
+    }
     return ids;
   });
 }
@@ -295,24 +302,18 @@ export default defineMachine({
       );
     }
 
-    // --- Bridge manifest: copy issue files into .coder/local-issues/ and use `file` field ---
+    // --- Bridge manifest: point at the generated issues/ directory via filePath ---
     const bridgeDir = path.join(ctx.workspaceDir, ".coder", "local-issues");
     mkdirSync(bridgeDir, { recursive: true });
 
-    const bridgeIssues = generatedIssues.map((gi) => {
-      // Copy issue markdown into the bridge directory
-      const destPath = path.join(bridgeDir, gi.fileName);
-      copyFileSync(gi.sourcePath, destPath);
-      return {
-        id: gi.id,
-        title: gi.title,
-        file: gi.fileName,
-        repo_path: repoPath,
-        difficulty: gi.difficulty,
-        priority: gi.priority,
-        depends_on: gi.depends_on,
-      };
-    });
+    const bridgeIssues = generatedIssues.map((gi) => ({
+      id: gi.id,
+      title: gi.title,
+      filePath: path.relative(ctx.workspaceDir, gi.sourcePath),
+      difficulty: gi.difficulty,
+      priority: gi.priority,
+      depends_on: gi.depends_on,
+    }));
 
     const bridgeManifestPath = path.join(bridgeDir, "manifest.json");
     const bridgeManifest = {

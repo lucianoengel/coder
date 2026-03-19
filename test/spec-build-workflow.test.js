@@ -314,7 +314,7 @@ function makeTempDirs() {
   };
 }
 
-test("spec_render build mode: emits spec files, bridge manifest with file field, and phase issueIds", async () => {
+test("spec_render build mode: emits spec files, bridge manifest with filePath, and phase issueIds", async () => {
   const dirs = makeTempDirs();
   try {
     const result = await specRenderMachine.run(
@@ -411,17 +411,21 @@ test("spec_render build mode: emits spec files, bridge manifest with file field,
     assert.equal(specManifest.phases[0].issueIds.length, 1);
     assert.equal(specManifest.phases[0].issueIds[0], "SPEC-01");
 
-    // Bridge manifest: uses `file` field (not filePath), files exist in local-issues dir
+    // Bridge manifest: uses workspace-relative `filePath` pointing at generated issues/
     const bridgeDir = path.join(dirs.workspace, ".coder", "local-issues");
     const bridgeManifest = JSON.parse(
       readFileSync(path.join(bridgeDir, "manifest.json"), "utf8"),
     );
     assert.equal(bridgeManifest.issues.length, 2);
     for (const issue of bridgeManifest.issues) {
-      assert.ok(issue.file, "bridge issue should have file field");
-      assert.ok(!issue.filePath, "bridge issue should not have filePath field");
-      const mdPath = path.join(bridgeDir, issue.file);
+      assert.ok(issue.filePath, "bridge issue should have filePath field");
+      assert.ok(!issue.file, "bridge issue should not have file field");
+      const mdPath = path.resolve(dirs.workspace, issue.filePath);
       assert.ok(existsSync(mdPath), `issue file should exist at ${mdPath}`);
+      assert.ok(
+        mdPath.startsWith(dirs.issuesDir),
+        "filePath should point into the generated issues/ dir",
+      );
     }
     assert.equal(bridgeManifest.issues[0].id, "SPEC-01");
     assert.equal(bridgeManifest.repoPath, ".");
@@ -465,14 +469,80 @@ test("spec_render ingest mode: writes bridge manifest without spec dir", async (
     // No spec dir created
     assert.ok(!existsSync(path.join(dirs.runDir, "spec")));
 
-    // Bridge manifest exists and uses file field
+    // Bridge manifest exists and uses filePath
     const bridgeDir = path.join(dirs.workspace, ".coder", "local-issues");
     const bridgeManifest = JSON.parse(
       readFileSync(path.join(bridgeDir, "manifest.json"), "utf8"),
     );
     assert.equal(bridgeManifest.issues.length, 1);
-    assert.ok(bridgeManifest.issues[0].file);
-    assert.ok(existsSync(path.join(bridgeDir, bridgeManifest.issues[0].file)));
+    assert.ok(bridgeManifest.issues[0].filePath);
+    assert.ok(
+      existsSync(
+        path.resolve(dirs.workspace, bridgeManifest.issues[0].filePath),
+      ),
+    );
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test("spec_render build mode: duplicate-title issueSpecs get distinct phase issueIds", async () => {
+  const dirs = makeTempDirs();
+  try {
+    const result = await specRenderMachine.run(
+      {
+        runDir: dirs.runDir,
+        stepsDir: dirs.stepsDir,
+        issuesDir: dirs.issuesDir,
+        scratchpadPath: dirs.scratchpadPath,
+        pipelinePath: dirs.pipelinePath,
+        repoRoot: dirs.workspace,
+        repoPath: ".",
+        mode: "build",
+        domains: [],
+        decisions: [],
+        phases: [
+          {
+            id: "phase-1",
+            title: "Phase A",
+            issueSpecs: [{ title: "Same title" }],
+          },
+          {
+            id: "phase-2",
+            title: "Phase B",
+            issueSpecs: [{ title: "Same title" }],
+          },
+        ],
+        issueSpecs: [
+          { title: "Same title", objective: "First", priority: "P1" },
+          { title: "Same title", objective: "Second", priority: "P2" },
+        ],
+        parsedDomains: [],
+        parsedDecisions: [],
+      },
+      {
+        workspaceDir: dirs.workspace,
+        log: () => {},
+      },
+    );
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.data.issueCount, 2);
+
+    const specManifest = JSON.parse(
+      readFileSync(path.join(dirs.runDir, "spec", "manifest.json"), "utf8"),
+    );
+
+    // Each phase should get a distinct issue ID
+    assert.equal(specManifest.phases[0].issueIds.length, 1);
+    assert.equal(specManifest.phases[1].issueIds.length, 1);
+    assert.notEqual(
+      specManifest.phases[0].issueIds[0],
+      specManifest.phases[1].issueIds[0],
+      "duplicate-title issues must resolve to distinct IDs across phases",
+    );
+    assert.equal(specManifest.phases[0].issueIds[0], "SPEC-01");
+    assert.equal(specManifest.phases[1].issueIds[0], "SPEC-02");
   } finally {
     dirs.cleanup();
   }
