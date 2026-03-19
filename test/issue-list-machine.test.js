@@ -38,7 +38,15 @@ test("fetchGithubIssues throws on non-zero exit with stderr", async (t) => {
   const { fetchGithubIssues } = await import(
     `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
   );
-  assert.throws(() => fetchGithubIssues("/tmp"), /gh issue list failed/);
+  assert.throws(
+    () => fetchGithubIssues("/tmp"),
+    (err) => {
+      assert.match(err.message, /gh issue list failed/);
+      assert.match(err.message, /exit 1/);
+      assert.match(err.message, /auth token expired/);
+      return true;
+    },
+  );
 });
 
 test("fetchGithubIssues throws on invalid JSON output", async (t) => {
@@ -131,7 +139,15 @@ test("fetchGitlabIssues throws on non-zero exit with stderr", async (t) => {
   const { fetchGitlabIssues } = await import(
     `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
   );
-  assert.throws(() => fetchGitlabIssues("/tmp"), /glab issue list failed/);
+  assert.throws(
+    () => fetchGitlabIssues("/tmp"),
+    (err) => {
+      assert.match(err.message, /glab issue list failed/);
+      assert.match(err.message, /exit 1/);
+      assert.match(err.message, /token revoked/);
+      return true;
+    },
+  );
 });
 
 test("fetchGitlabIssues throws on invalid JSON output", async (t) => {
@@ -145,6 +161,19 @@ test("fetchGitlabIssues throws on invalid JSON output", async (t) => {
     `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
   );
   assert.throws(() => fetchGitlabIssues("/tmp"), /invalid JSON/);
+});
+
+test("fetchGitlabIssues throws on non-array JSON output", async (t) => {
+  mockChildProcess(t, () => ({
+    error: null,
+    status: 0,
+    stdout: '{"foo":1}',
+    stderr: "",
+  }));
+  const { fetchGitlabIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  assert.throws(() => fetchGitlabIssues("/tmp"), /non-array JSON/);
 });
 
 test("fetchGitlabIssues returns [] on empty first page", async (t) => {
