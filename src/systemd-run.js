@@ -17,7 +17,10 @@ function maybeTmpFile(command, tmpDir = "/tmp") {
     return command;
   const tmpPath = `${tmpDir}/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
   writeFileSync(tmpPath, command, { mode: 0o600 });
-  return `. "${tmpPath}"; __coder_rc=$?; rm -f "${tmpPath}"; exit $__coder_rc`;
+  // Single-quote the path to prevent shell expansion of metacharacters
+  // (e.g. $(), backticks) that may appear in cwd/XDG_RUNTIME_DIR.
+  const q = tmpPath.replace(/'/g, "'\\''");
+  return `. '${q}'; __coder_rc=$?; rm -f '${q}'; exit $__coder_rc`;
 }
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;

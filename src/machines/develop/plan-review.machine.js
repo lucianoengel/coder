@@ -90,7 +90,7 @@ export function parsePlanVerdict(critiqueMd) {
       }
     }
   }
-  if (foundCategories.size >= 3) return "UNKNOWN";
+  if (foundCategories.size >= 2) return "UNKNOWN";
   return bestVerdict;
 }
 
