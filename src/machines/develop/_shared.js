@@ -1,10 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   extractGeminiPayloadJson,

@@ -105,9 +105,19 @@ export class CliAgent extends AgentAdapter {
     this.workspaceDir = opts.workspaceDir;
 
     this._events = new EventEmitter();
+    let baseEnv = opts.secrets;
+    if (this.name === "claude") {
+      const maxTokens = this.config.claude?.maxOutputTokens;
+      if (maxTokens !== undefined && maxTokens !== null) {
+        baseEnv = {
+          ...baseEnv,
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens),
+        };
+      }
+    }
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,
-      baseEnv: opts.secrets,
+      baseEnv,
     });
     this._sandbox = null;
     this._sandboxPromise = null;
