@@ -89,6 +89,20 @@ function filterEnv(env) {
   return out;
 }
 
+/**
+ * Compute the effective env that agent subprocesses receive.
+ * Used for debugging (coder debug env).
+ * @param {NodeJS.ProcessEnv} processEnv
+ * @param {Record<string, string>} [baseEnv]
+ * @param {Record<string, string>} [extraEnv]
+ * @returns {Record<string, string>}
+ */
+export function computeSandboxEnv(processEnv, baseEnv = {}, extraEnv = {}) {
+  return stripNestedClaudeEnv(
+    mergeEnv(mergeEnv(filterEnv(processEnv), baseEnv), extraEnv),
+  );
+}
+
 export class HostSandboxProvider {
   /**
    * @param {{ defaultCwd?: string, baseEnv?: Record<string,string>, useSystemdRun?: boolean }} [config]
