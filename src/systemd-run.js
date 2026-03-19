@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import process from "node:process";
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;
@@ -86,13 +85,7 @@ export function buildSystemdRunArgs(
     );
   }
 
-  if (command.length > 80000) {
-    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
-    writeFileSync(tmpPath, command, { mode: 0o600 });
-    args.push("bash", "-lc", `bash ${tmpPath} ; rm -f ${tmpPath}`);
-  } else {
-    args.push("bash", "-lc", command);
-  }
+  args.push("bash", "-lc", command);
   return args;
 }
 
@@ -150,13 +143,7 @@ export function runShellSync(
 
   const fallbackEnv = { ...(env || process.env) };
   delete fallbackEnv.CLAUDECODE;
-  let actualCommand = command;
-  if (command.length > 80000) {
-    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
-    writeFileSync(tmpPath, command, { mode: 0o600 });
-    actualCommand = `bash ${tmpPath} ; rm -f ${tmpPath}`;
-  }
-  const res = spawnSync("bash", ["-lc", actualCommand], {
+  const res = spawnSync("bash", ["-lc", command], {
     cwd,
     env: fallbackEnv,
     encoding: "utf8",
@@ -165,7 +152,7 @@ export function runShellSync(
   });
   const io = withSpawnErrorText(res);
   return {
-    cmd: ["bash", "-lc", actualCommand],
+    cmd: ["bash", "-lc", command],
     exitCode: safeStatus(res),
     stdout: io.stdout,
     stderr: io.stderr,
