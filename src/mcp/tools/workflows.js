@@ -23,6 +23,7 @@ import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
+import { runSpecBuildPipeline } from "../../workflows/spec-build.workflow.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -362,13 +363,13 @@ export function registerWorkflowTools(server, resolveWorkspace) {
     {
       description:
         "Unified workflow control plane. Use this to start, inspect, and control " +
-        "named workflows (workflow=develop|research|design).",
+        "named workflows (workflow=develop|research|design|spec-build).",
       inputSchema: {
         action: z
           .enum(["start", "status", "events", "cancel", "pause", "resume"])
           .describe("Workflow control action"),
         workflow: z
-          .enum(["develop", "research", "design"])
+          .enum(["develop", "research", "design", "spec-build"])
           .default("develop")
           .describe("Workflow type"),
         workspace: z
@@ -485,6 +486,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .string()
           .default("")
           .describe("Design start-only: design intent description"),
+        // Spec-build-specific
+        existingSpecDir: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: path to existing spec directory to ingest",
+          ),
+        researchRunId: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: research run ID whose output to synthesize",
+          ),
         // Events pagination
         afterSeq: z
           .number()
@@ -757,6 +771,15 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     screenshotPaths: [],
                     projectName: "",
                     style: params.clarifications || "",
+                  },
+                  workflowCtx,
+                );
+              } else if (workflow === "spec-build") {
+                result = await runSpecBuildPipeline(
+                  {
+                    repoPath: params.repoPath,
+                    existingSpecDir: params.existingSpecDir,
+                    researchRunId: params.researchRunId,
                   },
                   workflowCtx,
                 );

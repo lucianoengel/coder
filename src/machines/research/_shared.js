@@ -471,3 +471,10 @@ ${pointers}
 - Next action:
 `;
 }
+
+export function requirePayloadFields(payload, fields, label = "agent output") {
+  const missing = fields.filter((f) => payload?.[f] == null);
+  if (missing.length > 0) {
+    throw new Error(`${label} missing required fields: ${missing.join(", ")}`);
+  }
+}
