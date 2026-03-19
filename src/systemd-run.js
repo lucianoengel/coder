@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import process from "node:process";
+
+const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRLEN (128KB)
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;
 let cachedSystemdAvailability = null;
@@ -85,7 +88,13 @@ export function buildSystemdRunArgs(
     );
   }
 
-  args.push("bash", "-lc", command);
+  if (command.length > LARGE_COMMAND_THRESHOLD) {
+    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
+    writeFileSync(tmpPath, command, { mode: 0o600 });
+    args.push("bash", "-lc", `bash ${tmpPath} ; rm -f ${tmpPath}`);
+  } else {
+    args.push("bash", "-lc", command);
+  }
   return args;
 }
 
@@ -143,7 +152,13 @@ export function runShellSync(
 
   const fallbackEnv = { ...(env || process.env) };
   delete fallbackEnv.CLAUDECODE;
-  const res = spawnSync("bash", ["-lc", command], {
+  let effectiveCommand = command;
+  if (command.length > LARGE_COMMAND_THRESHOLD) {
+    const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
+    writeFileSync(tmpPath, command, { mode: 0o600 });
+    effectiveCommand = `bash ${tmpPath} ; rm -f ${tmpPath}`;
+  }
+  const res = spawnSync("bash", ["-lc", effectiveCommand], {
     cwd,
     env: fallbackEnv,
     encoding: "utf8",

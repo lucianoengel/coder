@@ -173,9 +173,21 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
 }
 
 export async function readWorkflowStatus(workspaceDir) {
-  const loopState = await loadLoopState(workspaceDir);
-  const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+  let loopState = await loadLoopState(workspaceDir);
+  let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+
+  // Auto-transition orphaned stale runs to "failed" on status read.
+  // This handles service restarts that leave runs stuck in "running".
+  if (isStale && loopState.runId && !activeRuns.has(loopState.runId)) {
+    const snapshot = await loadWorkflowSnapshot(workspaceDir);
+    const wf = snapshot?.workflow || "develop";
+    await markRunTerminalOnDisk(workspaceDir, loopState.runId, wf, "failed");
+    // Re-read state after terminal transition
+    loopState = await loadLoopState(workspaceDir);
+    ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+      detectStaleness(loopState));
+  }
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.

@@ -13,35 +13,41 @@ import {
 
 /**
  * Parse the Verdict section from a plan critique markdown string.
- * Takes the last match to avoid false positives from prompt examples in the header.
+ * Scans the full text between the last Verdict heading and the next heading (or EOF)
+ * to handle cases where the reviewer writes narrative before the verdict keyword.
  * Returns one of: "APPROVED", "REJECT", "REVISE", "PROCEED_WITH_CAUTION", "UNKNOWN".
  */
 export function parsePlanVerdict(critiqueMd) {
   if (!critiqueMd) return "UNKNOWN";
 
-  const verdictLines = [];
-  // Match heading-based verdict sections: "## [N.] Verdict" then value on next non-empty line
+  // Extract full Verdict sections (heading to next heading or EOF)
+  const verdictSections = [];
   for (const match of critiqueMd.matchAll(
-    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*\n\s*([^\n]+)/gim,
+    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*/gim,
   )) {
-    verdictLines.push(match[1]);
+    const sectionStart = match.index + match[0].length;
+    // Find the next heading or EOF
+    const rest = critiqueMd.slice(sectionStart);
+    const nextHeading = rest.search(/^#{1,6}\s/m);
+    const sectionText = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+    verdictSections.push(sectionText);
   }
 
   // Fallback: inline "**Verdict**: VALUE" or "Verdict: VALUE"
-  if (verdictLines.length === 0) {
+  if (verdictSections.length === 0) {
     for (const match of critiqueMd.matchAll(
       /\*{0,2}Verdict\*{0,2}\s*[:-]\s*([^\n]+)/gi,
     )) {
-      verdictLines.push(match[1]);
+      verdictSections.push(match[1]);
     }
   }
 
-  if (verdictLines.length === 0) return "UNKNOWN";
+  if (verdictSections.length === 0) return "UNKNOWN";
 
-  const raw = verdictLines[verdictLines.length - 1]
-    .trim()
+  // Search the last verdict section for keywords
+  const raw = verdictSections[verdictSections.length - 1]
     .toUpperCase()
-    .replace(/[*_`[\]()]/g, "");
+    .replace(/[*_`"'[\]()]/g, "");
   if (/\bAPPROVED\b/.test(raw)) return "APPROVED";
   if (/\bREJECT\b/.test(raw)) return "REJECT";
   if (/\bREVISE\b/.test(raw)) return "REVISE";
