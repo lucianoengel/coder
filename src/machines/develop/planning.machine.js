@@ -286,8 +286,7 @@ ${branchSections}`;
             (err.name === "CommandFatalStderrError" ||
               err.name === "CommandFatalStdoutError") &&
             err.category === "auth";
-          const hadSessionOpts =
-            sessionOpts.resumeId || sessionOpts.sessionId;
+          const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
           if (isAuthError && hadSessionOpts) {
             ctx.log({
               event: "session_auth_failed",

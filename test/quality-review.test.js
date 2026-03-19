@@ -487,7 +487,10 @@ test("quality_review: round 1 with existing reviewerSessionId uses resumeId (sam
     let capturedReviewOpts = null;
     const mockReviewerAgent = {
       execute: async (prompt, opts) => {
-        if (prompt.includes("Compare") && prompt.includes("Spec Delta Summary")) {
+        if (
+          prompt.includes("Compare") &&
+          prompt.includes("Spec Delta Summary")
+        ) {
           return {
             exitCode: 0,
             stdout:
@@ -606,7 +609,10 @@ test("quality_review: reviewer agent change uses sessionId (create) not resumeId
     let capturedReviewOpts = null;
     const mockReviewerAgent = {
       execute: async (prompt, opts) => {
-        if (prompt.includes("Compare") && prompt.includes("Spec Delta Summary")) {
+        if (
+          prompt.includes("Compare") &&
+          prompt.includes("Spec Delta Summary")
+        ) {
           return {
             exitCode: 0,
             stdout:

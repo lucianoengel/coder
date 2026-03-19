@@ -909,9 +909,7 @@ switch (subcommand) {
         process.exitCode = 1;
       });
     } else {
-      process.stderr.write(
-        "Usage: coder debug env [--workspace <path>]\n",
-      );
+      process.stderr.write("Usage: coder debug env [--workspace <path>]\n");
       process.exit(1);
     }
     break;

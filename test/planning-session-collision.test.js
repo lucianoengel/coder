@@ -88,7 +88,11 @@ test("planning: retries without session when session ID is already in use (creat
     assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
 
     const state = await loadState(tmp);
-    assert.equal(state.sessionsDisabled, true, "sessions disabled after collision");
+    assert.equal(
+      state.sessionsDisabled,
+      true,
+      "sessions disabled after collision",
+    );
     assert.equal(state.planningSessionId, null, "planning session cleared");
     assert.equal(state.steps.wrotePlan, true);
   } finally {
