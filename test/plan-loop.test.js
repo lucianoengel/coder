@@ -125,6 +125,13 @@ Overall good plan.`;
   assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
+test("parsePlanVerdict: verdict with dash-separated explanation", () => {
+  const md = `## Verdict
+APPROVED - proceed with caution around rollout`;
+  // Keyword followed by separator (dash) matches pass 1.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
 test("parsePlanVerdict: verdict keyword then prose mentioning another keyword", () => {
   const md = `## Verdict
 REVISE

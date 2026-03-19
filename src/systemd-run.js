@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
 const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRLEN (128KB)
@@ -108,9 +109,13 @@ export function buildSystemdRunArgs(
   }
 
   // PrivateTmp=yes hides /tmp from the unit. Use XDG_RUNTIME_DIR (/run/user/<uid>)
-  // which is visible to both the caller and --user units, and avoids polluting the
-  // repo working tree (unlike cwd).
-  const tmpDir = process.env.XDG_RUNTIME_DIR || cwd || "/tmp";
+  // which is visible to both the caller and --user units. Fall back to
+  // .coder/tmp/ under cwd to avoid polluting the repo root with temp scripts.
+  let tmpDir = process.env.XDG_RUNTIME_DIR || "/tmp";
+  if (!process.env.XDG_RUNTIME_DIR && cwd) {
+    tmpDir = path.join(cwd, ".coder", "tmp");
+    mkdirSync(tmpDir, { recursive: true });
+  }
   args.push("bash", "-lc", maybeTmpFile(command, tmpDir));
   return args;
 }

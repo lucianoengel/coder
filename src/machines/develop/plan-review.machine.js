@@ -53,16 +53,22 @@ export function parsePlanVerdict(critiqueMd) {
     .toUpperCase()
     .replace(/[*_`"'[\]()]/g, "");
 
-  // Pass 1: standalone keyword lines (most reliable). A line qualifies when
-  // the keyword is the ONLY significant content — this prevents explanation
-  // sentences like "Approved once the API is verified." from matching.
+  // Pass 1: keyword-leading lines. A line qualifies when a verdict keyword
+  // starts it and is followed by a separator (- , : . ;) or end-of-line.
+  // This matches "APPROVED - proceed with caution" but rejects
+  // "Approved once the API is verified." (continuation word, not separator).
   const lines = raw.split("\n");
+  const sep = /(?:\s*[-\u2014:.,;!]|\s*$)/; // separator or EOL after keyword
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim().replace(/^[-•*]\s*/, "");
-    if (/^APPROVED[\s.,;:!-]*$/.test(line)) return "APPROVED";
-    if (/^REJECT[\s.,;:!-]*$/.test(line)) return "REJECT";
-    if (/^REVISE[\s.,;:!-]*$/.test(line)) return "REVISE";
-    if (/^PROCEED[\s]+(?:WITH[\s]+)?CAUTION[\s.,;:!-]*$/.test(line))
+    const line = lines[i].trim().replace(/^[-\u2022*]\s*/, "");
+    if (new RegExp(`^APPROVED\\b${sep.source}`).test(line)) return "APPROVED";
+    if (new RegExp(`^REJECT\\b${sep.source}`).test(line)) return "REJECT";
+    if (new RegExp(`^REVISE\\b${sep.source}`).test(line)) return "REVISE";
+    if (
+      new RegExp(`^PROCEED[\\s]+(?:WITH[\\s]+)?CAUTION\\b${sep.source}`).test(
+        line,
+      )
+    )
       return "PROCEED_WITH_CAUTION";
   }
 
