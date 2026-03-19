@@ -61,14 +61,38 @@ test("host sandbox aborts command on configured stdout auth-failure pattern (ses
         {
           timeoutMs: 5000,
           killOnStdoutPatterns: [
-            { pattern: "is already in use", category: "auth" },
+            { pattern: "already in use", category: "auth" },
           ],
         },
       ),
     (err) => {
       assert.equal(err.name, "CommandFatalStdoutError");
       assert.equal(err.category, "auth");
-      assert.equal(err.pattern, "is already in use");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox aborts when pattern is split across stdout chunks", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  // Simulate error split across chunks: "Error: Session " + "ID X is already in use"
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `printf 'Error: Session '; printf 'ID 123 is already in use.'; sleep 2`,
+        {
+          timeoutMs: 5000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
       return true;
     },
   );

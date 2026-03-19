@@ -334,7 +334,8 @@ class HostSandboxInstance extends EventEmitter {
         this.emit("stdout", chunk);
 
         if (killOnStdoutPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
+          // Check accumulated stdout so split messages (e.g. across stream chunks) are caught
+          const lower = stdout.toLowerCase();
           const hit = killOnStdoutPatterns.find((p) =>
             lower.includes(p.pattern.toLowerCase()),
           );
@@ -356,7 +357,8 @@ class HostSandboxInstance extends EventEmitter {
         this.emit("stderr", chunk);
 
         if (killOnStderrPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
+          // Check accumulated stderr so split messages (e.g. across stream chunks) are caught
+          const lower = stderr.toLowerCase();
           const hit = killOnStderrPatterns.find((p) =>
             lower.includes(p.pattern.toLowerCase()),
           );
