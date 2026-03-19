@@ -44,16 +44,30 @@ export function parsePlanVerdict(critiqueMd) {
 
   if (verdictSections.length === 0) return "UNKNOWN";
 
-  // Search the last verdict section for keywords
+  // Last-position-wins: scan the final verdict section for keywords and
+  // return whichever appears latest. This handles echoed option lists
+  // (e.g. "One of: REJECT / REVISE / APPROVED") followed by the real verdict.
   const raw = verdictSections[verdictSections.length - 1]
     .toUpperCase()
     .replace(/[*_`"'[\]()]/g, "");
-  if (/\bAPPROVED\b/.test(raw)) return "APPROVED";
-  if (/\bREJECT\b/.test(raw)) return "REJECT";
-  if (/\bREVISE\b/.test(raw)) return "REVISE";
-  if (/\bPROCEED\b/.test(raw) || /\bCAUTION\b/.test(raw))
-    return "PROCEED_WITH_CAUTION";
-  return "UNKNOWN";
+  const keywords = [
+    { pattern: /\bAPPROVED\b/g, verdict: "APPROVED" },
+    { pattern: /\bREJECT\b/g, verdict: "REJECT" },
+    { pattern: /\bREVISE\b/g, verdict: "REVISE" },
+    { pattern: /\bPROCEED\b/g, verdict: "PROCEED_WITH_CAUTION" },
+    { pattern: /\bCAUTION\b/g, verdict: "PROCEED_WITH_CAUTION" },
+  ];
+  let bestVerdict = "UNKNOWN";
+  let bestPos = -1;
+  for (const { pattern, verdict } of keywords) {
+    let last = null;
+    for (const m of raw.matchAll(pattern)) last = m;
+    if (last && last.index > bestPos) {
+      bestPos = last.index;
+      bestVerdict = verdict;
+    }
+  }
+  return bestVerdict;
 }
 
 export default defineMachine({

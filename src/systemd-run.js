@@ -7,12 +7,14 @@ const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRL
 /**
  * Write a large command to a temp file and return a bash command that
  * executes it then cleans up. Avoids kernel E2BIG on execve().
+ * Uses tmpDir to control where the file lands (important for PrivateTmp=yes).
+ * Preserves the command's exit code across the cleanup rm.
  */
-function maybeTmpFile(command) {
+function maybeTmpFile(command, tmpDir = "/tmp") {
   if (command.length <= LARGE_COMMAND_THRESHOLD) return command;
-  const tmpPath = `/tmp/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
+  const tmpPath = `${tmpDir}/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
   writeFileSync(tmpPath, command, { mode: 0o600 });
-  return `bash "${tmpPath}" ; rm -f "${tmpPath}"`;
+  return `bash "${tmpPath}"; __coder_rc=$?; rm -f "${tmpPath}"; exit $__coder_rc`;
 }
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;
@@ -99,7 +101,9 @@ export function buildSystemdRunArgs(
     );
   }
 
-  args.push("bash", "-lc", maybeTmpFile(command));
+  // Use cwd (not /tmp) so the script is visible inside the unit — PrivateTmp=yes
+  // gives the service a private /tmp that is isolated from the caller.
+  args.push("bash", "-lc", maybeTmpFile(command, cwd || "/tmp"));
   return args;
 }
 

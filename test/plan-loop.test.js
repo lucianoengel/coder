@@ -94,11 +94,8 @@ One of:
 - APPROVED
 
 REVISE`;
-  // "REVISE" appears last but so does REJECT/APPROVED in the list.
-  // Current keyword priority: APPROVED > REJECT > REVISE > PROCEED.
-  // The full section is searched, so the list items cause APPROVED to win.
-  // This is a known limitation of keyword-based parsing.
-  assert.equal(parsePlanVerdict(md), "APPROVED");
+  // Last-position-wins: REVISE appears after the echoed option list.
+  assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
 test("parsePlanVerdict: verdict keyword on line after narrative, before next heading", () => {
