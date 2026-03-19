@@ -325,12 +325,14 @@ export class CliAgent extends AgentAdapter {
         sessionId: opts.sessionId ?? null,
         resumeId: opts.resumeId ?? null,
         killPatternsCount:
-          (killOnStderrPatterns?.length ?? 0) + (killOnStdoutPatterns?.length ?? 0),
+          (killOnStderrPatterns?.length ?? 0) +
+          (killOnStdoutPatterns?.length ?? 0),
       });
     }
 
     const hasKillPatterns =
-      (killOnStderrPatterns?.length ?? 0) + (killOnStdoutPatterns?.length ?? 0) >
+      (killOnStderrPatterns?.length ?? 0) +
+        (killOnStdoutPatterns?.length ?? 0) >
       0;
     const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
