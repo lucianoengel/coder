@@ -51,8 +51,35 @@ export function glabMrListArgsLegacy() {
 }
 
 /**
+ * Extract GitLab project path from remote URL for API calls.
+ * Supports gitlab.com and self-hosted (https, ssh SCP, ssh:// URL).
+ * Returns null for non-GitLab hosts (e.g. github.com).
+ * @param {string} url - Remote URL (e.g. https://gitlab.company.com/group/proj.git)
+ * @returns {string|null} - Project path (e.g. "group/proj") or null
+ */
+export function extractGitLabProjectPath(url) {
+  const u = url.trim();
+  const hostFromHttps = u.match(/^https?:\/\/([^/]+)/i)?.[1] ?? "";
+  const hostFromScp = u.match(/^[^@]+@([^:]+):/)?.[1] ?? "";
+  const hostFromSsh = u.match(/^ssh:\/\/([^/]+)/i)?.[1] ?? "";
+  const host = (hostFromHttps || hostFromScp || hostFromSsh).toLowerCase();
+  if (!host.includes("gitlab")) return null;
+  // HTTPS: https://host/group/proj or https://host/group/proj.git
+  const httpsMatch = u.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
+  if (httpsMatch) return httpsMatch[1];
+  // SSH SCP: git@host:group/proj or git@host:group/proj.git
+  const scpMatch = u.match(/^[^@]+@[^:]+:(.+?)(?:\.git)?$/);
+  if (scpMatch) return scpMatch[1];
+  // SSH URL: ssh://git@host/group/proj.git
+  const sshUrlMatch = u.match(/^ssh:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
+  if (sshUrlMatch) return sshUrlMatch[1];
+  return null;
+}
+
+/**
  * Fallback: fetch open MRs via glab api when mr list lacks --output/-F json.
  * Uses GitLab API projects/:id/merge_requests. Returns [] on failure.
+ * Supports gitlab.com and self-hosted instances.
  * @param {string} repoRoot
  * @param {(e: object) => void} [log]
  * @returns {Array<{ source_branch: string, iid: number, title: string }>}
@@ -65,11 +92,9 @@ function fetchMergeRequestsViaApi(repoRoot, log) {
     });
     if (urlRes.status !== 0) return [];
     const url = (urlRes.stdout || "").trim();
-    const sshMatch = url.match(/:([^/]+\/[^/].*)\.git$/);
-    const httpsMatch = url.match(/gitlab\.com[/:]([^/]+\/[^/].*?)(?:\.git)?$/i);
-    const pathMatch = sshMatch || httpsMatch;
-    if (!pathMatch) return [];
-    const projectPath = encodeURIComponent(pathMatch[1].replace(/\.git$/, ""));
+    const projectPathRaw = extractGitLabProjectPath(url);
+    if (!projectPathRaw || !projectPathRaw.includes("/")) return [];
+    const projectPath = encodeURIComponent(projectPathRaw.replace(/\.git$/, ""));
     const res = spawnSync(
       "glab",
       [

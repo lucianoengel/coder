@@ -51,6 +51,7 @@ import { buildIssueBranchName } from "../worktrees.js";
 import { runHooks, WorkflowRunner } from "./_base.js";
 import {
   ensureCleanLoopStart,
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
   resetForNextIssue,
@@ -339,6 +340,7 @@ export async function runDevelopPipeline(opts, ctx) {
     return {
       status: loopResult.status,
       error: loopResult.error,
+      planReviewExhausted: loopResult.planReviewExhausted,
       results: allResults,
       runId: runner.runId,
       durationMs: Date.now() - start,
@@ -653,6 +655,7 @@ const isInfraError = (text) =>
 export {
   backupKeyFor,
   ensureCleanLoopStart,
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
   prepareForIssue,
@@ -1280,7 +1283,7 @@ export async function runDevelopLoop(opts, ctx) {
             { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
-          // Archive plan artifacts for debugging before reset
+          // Archive plan artifacts for debugging (preserve state for resume like other defers)
           archivePlanFailureArtifacts(
             ctx.workspaceDir,
             issue,
@@ -1290,11 +1293,6 @@ export async function runDevelopLoop(opts, ctx) {
             event: "plan_failure_archived",
             issueId: issue.id,
             path: ".coder/plan-failures/",
-          });
-          const doReset = resetForNextIssueOverride ?? resetForNextIssue;
-          await doReset(ctx.workspaceDir, repoPath, {
-            destructiveReset,
-            issueStatus: "deferred",
           });
           return "deferred";
         }
