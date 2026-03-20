@@ -259,13 +259,16 @@ test("spec-build pipeline fails on non-optional step error", async () => {
 
 test("requirePayloadFields throws on missing fields", () => {
   assert.throws(
-    () => requirePayloadFields({ a: 1 }, ["a", "b"], "test"),
-    /test missing required fields: b/,
+    () =>
+      requirePayloadFields({ a: 1 }, { a: "number", b: "string" }, "test"),
+    /test payload contract violation/,
   );
 });
 
 test("requirePayloadFields passes when all fields present", () => {
-  assert.doesNotThrow(() => requirePayloadFields({ a: 1, b: 2 }, ["a", "b"]));
+  assert.doesNotThrow(() =>
+    requirePayloadFields({ a: 1, b: "hi" }, { a: "number", b: "string" }),
+  );
 });
 
 // --- spec-build workflow exports ---

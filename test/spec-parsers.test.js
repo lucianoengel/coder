@@ -122,7 +122,7 @@ test("SpecManifestSchema accepts valid manifest", () => {
   const valid = {
     specId: "spec-001",
     version: 1,
-    repoRoot: "/home/user/project",
+    repoPath: ".",
     domains: [{ name: "auth", docPath: "spec/03-auth.md" }],
     createdAt: new Date().toISOString(),
   };
@@ -137,7 +137,7 @@ test("SpecManifestSchema accepts full manifest with decisions and phases", () =>
   const valid = {
     specId: "spec-002",
     version: 1,
-    repoRoot: "/repo",
+    repoPath: "subdir",
     domains: [{ name: "core", docPath: "spec/03-core.md" }],
     decisions: [
       {

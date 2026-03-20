@@ -23,6 +23,7 @@ export default defineMachine({
     parsedDomains: z.array(z.any()).default([]),
     parsedDecisions: z.array(z.any()).default([]),
     parsedGaps: z.array(z.any()).default([]),
+    parsedPhases: z.array(z.any()).default([]),
   }),
 
   async execute(input, ctx) {
@@ -108,6 +109,14 @@ Return ONLY valid JSON:
     }
 
     // ingest mode
+    const hasExistingPhases = input.parsedPhases.length > 0;
+    const phaseInstruction = hasExistingPhases
+      ? `Existing phases (preserve this ordering and naming):
+${JSON.stringify(input.parsedPhases, null, 2)}
+
+`
+      : "";
+
     const prompt = `You are a gap categorization agent. Take the parsed gaps from existing spec documents and produce structured issues.
 
 Repo root: ${repoRoot}
@@ -121,11 +130,11 @@ ${JSON.stringify(input.parsedDecisions, null, 2)}
 Parsed gaps:
 ${JSON.stringify(input.parsedGaps, null, 2)}
 
-Tasks:
+${phaseInstruction}Tasks:
 1. Take the parsed gaps as-is (do NOT regenerate or alter the architectural structure)
 2. Categorize each gap into a domain
 3. Assign priority and severity
-4. Group gaps into implementation phases with dependency ordering
+4. ${hasExistingPhases ? "Assign each gap to the existing phases above, preserving their IDs and titles. Only create new phases if a gap does not fit any existing phase." : "Group gaps into implementation phases with dependency ordering"}
 5. For each gap, produce an issue-shaped object
 
 Return ONLY valid JSON:

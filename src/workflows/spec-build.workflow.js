@@ -45,6 +45,7 @@ export async function runSpecBuildPipeline(opts, ctx) {
         parsedDomains: prev.data.parsedDomains || [],
         parsedDecisions: prev.data.parsedDecisions || [],
         parsedGaps: prev.data.parsedGaps || [],
+        parsedPhases: prev.data.parsedPhases || [],
       }),
     },
     {

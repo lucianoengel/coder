@@ -193,7 +193,6 @@ export default defineMachine({
       issuesDir,
       scratchpadPath,
       pipelinePath,
-      repoRoot,
       repoPath,
       mode,
       issueSpecs,
@@ -364,7 +363,7 @@ export default defineMachine({
       const specManifest = SpecManifestSchema.parse({
         specId: path.basename(runDir),
         version: 1,
-        repoRoot,
+        repoPath,
         domains: domains.map((d, i) => ({
           name: d.name,
           docPath: `spec/${String(i + 3).padStart(2, "0")}-${sanitizeFilenameSegment(d.name, { fallback: `domain-${i + 1}` }).toUpperCase()}.md`,

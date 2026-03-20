@@ -45,7 +45,8 @@ export default defineMachine({
         throw new Error(`existingSpecDir does not exist: ${specDir}`);
       }
 
-      // Try to recover repoRoot from the spec's own manifest (monorepo support)
+      // Try to recover repoPath from the spec's own manifest (monorepo support).
+      // The manifest stores a relative path so specs remain portable across checkouts.
       const specManifestPath = path.join(specDir, "manifest.json");
       let specManifest = null;
       if (existsSync(specManifestPath)) {
@@ -55,7 +56,14 @@ export default defineMachine({
           /* best effort */
         }
       }
-      const effectiveRepoRoot = specManifest?.repoRoot || repoRoot;
+      const effectiveRepoPath =
+        specManifest?.repoPath && specManifest.repoPath !== "."
+          ? specManifest.repoPath
+          : input.repoPath || ".";
+      const effectiveRepoRoot = path.resolve(
+        ctx.workspaceDir,
+        effectiveRepoPath,
+      );
 
       const mdFiles = readdirSync(specDir)
         .filter((f) => f.endsWith(".md"))
@@ -106,6 +114,25 @@ export default defineMachine({
         })
         .flatMap((f) => parseSpecGaps(f.content));
 
+      // Parse existing phase docs so spec_architect can preserve rollout ordering
+      const phasesDir = path.join(specDir, "phases");
+      const parsedPhases = existsSync(phasesDir)
+        ? readdirSync(phasesDir)
+            .filter((f) => f.endsWith(".md"))
+            .sort()
+            .map((f, i) => {
+              const content = readFileSync(path.join(phasesDir, f), "utf8");
+              const titleMatch = content.match(/^#\s+(.+)/m);
+              return {
+                id: `phase-${i + 1}`,
+                title: titleMatch
+                  ? titleMatch[1].trim()
+                  : f.replace(/\.md$/, ""),
+                file: f,
+              };
+            })
+        : [];
+
       endPipelineStep(
         pipeline,
         pipelinePath,
@@ -116,6 +143,7 @@ export default defineMachine({
           mode: "ingest",
           domains: parsedDomains.length,
           gaps: parsedGaps.length,
+          phases: parsedPhases.length,
         },
       );
       appendScratchpad(scratchpadPath, "Spec Ingest (ingest mode)", [
@@ -123,6 +151,7 @@ export default defineMachine({
         `- domains: ${parsedDomains.length}`,
         `- decisions: ${parsedDecisions.length}`,
         `- gaps: ${parsedGaps.length}`,
+        `- phases: ${parsedPhases.length}`,
       ]);
 
       return {
@@ -139,6 +168,7 @@ export default defineMachine({
           parsedDomains,
           parsedDecisions,
           parsedGaps,
+          parsedPhases,
         },
       };
     }

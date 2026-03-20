@@ -32,7 +32,7 @@ export const ProjectsPayloadSchema = z.object({
 export const SpecManifestSchema = z.object({
   specId: z.string().min(1),
   version: z.number().int().min(1),
-  repoRoot: z.string().min(1),
+  repoPath: z.string().default("."),
   domains: z.array(
     z.object({
       name: z.string().min(1),
