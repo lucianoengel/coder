@@ -107,13 +107,23 @@ export class CliAgent extends AgentAdapter {
     this._events = new EventEmitter();
     let baseEnv = opts.secrets;
     if (this.name === "claude") {
+      const claudeCfg = this.config.models?.claude;
+      baseEnv = { ...baseEnv };
       const maxTokens = this.config.claude?.maxOutputTokens;
       if (maxTokens !== undefined && maxTokens !== null) {
-        baseEnv = {
-          ...baseEnv,
-          CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxTokens),
-        };
+        baseEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
       }
+      // Non-Anthropic API (e.g. OpenRouter): set env Claude Code expects — from models.claude only
+      const ep = (claudeCfg?.apiEndpoint || "").trim();
+      const customAnthropic = ep && !/anthropic\.com/i.test(ep);
+      if (customAnthropic) {
+        baseEnv.ANTHROPIC_BASE_URL = ep;
+        baseEnv.ANTHROPIC_API_KEY = "";
+        if (claudeCfg.apiKeyEnv && opts.secrets[claudeCfg.apiKeyEnv]) {
+          baseEnv.ANTHROPIC_AUTH_TOKEN = opts.secrets[claudeCfg.apiKeyEnv];
+        }
+      }
+      // Model is passed via --model only (see _buildCommand); not duplicated in env
     }
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,

@@ -196,6 +196,14 @@ All state lives under `.coder/` (gitignored):
 
 Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP tool inputs.
 
+### Claude, OpenRouter, and `passEnv`
+
+- **`models.claude`** is the single source for `model`, `apiEndpoint`, and which env var holds the API key (`apiKeyEnv`, e.g. `OPENROUTER_API_KEY`).
+- **`resolvePassEnv`** automatically adds every `models.*.apiKeyEnv` to the sandbox secret list, so you do not need to repeat `OPENROUTER_API_KEY` in `sandbox.passEnv` unless you use a fully custom `passEnv` array and want it explicit.
+- For OpenRouter-style endpoints (URL does not contain `anthropic.com`), the CLI sandbox gets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (from the key named in `apiKeyEnv`), and `ANTHROPIC_API_KEY=""` — derived from config, not from duplicating those names in `passEnv`.
+- The model is still passed as `claude --model …` from `models.claude.model`; it is not set again via `ANTHROPIC_MODEL` in the environment.
+
+
 ```jsonc
 {
   // Model selection (see coder.example.json for full structure)

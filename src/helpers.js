@@ -160,9 +160,21 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
 
 export { DEFAULT_PASS_ENV };
 
+/** Collect apiKeyEnv names from models.* so secrets are passed without duplicating them in passEnv. */
+function modelApiKeyEnvNames(config) {
+  const models = config.models;
+  if (!models || typeof models !== "object") return [];
+  const out = [];
+  for (const role of ["gemini", "claude", "codex"]) {
+    const env = models[role]?.apiKeyEnv;
+    if (typeof env === "string" && env.trim()) out.push(env.trim());
+  }
+  return out;
+}
+
 /**
  * Build the effective passEnv list from config.
- * Merges `sandbox.passEnv` (explicit names) with any env var names
+ * Merges `sandbox.passEnv` (explicit names), `models.*.apiKeyEnv`, and any env var names
  * matching `sandbox.passEnvPatterns` (glob-style, e.g. "AWS_*").
  *
  * @param {object} config - Parsed CoderConfigSchema
@@ -171,9 +183,11 @@ export { DEFAULT_PASS_ENV };
  */
 export function resolvePassEnv(config, env = process.env) {
   const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  const fromModels = modelApiKeyEnvNames(config);
+  const mergedExplicit = [...new Set([...explicit, ...fromModels])];
   const patterns = config.sandbox?.passEnvPatterns ?? [];
 
-  if (patterns.length === 0) return explicit;
+  if (patterns.length === 0) return mergedExplicit;
 
   const regexes = patterns.map((p) => {
     // Convert simple glob pattern to regex (only * wildcards supported)
@@ -185,7 +199,7 @@ export function resolvePassEnv(config, env = process.env) {
     regexes.some((re) => re.test(key)),
   );
 
-  return [...new Set([...explicit, ...matched])];
+  return [...new Set([...mergedExplicit, ...matched])];
 }
 
 const AGENT_NOISE_LINE_PATTERNS = [

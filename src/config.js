@@ -6,7 +6,7 @@ import merge from "deepmerge";
 import { z } from "zod";
 import { DEFAULT_PASS_ENV } from "./pass-env.js";
 
-const modelNameRegex = /^[a-zA-Z0-9._/-]+$/;
+const modelNameRegex = /^[a-zA-Z0-9._/:-]+$/;
 
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
