@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -153,7 +153,16 @@ Constraints:
         });
         requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
-        if (existsSync(paths.critique)) break;
+        if (existsSync(paths.critique)) {
+          const rawFile = readFileSync(paths.critique, "utf8");
+          const trimmedFile = stripAgentNoise(rawFile).trim();
+          if (trimmedFile.length > 0) break;
+          try {
+            rmSync(paths.critique, { force: true });
+          } catch {
+            /* best-effort — treat as missing and fall through */
+          }
+        }
 
         const cleaned = stripAgentNoise(reviewRes.stdout || "", {
           dropLeadingOnly: true,
@@ -169,6 +178,24 @@ Constraints:
           continue;
         }
 
+        const err = new Error(
+          `${planReviewerName} plan review produced no critique output.`,
+        );
+        err.code = "PLAN_REVIEW_EMPTY_OUTPUT";
+        throw err;
+      }
+
+      if (!existsSync(paths.critique)) {
+        const err = new Error(
+          `${planReviewerName} plan review produced no critique output.`,
+        );
+        err.code = "PLAN_REVIEW_EMPTY_OUTPUT";
+        throw err;
+      }
+      if (
+        stripAgentNoise(readFileSync(paths.critique, "utf8")).trim().length ===
+        0
+      ) {
         const err = new Error(
           `${planReviewerName} plan review produced no critique output.`,
         );

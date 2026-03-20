@@ -246,7 +246,7 @@ FORBIDDEN patterns:
         const retryRunStart = codexWithoutSession ? Date.now() : 0;
         try {
           res = await programmerAgent.execute(implPrompt, {
-            timeoutMs: ctx.config.workflow.timeouts.implementation,
+            ...implementationAgentExecTimeouts(ctx.config),
             ...(codexWithoutSession && { execWithJsonCapture: true }),
           });
           if (codexWithoutSession) {

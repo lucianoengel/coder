@@ -189,6 +189,33 @@ export async function applyLauncherNormalCompletion({
   await agentPool.killAll();
 }
 
+/**
+ * Cancel in-memory runs for a workspace so a new start is not blocked after disk reconcile.
+ */
+async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
+  const at = new Date().toISOString();
+  for (const [id, run] of [...activeRuns.entries()]) {
+    if (run.workspace !== workspaceDir) continue;
+    run.cancelToken.cancelled = true;
+    try {
+      await run.agentPool?.killAll();
+    } catch {
+      /* best-effort */
+    }
+    activeRuns.delete(id);
+    const ae = workflowActors.get(id);
+    if (ae?.workspace === workspaceDir) {
+      ae.actor.send({
+        type: "FAIL",
+        at,
+        error: errorDetail,
+      });
+      ae.actor.stop();
+      workflowActors.delete(id);
+    }
+  }
+}
+
 async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
   if (!persisted) return false;
@@ -706,6 +733,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               ],
             };
           }
+          await releaseActiveRunsForWorkspace(ws, "reconciled_stale_run");
           const written = await markRunTerminalOnDisk(
             ws,
             loop.runId,
@@ -720,10 +748,14 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                   action,
                   workflow,
                   reconciled: written,
+                  activeRunsReleased: true,
                   reason: written
                     ? "marked_failed_on_disk"
                     : "persist_rejected_or_already_terminal",
                   runId: loop.runId,
+                  hint: written
+                    ? "In-memory runs for this workspace were cancelled; you can start again without forceRestart."
+                    : "Loop state was not updated (guard or already terminal); in-memory runs were still released.",
                 }),
               },
             ],
