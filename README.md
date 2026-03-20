@@ -343,7 +343,7 @@ The MCP tool **`coder_status`** (and the same payload shape when embedded elsewh
 
 - **`currentStage` / `activeAgent`** — coarse runner position from loop or lifecycle state. It can lag briefly right after a stage change.
 - **`steps` and `artifacts`** (`issueExists`, `planExists`, `critiqueExists`) — what exists on disk for the develop pipeline. **Prefer these** when you need to know whether ISSUE/PLAN/PLANREVIEW are present.
-- **`derivedArtifactPhase`** (when `runStatus` is `running` or `paused`) — `issue_draft` → `planning` → `plan_review` → `past_plan_review`, derived from `steps` plus artifact files. Use it when `currentStage` disagrees with `artifacts` (e.g. stage still `develop_starting` while `planExists` is true).
+- **`derivedArtifactPhase`** (when `runStatus` is `running` or `paused` **and** the active workflow is develop) — `issue_draft` → `planning` → `plan_review` → `past_plan_review`, derived from `steps` plus artifact files. Omitted for research/design so stale develop artifacts do not mislabel the run. Use it when `currentStage` disagrees with `artifacts` (e.g. stage still `develop_starting` while `planExists` is true).
 
 MCP tools are not shell commands — call **`coder_status`** through the MCP integration, not as a bash command name.
 

@@ -176,6 +176,70 @@ test("plan review: empty first output clears session; retry uses sessionId creat
   }
 });
 
+test("plan review: retry when sessionsDisabled logs sessionless (not fresh_session)", async () => {
+  const { ws, repoRoot, artifactsDir } = makeGitWorkspace();
+  try {
+    await saveState(ws, {
+      selected: { source: "local", id: "1", title: "T" },
+      repoPath: path.relative(ws, repoRoot) || ".",
+      steps: { wroteIssue: true, wrotePlan: true },
+      branch: "main",
+      sessionsDisabled: true,
+      planReviewSessionId: "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee",
+      planReviewAgentName: "claude",
+    });
+
+    const logEvents = [];
+    const executeOpts = [];
+    let call = 0;
+    const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+
+    const mockAgent = {
+      async execute(_prompt, opts) {
+        executeOpts.push({ ...opts });
+        call++;
+        if (call === 1) {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        writeFileSync(
+          critiquePath,
+          "## Critical Issues\n\nNone.\n\n## Verdict\nAPPROVED\n",
+          "utf8",
+        );
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    const ctx = {
+      workspaceDir: ws,
+      artifactsDir,
+      agentPool: {
+        getAgent: () => ({ agentName: "claude", agent: mockAgent }),
+      },
+      log: (e) => logEvents.push(e),
+      config: {
+        workflow: {
+          timeouts: { planReview: 60_000 },
+          wip: { push: false },
+        },
+      },
+    };
+
+    const result = await planReviewMachine.run({ round: 0 }, ctx);
+    assert.equal(result.status, "ok");
+
+    assert.ok(logEvents.some((e) => e.event === "critique_retry_sessionless"));
+    assert.ok(
+      !logEvents.some((e) => e.event === "critique_retry_fresh_session"),
+    );
+    assert.equal(executeOpts.length, 2);
+    assert.ok(!executeOpts[0].sessionId && !executeOpts[0].resumeId);
+    assert.ok(!executeOpts[1].sessionId && !executeOpts[1].resumeId);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test("plan review: thrown error with err.stdout/stderr logs stream lengths", async () => {
   const { ws, repoRoot, artifactsDir } = makeGitWorkspace();
   try {

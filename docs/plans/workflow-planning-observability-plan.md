@@ -1,6 +1,6 @@
 # Plan: Planning failures & status observability (rotmeter-style runs)
 
-**Status:** Implemented on branch `feat/planning-observability` (planner/reviewer `hangTimeoutMs: 0`, PLAN salvage + diagnostics, glab shorthand stderr, `derivedArtifactPhase`, README).
+**Status:** Implemented on branch `feat/planning-observability` (planner/reviewer `hangTimeoutMs: 0`, PLAN salvage + diagnostics, glab shorthand stderr, `derivedArtifactPhase` for develop runs only, README).
 
 Context: monitoring a long-running develop workflow (GitLab issues, Claude planner) surfaced **intermittent planning failures**, **glab CLI noise**, and **confusing `coder_status`**.
 

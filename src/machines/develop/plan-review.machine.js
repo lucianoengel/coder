@@ -321,10 +321,19 @@ Constraints:
         });
         state.planReviewSessionId = null;
         await saveState(ctx.workspaceDir, state);
-        ctx.log({
-          event: "critique_retry_fresh_session",
-          round: input.round,
-        });
+        ctx.log(
+          state.sessionsDisabled
+            ? {
+                event: "critique_retry_sessionless",
+                round: input.round,
+                critiquePath: paths.critique,
+                reason: "sessions_disabled",
+              }
+            : {
+                event: "critique_retry_fresh_session",
+                round: input.round,
+              },
+        );
         reviewRes = await runReviewRound(
           buildCritiqueRetryPrompt(paths.plan, paths.critique, input.round),
         );

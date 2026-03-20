@@ -28,6 +28,13 @@ function readMcpHealth(workspaceDir) {
   }
 }
 
+function inferWorkflowFromSnapshotStage(currentStage) {
+  const s = String(currentStage ?? "");
+  if (s.startsWith("research.")) return "research";
+  if (s.startsWith("design.")) return "design";
+  return "develop";
+}
+
 async function readWorkflowRunState(workspaceDir) {
   const loopState = await loadLoopState(workspaceDir);
   const snapshot = await loadWorkflowSnapshot(workspaceDir);
@@ -45,6 +52,8 @@ async function readWorkflowRunState(workspaceDir) {
       currentStageStartedAt: loopState.currentStageStartedAt || null,
       lastHeartbeatAt: loopState.lastHeartbeatAt || null,
       activeAgent: loopState.activeAgent || null,
+      /** Develop multi-issue loop only writes loop-state.json while running. */
+      activeWorkflow: "develop",
     };
   }
 
@@ -57,6 +66,8 @@ async function readWorkflowRunState(workspaceDir) {
       currentStageStartedAt: null,
       lastHeartbeatAt: ctx.lastHeartbeatAt ?? null,
       activeAgent: ctx.activeAgent ?? null,
+      activeWorkflow:
+        snapshot.workflow ?? inferWorkflowFromSnapshotStage(ctx.currentStage),
     };
   }
 
@@ -141,7 +152,8 @@ export async function getStatus(workspaceDir) {
 
   const rs = runState?.runStatus;
   const derivedArtifactPhase =
-    rs === "running" || rs === "paused"
+    (rs === "running" || rs === "paused") &&
+    runState?.activeWorkflow === "develop"
       ? deriveDevelopArtifactPhase(state, artifacts)
       : null;
 
@@ -193,8 +205,9 @@ export function registerStatusTools(server, resolveWorkspace) {
     {
       description:
         "Returns the current workflow state: which steps are complete, selected issue, " +
-        "branch, and repo path. When `runStatus` is running/paused, `derivedArtifactPhase` " +
-        "summarizes develop progress from artifacts + steps (use when `currentStage` lags). " +
+        "branch, and repo path. When `runStatus` is running/paused and the active run is develop, " +
+        "`derivedArtifactPhase` summarizes develop progress from artifacts + steps " +
+        "(use when `currentStage` lags). Omitted for research/design runs. " +
         "Prefer `steps` and `artifacts` for what exists on disk; `currentStage` is coarse runner position.",
       inputSchema: {
         workspace: z

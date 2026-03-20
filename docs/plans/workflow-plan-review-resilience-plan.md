@@ -68,7 +68,7 @@ Implement via a **try/catch** around the review block, or log immediately before
 **Required policy for any P2-A retry:**
 
 - **Do not** only send a follow-up message in the **same** `resumeId` session without an explicit decision.
-- **Recommended:** Before the retry attempt, **clear `planReviewSessionId`** (set `null`), **`saveState`**, then run the retry through **`withSessionResume`** so it allocates a **new** `sessionId` (fresh Claude session) — analogous to starting clean after a bad transcript. Optionally log `critique_retry_fresh_session: true`.
+- **Recommended:** Before the retry attempt, **clear `planReviewSessionId`** (set `null`), **`saveState`**, then run the retry through **`withSessionResume`** so it allocates a **new** `sessionId` (fresh Claude session) — analogous to starting clean after a bad transcript. Log **`critique_retry_fresh_session`** when sessions are in use; when **`sessionsDisabled`** is already true, **`withSessionResume`** invokes **`executeFn({})`** with no session id — log **`critique_retry_sessionless`** (`reason: sessions_disabled`) instead so operators are not misled.
 - **Alternative (document if chosen):** Same-session follow-up only — cheaper but **higher risk** of repeating #33; if implemented, log `critique_retry_same_session: true` for forensics.
 
 **Options (pick one primary):**
