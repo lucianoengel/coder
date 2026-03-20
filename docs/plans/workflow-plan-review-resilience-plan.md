@@ -49,7 +49,7 @@ Failures at **`plan-review.machine.js`** around `withSessionResume` → `execute
 **Add** a dedicated log on those paths, e.g. **`plan_review_execute_failed`**, with:
 
 - `errorName`, `errorMessage` (truncated, e.g. 500 chars)
-- `exitCode`, `stdoutLen`, `stderrLen` when a partial `res` exists
+- `exitCode`, `stdoutLen`, `stderrLen` when a `res` exists; if the failure **threw** before a result, use **`err.stdout` / `err.stderr`** lengths when the sandbox attached them (e.g. fatal pattern errors)
 - `round`, `critiquePath`, `planPath`
 - Optional: `timeoutMs` / whether error is `CommandTimeoutError` (by name) for hang vs wall-clock timeout
 
@@ -73,7 +73,7 @@ Implement via a **try/catch** around the review block, or log immediately before
 
 **Options (pick one primary):**
 
-- **A. One automatic re-execute** after §2a condition (missing file + empty stdout): log **`critique_retry_empty_output`**, apply **fresh-session** policy above, then **one** second pass with a **short** prompt insisting on writing **`paths.critique`**. Same **`buildPlanReviewExecuteOpts`**. **Cap:** one retry per `develop.plan_review` invocation.
+- **A. One automatic re-execute** after §2a condition (missing file + empty stdout): log **`critique_retry_empty_output`**, apply **fresh-session** policy above, then **one** second pass with a prompt that **repeats the primary review spec** (read **`PLAN.md`**, required sections, constraints, revision-round note) — not a minimal “write to path only” stub, or a fresh session has no plan context. Same **`buildPlanReviewExecuteOpts`**. **Cap:** one retry per `develop.plan_review` invocation.
 
 - **B. Defer / soft-fail:** mark issue **deferred** with `deferredReason: plan_review_empty` (new reason) instead of hard **failed** — larger behavior change.
 

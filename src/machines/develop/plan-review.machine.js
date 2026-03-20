@@ -50,6 +50,10 @@ function logPlanReviewExecuteFailed(ctx, opts) {
     payload.exitCode = res.exitCode;
     payload.stdoutLen = (res.stdout || "").length;
     payload.stderrLen = (res.stderr || "").length;
+  } else if (err) {
+    // Sandbox fatal / throwOnNonZero errors attach err.stdout / err.stderr
+    if (typeof err.stdout === "string") payload.stdoutLen = err.stdout.length;
+    if (typeof err.stderr === "string") payload.stderrLen = err.stderr.length;
   }
   ctx.log(payload);
 }
@@ -86,12 +90,30 @@ function tryWriteCritiqueFromStdout(reviewRes, critiquePath) {
   writeFileSync(critiquePath, `${filtered}\n`, "utf8");
 }
 
-function critiqueRetryPrompt(critiquePath) {
+/**
+ * Fresh-session retry: same task spec as the primary review prompt so the agent
+ * reads PLAN.md and applies round/constraints — not a generic template critique.
+ */
+function buildCritiqueRetryPrompt(planPath, critiquePath, round) {
+  const roundNote =
+    round > 0
+      ? `\n\nNote: This is revision round ${round + 1}. The prior plan was rejected. Focus on whether the issues from the prior critique have been addressed.`
+      : "";
+
   return (
-    `Your previous response did not create a file at ${critiquePath} and had no capturable critique text in output.\n\n` +
-    `You MUST write a complete plan critique as markdown directly to ${critiquePath}. ` +
-    `Include the required sections (Critical Issues, Over-Engineering, Concerns, Questions, Verdict) ` +
-    `and end with an explicit Verdict line (APPROVED | REVISE | REJECT | PROCEED WITH CAUTION).`
+    `You are resuming plan review in a **fresh session**. The prior attempt exited successfully but did not create ${critiquePath} and produced no capturable critique in output.\n\n` +
+    `1. Read the implementation plan at **${planPath}** in full.\n` +
+    `2. Write a critical plan critique as markdown to **${critiquePath}**.${roundNote}\n\n` +
+    `Required sections (in order):\n` +
+    `1. Critical Issues (Must Fix)\n` +
+    `2. Over-Engineering Concerns\n` +
+    `3. Concerns (Should Address)\n` +
+    `4. Questions (Need Clarification)\n` +
+    `5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)\n\n` +
+    `Constraints:\n` +
+    `- Do not modify tracked files.\n` +
+    `- Keep critique concrete with file-level references when possible.\n` +
+    `- Write markdown content directly to ${critiquePath}.`
   );
 }
 
@@ -280,7 +302,9 @@ Constraints:
           event: "critique_retry_fresh_session",
           round: input.round,
         });
-        reviewRes = await runReviewRound(critiqueRetryPrompt(paths.critique));
+        reviewRes = await runReviewRound(
+          buildCritiqueRetryPrompt(paths.plan, paths.critique, input.round),
+        );
         tryWriteCritiqueFromStdout(reviewRes, paths.critique);
       }
 

@@ -344,7 +344,7 @@ The MCP tool **`coder_status`** (and the same payload shape when embedded elsewh
 
 MCP tools are not shell commands — call **`coder_status`** through the MCP integration, not as a bash command name.
 
-**Plan review (Claude/Codex with sessions):** If the agent exits **0** but **`PLANREVIEW.md`** is still missing and stripped stdout is empty, the runner logs **`critique_retry_empty_output`**, clears **`planReviewSessionId`**, and performs **one** more attempt in a **fresh** session (`critique_retry_fresh_session`). Nonzero exits and thrown errors log **`plan_review_execute_failed`** once per failed invocation. If the critique is still missing after that, see **`critique_missing_after_review`** in `develop` logs.
+**Plan review (Claude/Codex with sessions):** If the agent exits **0** but **`PLANREVIEW.md`** is still missing and stripped stdout is empty, the runner logs **`critique_retry_empty_output`**, clears **`planReviewSessionId`**, and performs **one** more attempt in a **fresh** session (`critique_retry_fresh_session`) using a **full** retry prompt (read **`PLAN.md`**, same sections/constraints and revision-round note as the primary review). Nonzero exits and thrown errors log **`plan_review_execute_failed`** once per failed invocation (includes **`stdoutLen`/`stderrLen`** from the result or from the error when the sandbox attached streams). If the critique is still missing after that, see **`critique_missing_after_review`** in `develop` logs.
 
 ## Safety
 

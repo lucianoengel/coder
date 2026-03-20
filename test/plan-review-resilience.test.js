@@ -96,11 +96,14 @@ test("plan review: empty first output clears session; retry uses sessionId creat
 
     const logEvents = [];
     const executeOpts = [];
+    const prompts = [];
     let call = 0;
     const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+    const planPath = path.join(artifactsDir, "PLAN.md");
 
     const mockAgent = {
-      async execute(_prompt, opts) {
+      async execute(prompt, opts) {
+        prompts.push(prompt);
         executeOpts.push({ ...opts });
         call++;
         if (call === 1) {
@@ -150,6 +153,15 @@ test("plan review: empty first output clears session; retry uses sessionId creat
     );
     assert.ok(!executeOpts[1].resumeId, "retry must not resume prior session");
 
+    assert.ok(
+      prompts[1].includes(planPath) || prompts[1].includes("PLAN.md"),
+      "retry prompt must reference the plan file for fresh-session context",
+    );
+    assert.ok(
+      /Read the implementation plan/i.test(prompts[1]),
+      "retry prompt must instruct reading the plan",
+    );
+
     const state = await loadState(ws);
     assert.ok(
       state.planReviewSessionId,
@@ -159,6 +171,55 @@ test("plan review: empty first output clears session; retry uses sessionId creat
       state.planReviewSessionId,
       "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee",
     );
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("plan review: thrown error with err.stdout/stderr logs stream lengths", async () => {
+  const { ws, repoRoot, artifactsDir } = makeGitWorkspace();
+  try {
+    await saveState(ws, {
+      selected: { source: "local", id: "1", title: "T" },
+      repoPath: path.relative(ws, repoRoot) || ".",
+      steps: { wroteIssue: true, wrotePlan: true },
+      branch: "main",
+    });
+
+    const logEvents = [];
+    const mockAgent = {
+      async execute() {
+        const e = new Error("sandbox boom");
+        e.stdout = "hello-out";
+        e.stderr = "e";
+        throw e;
+      },
+    };
+
+    const ctx = {
+      workspaceDir: ws,
+      artifactsDir,
+      agentPool: {
+        getAgent: () => ({ agentName: "claude", agent: mockAgent }),
+      },
+      log: (e) => logEvents.push(e),
+      config: {
+        workflow: {
+          timeouts: { planReview: 60_000 },
+          wip: { push: false },
+        },
+      },
+    };
+
+    const result = await planReviewMachine.run({ round: 0 }, ctx);
+    assert.equal(result.status, "error");
+
+    const failed = logEvents.find(
+      (e) => e.event === "plan_review_execute_failed",
+    );
+    assert.ok(failed);
+    assert.equal(failed.stdoutLen, 9);
+    assert.equal(failed.stderrLen, 1);
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
