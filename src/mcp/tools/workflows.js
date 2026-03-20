@@ -18,6 +18,7 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
   TERMINAL_RUN_STATUSES,
+  writeControlSignal,
 } from "../../state/workflow-state.js";
 import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
@@ -755,13 +756,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
 
               // Phase 6: Handle forceRestart for disk-only active runs (genuine
-              // but force-replaced — mark failed after the guard passed)
+              // but force-replaced — signal cancel then mark failed)
               {
                 const postCleanup = await loadLoopState(ws);
                 if (
                   postCleanup.status === "running" ||
                   postCleanup.status === "paused"
                 ) {
+                  // Write file-based cancel signal so the other process picks it
+                  // up via pollControlSignal() and stops modifying the workspace.
+                  await writeControlSignal(ws, {
+                    action: "cancel",
+                    runId: postCleanup.runId,
+                  });
                   await markRunTerminalOnDisk(
                     ws,
                     postCleanup.runId,

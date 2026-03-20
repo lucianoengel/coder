@@ -363,12 +363,23 @@ test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
 test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
   const config = {
     models: {
-      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "" },
     },
     sandbox: { passEnv: [], passEnvPatterns: [] },
   };
   const r = resolvePassEnv(config);
   assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
+test("resolvePassEnv skips key env when apiKeyEnv is explicitly empty", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(!r.includes("GEMINI_API_KEY"));
 });
 
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {

@@ -160,7 +160,7 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
 
 export { DEFAULT_PASS_ENV };
 
-/** Default API key env names when a model entry omits apiKeyEnv (Zod leaves it ""). */
+/** Default API key env names when a model entry omits apiKeyEnv entirely. */
 const DEFAULT_MODEL_KEY_ENV = {
   gemini: "GEMINI_API_KEY",
   claude: "ANTHROPIC_API_KEY",
@@ -175,10 +175,12 @@ function modelApiKeyEnvNames(config) {
   for (const role of ["gemini", "claude", "codex"]) {
     const entry = models[role];
     if (!entry || typeof entry !== "object") continue;
-    let name = entry.apiKeyEnv;
-    if (typeof name !== "string" || !name.trim()) {
-      name = DEFAULT_MODEL_KEY_ENV[role];
-    }
+    // Only fall back to the built-in default when apiKeyEnv is undefined
+    // (omitted).  An explicit empty string means "don't forward any key".
+    const name =
+      entry.apiKeyEnv === undefined
+        ? DEFAULT_MODEL_KEY_ENV[role]
+        : entry.apiKeyEnv;
     if (typeof name === "string" && name.trim()) out.push(name.trim());
   }
   return out;

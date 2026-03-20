@@ -11,7 +11,7 @@ const modelNameRegex = /^[a-zA-Z0-9._/:-]+$/;
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
   apiEndpoint: z.string().default(""),
-  apiKeyEnv: z.string().default(""),
+  apiKeyEnv: z.string().optional(),
 });
 
 /** Preset defaults for ppcommit check strictness levels. */
