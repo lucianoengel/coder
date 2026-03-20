@@ -443,7 +443,12 @@ export function extractGeminiPayloadJson(stdout) {
     typeof (/** @type {{ session_id?: unknown }} */ (parsed).session_id) ===
     "string"
   ) {
-    if (isIssuesPayloadShape(parsed.response)) {
+    // Return any non-null object payload (issues, web-research, poc-runner, etc.)
+    if (
+      parsed.response &&
+      typeof parsed.response === "object" &&
+      !Array.isArray(parsed.response)
+    ) {
       return /** @type {object} */ (parsed.response);
     }
     let preview;

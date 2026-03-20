@@ -11,7 +11,6 @@ import { buildSecrets, isPidAlive, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import { withStartLock } from "../../state/start-lock.js";
 import {
-  controlSignalPath,
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadWorkflowSnapshot,
@@ -770,11 +769,12 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     action: "cancel",
                     runId: postCleanup.runId,
                   });
-                  // Wait up to 5 s for the other process to consume the signal
-                  // (pollControlSignal deletes the file on acknowledgement).
-                  const sigPath = controlSignalPath(ws);
-                  for (let i = 0; i < 10; i++) {
-                    if (!existsSync(sigPath)) break;
+                  // Wait up to 10 s for the other process to actually exit.
+                  // pollControlSignal deletes control.json on read, but the
+                  // runner may still be mid-step, so also check the PID.
+                  const oldPid = postCleanup.runnerPid;
+                  for (let i = 0; i < 20; i++) {
+                    if (!isPidAlive(oldPid)) break;
                     await new Promise((r) => setTimeout(r, 500));
                   }
                   await markRunTerminalOnDisk(

@@ -323,13 +323,21 @@ test("extractGeminiPayloadJson unwraps object response on envelope when it match
   assert.deepEqual(parsed, inner);
 });
 
-test("extractGeminiPayloadJson throws when envelope response object is not a usable issues payload", () => {
+test("extractGeminiPayloadJson returns non-issues object payloads from session envelopes", () => {
   const stdout = JSON.stringify({
     session_id: "abc",
-    response: { foo: 1 },
+    response: { references: ["a"], searchSummary: "ok" },
     stats: {},
   });
+  const result = extractGeminiPayloadJson(stdout);
+  assert.deepStrictEqual(result, { references: ["a"], searchSummary: "ok" });
+});
 
+test("extractGeminiPayloadJson throws when session envelope response is null", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: null,
+  });
   assert.throws(
     () => extractGeminiPayloadJson(stdout),
     (err) => {
@@ -338,7 +346,6 @@ test("extractGeminiPayloadJson throws when envelope response object is not a usa
         err.message,
         /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
       );
-      assert.match(err.message, /"foo":1/);
       return true;
     },
   );
