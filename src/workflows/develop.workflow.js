@@ -56,13 +56,16 @@ import {
   glabMrListArgs,
   resetForNextIssue,
 } from "./develop-git.js";
+import { syncDevelopLoopStage } from "./loop-sync.js";
 
 /**
  * Update the loop state heartbeat timestamp.
+ * When expectedLoopRunId is set, only writes if on-disk loop runId matches (phase-3 ticks, overlap-safe).
  */
-async function updateHeartbeat(ctx) {
+async function updateHeartbeat(ctx, expectedLoopRunId) {
   try {
     const ls = await loadLoopState(ctx.workspaceDir);
+    if (expectedLoopRunId != null && ls.runId !== expectedLoopRunId) return;
     ls.lastHeartbeatAt = new Date().toISOString();
     await saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
   } catch {
@@ -207,14 +210,19 @@ export async function runPlanLoop(
  */
 export async function runWithMachineRetry(
   fn,
-  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt },
+  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt, retryScope },
 ) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
       if (ctx.cancelToken?.cancelled) {
         return { status: "cancelled", results: [] };
       }
-      ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
+      ctx.log({
+        event: "machine_retry_attempt",
+        attempt,
+        maxRetries,
+        ...(retryScope ? { scope: retryScope } : {}),
+      });
       if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
     }
     const result = await fn();
@@ -287,260 +295,334 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
 export async function runDevelopPipeline(opts, ctx) {
   const start = Date.now();
   const allResults = [];
+  const loopRunId = opts.loopState?.runId ?? null;
 
-  const runner = new WorkflowRunner({
-    name: "develop",
-    workflowContext: ctx,
-    onStageChange: (stage) => {
-      ctx.log({ event: "develop_stage", stage });
-    },
-  });
-
-  // Phase 1: issue draft
-  const phase1 = await runner.run(
-    [
-      {
-        machine: issueDraftMachine,
-        inputMapper: () => ({
-          issue: opts.issue,
-          repoPath: opts.repoPath,
-          clarifications: opts.clarifications || "",
-          baseBranch: opts.baseBranch,
-          force: opts.force ?? false,
-        }),
-      },
-    ],
-    {},
-  );
-  allResults.push(...phase1.results);
-  if (phase1.status !== "completed") {
-    return { ...phase1, results: allResults, durationMs: Date.now() - start };
-  }
-
-  // Heartbeat after phase 1 (issue draft)
-  await updateHeartbeat(ctx);
-
-  if (ctx.cancelToken.cancelled) {
-    return {
-      status: "cancelled",
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
+  if (loopRunId) {
+    ctx.syncDevelopLoop = async (partial) => {
+      await syncDevelopLoopStage(ctx.workspaceDir, {
+        guardRunId: loopRunId,
+        ...partial,
+      });
     };
+  } else {
+    ctx.syncDevelopLoop = null;
   }
 
-  // Phase 2: planning + review loop
-  const loopResult = await runPlanLoop(runner, ctx, {
-    planningMachine,
-    planReviewMachine,
-    activeBranches: opts.activeBranches,
-  });
-  allResults.push(...loopResult.results);
-  if (loopResult.status !== "completed") {
-    return {
-      status: loopResult.status,
-      error: loopResult.error,
-      planReviewExhausted: loopResult.planReviewExhausted,
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
+  const reportDevelopStage = (stage) => {
+    ctx.log({ event: "develop_stage", stage });
+    if (!loopRunId) return;
+    const roles = ctx.config.workflow.agentRoles;
+    if (stage === "develop.quality_review" || stage === "develop.pr_creation") {
+      void syncDevelopLoopStage(ctx.workspaceDir, {
+        guardRunId: loopRunId,
+        currentStage: stage,
+      });
+      return;
+    }
+    const roleKeyByStage = {
+      "develop.issue_draft": "issueSelector",
+      "develop.planning": "planner",
+      "develop.plan_review": "planReviewer",
+      "develop.implementation": "programmer",
     };
-  }
+    const roleKey = roleKeyByStage[stage];
+    const activeAgent = roleKey ? roles[roleKey] : undefined;
+    if (activeAgent === undefined) return;
+    void syncDevelopLoopStage(ctx.workspaceDir, {
+      guardRunId: loopRunId,
+      currentStage: stage,
+      activeAgent,
+    });
+  };
 
-  // Heartbeat after phase 2 (planning + review)
-  await updateHeartbeat(ctx);
+  try {
+    const runner = new WorkflowRunner({
+      name: "develop",
+      workflowContext: ctx,
+      onStageChange: reportDevelopStage,
+    });
 
-  if (ctx.cancelToken.cancelled) {
-    return {
-      status: "cancelled",
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
-    };
-  }
+    // Phase 1: issue draft
+    const phase1 = await runner.run(
+      [
+        {
+          machine: issueDraftMachine,
+          inputMapper: () => ({
+            issue: opts.issue,
+            repoPath: opts.repoPath,
+            clarifications: opts.clarifications || "",
+            baseBranch: opts.baseBranch,
+            force: opts.force ?? false,
+          }),
+        },
+      ],
+      {},
+    );
+    allResults.push(...phase1.results);
+    if (phase1.status !== "completed") {
+      return { ...phase1, results: allResults, durationMs: Date.now() - start };
+    }
 
-  // Check for conflicts with active branches detected during planning.
-  // Skipped when conflict detection is disabled via config.
-  if (ctx.config?.workflow?.conflictDetection !== false) {
-    const planPath = artifactPaths(ctx.artifactsDir).plan;
-    if (existsSync(planPath)) {
-      const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
-      const conflictMatch = planMd.match(
-        /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
-      );
-      if (conflictMatch) {
-        return {
-          status: "deferred",
-          reason: "conflict",
-          conflictBranch: conflictMatch[1].trim(),
-          error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
-          results: allResults,
-          runId: runner.runId,
-          durationMs: Date.now() - start,
-        };
+    // Heartbeat after phase 1 (issue draft)
+    await updateHeartbeat(ctx, loopRunId ?? undefined);
+
+    if (ctx.cancelToken.cancelled) {
+      return {
+        status: "cancelled",
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Phase 2: planning + review loop
+    const loopResult = await runPlanLoop(runner, ctx, {
+      planningMachine,
+      planReviewMachine,
+      activeBranches: opts.activeBranches,
+    });
+    allResults.push(...loopResult.results);
+    if (loopResult.status !== "completed") {
+      return {
+        status: loopResult.status,
+        error: loopResult.error,
+        planReviewExhausted: loopResult.planReviewExhausted,
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Heartbeat after phase 2 (planning + review)
+    await updateHeartbeat(ctx, loopRunId ?? undefined);
+
+    if (ctx.cancelToken.cancelled) {
+      return {
+        status: "cancelled",
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Check for conflicts with active branches detected during planning.
+    // Skipped when conflict detection is disabled via config.
+    if (ctx.config?.workflow?.conflictDetection !== false) {
+      const planPath = artifactPaths(ctx.artifactsDir).plan;
+      if (existsSync(planPath)) {
+        const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
+        const conflictMatch = planMd.match(
+          /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
+        );
+        if (conflictMatch) {
+          return {
+            status: "deferred",
+            reason: "conflict",
+            conflictBranch: conflictMatch[1].trim(),
+            error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
+            results: allResults,
+            runId: runner.runId,
+            durationMs: Date.now() - start,
+          };
+        }
       }
     }
-  }
 
-  // Phase 3: implementation → quality-review → PR creation
-  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
-  const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
-  let lastPhase3RunId = null;
-  let isFirstAttempt = true;
-  const phase3Steps = [
-    { machine: implementationMachine, inputMapper: () => ({}) },
-    {
-      machine: qualityReviewMachine,
-      inputMapper: () => ({
-        testCmd: opts.testCmd || "",
-        testConfigPath: opts.testConfigPath || "",
-        allowNoTests: opts.allowNoTests ?? false,
-        ppcommitPreset: opts.ppcommitPreset || "strict",
-      }),
-    },
-    {
-      machine: prCreationMachine,
-      inputMapper: () => ({
-        type: opts.prType || "feat",
-        semanticName: opts.prSemanticName || "",
-        title: opts.prTitle || "",
-        description: opts.prDescription || "",
-        base: opts.prBase || "",
-      }),
-    },
-  ];
-  const phase3 = await runWithMachineRetry(
-    async () => {
-      const phase3Runner = new WorkflowRunner({
-        name: "develop",
-        workflowContext: ctx,
-        onStageChange: (stage) => {
-          ctx.log({ event: "develop_stage", stage });
-        },
-        onResumeSkipped:
-          opts.loopState && opts.issueIndex != null
-            ? async (runId) => {
-                opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-                  runId;
-                await saveLoopState(ctx.workspaceDir, opts.loopState, {
-                  guardRunId: opts.loopState.runId,
+    // Phase 3: implementation → quality-review → PR creation
+    const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
+    const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
+    let lastPhase3RunId = null;
+    let isFirstAttempt = true;
+    let lastPhase3HeartbeatMs = 0;
+    const phase3HeartbeatMinMs = 15_000;
+    const phase3Steps = [
+      { machine: implementationMachine, inputMapper: () => ({}) },
+      {
+        machine: qualityReviewMachine,
+        inputMapper: () => ({
+          testCmd: opts.testCmd || "",
+          testConfigPath: opts.testConfigPath || "",
+          allowNoTests: opts.allowNoTests ?? false,
+          ppcommitPreset: opts.ppcommitPreset || "strict",
+        }),
+      },
+      {
+        machine: prCreationMachine,
+        inputMapper: () => ({
+          type: opts.prType || "feat",
+          semanticName: opts.prSemanticName || "",
+          title: opts.prTitle || "",
+          description: opts.prDescription || "",
+          base: opts.prBase || "",
+        }),
+      },
+    ];
+    const phase3 = await runWithMachineRetry(
+      async () => {
+        const phase3Runner = new WorkflowRunner({
+          name: "develop",
+          workflowContext: ctx,
+          onStageChange: reportDevelopStage,
+          onHeartbeat: () => {
+            const now = Date.now();
+            if (now - lastPhase3HeartbeatMs < phase3HeartbeatMinMs) return;
+            lastPhase3HeartbeatMs = now;
+            void updateHeartbeat(ctx, loopRunId ?? undefined);
+          },
+          onResumeSkipped:
+            opts.loopState && opts.issueIndex != null
+              ? async (runId) => {
+                  opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+                    runId;
+                  await saveLoopState(ctx.workspaceDir, opts.loopState, {
+                    guardRunId: opts.loopState.runId,
+                  });
+                }
+              : null,
+          onCheckpoint: (_i, result, machineName) => {
+            if (
+              machineName === "develop.implementation" &&
+              result?.status === "ok"
+            ) {
+              try {
+                const statePath = statePathFor(ctx.workspaceDir);
+                if (existsSync(statePath)) {
+                  const state = JSON.parse(readFileSync(statePath, "utf8"));
+                  saveBackup(ctx.workspaceDir, state);
+                }
+              } catch (err) {
+                ctx.log({
+                  event: "post_impl_backup_failed",
+                  error: err.message,
                 });
               }
-            : null,
-        onCheckpoint: (_i, result, machineName) => {
-          if (
-            machineName === "develop.implementation" &&
-            result?.status === "ok"
-          ) {
-            try {
-              const statePath = statePathFor(ctx.workspaceDir);
-              if (existsSync(statePath)) {
-                const state = JSON.parse(readFileSync(statePath, "utf8"));
-                saveBackup(ctx.workspaceDir, state);
-              }
-            } catch (err) {
-              ctx.log({ event: "post_impl_backup_failed", error: err.message });
             }
-          }
-        },
-      });
-      const resumeId =
-        opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
-        opts.resumeFromRunId;
-      const runOpts =
-        isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
-      // When resuming, persist the old runId so a process crash before onResumeSkipped
-      // fires (or after) still points to the correct checkpoint. onResumeSkipped will
-      // update to the new runId if the checkpoint turns out not to be usable.
-      const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
-      if (opts.loopState && opts.issueIndex != null) {
-        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-          runIdToPersist;
-        await saveLoopState(ctx.workspaceDir, opts.loopState, {
-          guardRunId: opts.loopState.runId,
+          },
         });
-      }
-      isFirstAttempt = false;
-      const result = await phase3Runner.run(phase3Steps, {}, runOpts);
-      lastPhase3RunId = phase3Runner.runId;
-      if (
-        result.status !== "completed" &&
-        opts.loopState &&
-        opts.issueIndex != null
-      ) {
-        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-          phase3Runner.runId;
-        await saveLoopState(ctx.workspaceDir, opts.loopState, {
-          guardRunId: opts.loopState.runId,
-        });
-      }
-      return result;
-    },
-    {
-      maxRetries: maxMachineRetries,
-      backoffMs: retryBackoffMs,
-      ctx,
-      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
-        const failed = findFailedMachineResult(result);
-        if (failed?.machine !== "develop.quality_review") return;
-        // Only inject retry feedback when another attempt will follow.
-        // Always reset implemented=false and clean up state regardless.
-        if (attempt < maxRetries) {
-          await injectRetryFeedback(
-            ctx,
-            failed.machine,
-            failed.error || result.error || "",
-          );
-        } else {
-          // Terminal attempt: still reset implementation cache for cross-process recovery
-          const state = await loadState(ctx.workspaceDir);
-          if (state?.steps?.implemented) {
-            state.steps.implemented = false;
-            await saveState(ctx.workspaceDir, state);
-          }
-        }
-        // Overwrite the onCheckpoint backup with implemented=false so a cross-process
-        // restart after quality_review failure re-runs implementation, matching
-        // same-process retry behavior.
-        const state = await loadState(ctx.workspaceDir);
-        if (state?.selected) saveBackup(ctx.workspaceDir, state);
-        try {
-          rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
-            force: true,
-          });
-        } catch {
-          // Best-effort cleanup
-        }
+        const resumeId =
+          opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
+          opts.resumeFromRunId;
+        const runOpts =
+          isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
+        // When resuming, persist the old runId so a process crash before onResumeSkipped
+        // fires (or after) still points to the correct checkpoint. onResumeSkipped will
+        // update to the new runId if the checkpoint turns out not to be usable.
+        const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
         if (opts.loopState && opts.issueIndex != null) {
-          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+            runIdToPersist;
           await saveLoopState(ctx.workspaceDir, opts.loopState, {
             guardRunId: opts.loopState.runId,
           });
         }
+        isFirstAttempt = false;
+        const result = await phase3Runner.run(phase3Steps, {}, runOpts);
+        lastPhase3RunId = phase3Runner.runId;
+        if (
+          result.status !== "completed" &&
+          opts.loopState &&
+          opts.issueIndex != null
+        ) {
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+            phase3Runner.runId;
+          await saveLoopState(ctx.workspaceDir, opts.loopState, {
+            guardRunId: opts.loopState.runId,
+          });
+        }
+        return result;
       },
-    },
-  );
-  if (phase3.status === "completed" && lastPhase3RunId) {
-    try {
-      rmSync(checkpointPathFor(ctx.workspaceDir, lastPhase3RunId), {
-        force: true,
-      });
-    } catch {
-      // Best-effort cleanup
+      {
+        maxRetries: maxMachineRetries,
+        backoffMs: retryBackoffMs,
+        ctx,
+        onFailedAttempt: async ({ attempt, maxRetries, result }) => {
+          const failed = findFailedMachineResult(result);
+          let wfState = {};
+          try {
+            wfState = await loadState(ctx.workspaceDir);
+          } catch {
+            /* ignore */
+          }
+          const failedIdx =
+            Array.isArray(result?.results) && failed
+              ? result.results.findIndex((r) => r.machine === failed.machine)
+              : -1;
+          ctx.log({
+            event: "phase3_retry_context",
+            attempt,
+            maxRetries,
+            failedMachine: failed?.machine ?? null,
+            failedStatus: failed?.status ?? null,
+            implementedFlag: wfState?.steps?.implemented ?? null,
+            phase3RunId: result?.runId ?? null,
+            failedStepIndex: failedIdx >= 0 ? failedIdx : null,
+            willInjectCritique:
+              failed?.machine === "develop.quality_review" &&
+              attempt < maxRetries,
+          });
+          if (failed?.machine !== "develop.quality_review") return;
+          // Only inject retry feedback when another attempt will follow.
+          // Always reset implemented=false and clean up state regardless.
+          if (attempt < maxRetries) {
+            await injectRetryFeedback(
+              ctx,
+              failed.machine,
+              failed.error || result.error || "",
+            );
+          } else {
+            // Terminal attempt: still reset implementation cache for cross-process recovery
+            const state = await loadState(ctx.workspaceDir);
+            if (state?.steps?.implemented) {
+              state.steps.implemented = false;
+              await saveState(ctx.workspaceDir, state);
+            }
+          }
+          // Overwrite the onCheckpoint backup with implemented=false so a cross-process
+          // restart after quality_review failure re-runs implementation, matching
+          // same-process retry behavior.
+          const state = await loadState(ctx.workspaceDir);
+          if (state?.selected) saveBackup(ctx.workspaceDir, state);
+          try {
+            rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+              force: true,
+            });
+          } catch {
+            // Best-effort cleanup
+          }
+          if (opts.loopState && opts.issueIndex != null) {
+            opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+            await saveLoopState(ctx.workspaceDir, opts.loopState, {
+              guardRunId: opts.loopState.runId,
+            });
+          }
+        },
+        retryScope: "develop_phase3",
+      },
+    );
+    if (phase3.status === "completed" && lastPhase3RunId) {
+      try {
+        rmSync(checkpointPathFor(ctx.workspaceDir, lastPhase3RunId), {
+          force: true,
+        });
+      } catch {
+        // Best-effort cleanup
+      }
+      if (opts.loopState && opts.issueIndex != null) {
+        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
+      }
     }
-    if (opts.loopState && opts.issueIndex != null) {
-      opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
-      await saveLoopState(ctx.workspaceDir, opts.loopState, {
-        guardRunId: opts.loopState.runId,
-      });
-    }
+    allResults.push(...phase3.results);
+
+    // Heartbeat after phase 3 (implementation + review + PR)
+    await updateHeartbeat(ctx, loopRunId ?? undefined);
+
+    return { ...phase3, results: allResults, durationMs: Date.now() - start };
+  } finally {
+    delete ctx.syncDevelopLoop;
   }
-  allResults.push(...phase3.results);
-
-  // Heartbeat after phase 3 (implementation + review + PR)
-  await updateHeartbeat(ctx);
-
-  return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
 
 /**

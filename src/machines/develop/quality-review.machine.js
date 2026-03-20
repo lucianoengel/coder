@@ -264,6 +264,10 @@ export default defineMachine({
     // -----------------------------------------------------------------------
     if (!state.specDeltaSummary && existsSync(paths.plan)) {
       ctx.log({ event: "spec_delta_start" });
+      await ctx.syncDevelopLoop?.({
+        currentStage: "develop.quality_review",
+        activeAgent: reviewerName,
+      });
       const deltaPrompt = buildSpecDeltaPrompt(paths.issue, paths.plan);
       const deltaRes = await reviewerAgent.execute(deltaPrompt, {
         timeoutMs: ctx.config.workflow.timeouts.reviewRound,
@@ -335,6 +339,10 @@ export default defineMachine({
         } else {
           // --- Reviewer critiques ---
           ctx.log({ event: "reviewer_critique", round, agent: reviewerName });
+          await ctx.syncDevelopLoop?.({
+            currentStage: "develop.quality_review",
+            activeAgent: reviewerName,
+          });
 
           const priorFindings =
             round > 1
@@ -428,6 +436,10 @@ export default defineMachine({
         }
 
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
+        await ctx.syncDevelopLoop?.({
+          currentStage: "develop.quality_review",
+          activeAgent: programmerName,
+        });
 
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
         const fixRes = await withSessionResume({
@@ -467,6 +479,10 @@ export default defineMachine({
         ctx.log({
           event: "committer_escalation",
           agent: committerName,
+        });
+        await ctx.syncDevelopLoop?.({
+          currentStage: "develop.quality_review",
+          activeAgent: committerName,
         });
 
         const escalationPrompt = buildCommitterEscalationPrompt(
@@ -515,6 +531,10 @@ export default defineMachine({
     });
 
     const runCommitterPass = async (agent, agentName, retrySection, label) => {
+      await ctx.syncDevelopLoop?.({
+        currentStage: "develop.quality_review",
+        activeAgent: agentName,
+      });
       const prompt = `You are reviewing uncommitted changes for commit readiness.
 Read ${paths.issue} to understand what was originally requested.
 

@@ -320,7 +320,7 @@ function readWorkflowEvents(
   workflowName,
   afterSeq = 0,
   limit = 50,
-  { filterRunId = "" } = {},
+  { filterRunId = "", allRuns = false } = {},
 ) {
   const logPath = path.join(
     workspaceDir,
@@ -332,23 +332,35 @@ function readWorkflowEvents(
   try {
     content = readFileSync(logPath, "utf8");
   } catch {
-    return { events: [], nextSeq: 0, totalLines: 0 };
+    return {
+      events: [],
+      nextSeq: 0,
+      totalLines: 0,
+      filteredByRunId: null,
+    };
   }
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];
+  const effectiveFilter = allRuns ? "" : filterRunId;
   const start = afterSeq;
   const end = Math.min(start + limit, totalLines);
   for (let i = start; i < end; i++) {
     try {
       const parsed = JSON.parse(allLines[i]);
-      if (filterRunId && parsed.runId && parsed.runId !== filterRunId) continue;
+      if (effectiveFilter && parsed.runId && parsed.runId !== effectiveFilter)
+        continue;
       events.push({ seq: i + 1, ...parsed });
     } catch {
       events.push({ seq: i + 1, raw: allLines[i] });
     }
   }
-  return { events, nextSeq: end, totalLines };
+  return {
+    events,
+    nextSeq: end,
+    totalLines,
+    filteredByRunId: effectiveFilter || null,
+  };
 }
 
 async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
@@ -424,10 +436,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
     {
       description:
         "Unified workflow control plane. Use this to start, inspect, and control " +
-        "named workflows (workflow=develop|research|design).",
+        "named workflows (workflow=develop|research|design). Includes reconcile for stale " +
+        "loop-state cleanup when status reports isStale.",
       inputSchema: {
         action: z
-          .enum(["start", "status", "events", "cancel", "pause", "resume"])
+          .enum([
+            "start",
+            "status",
+            "events",
+            "cancel",
+            "pause",
+            "resume",
+            "reconcile",
+          ])
           .describe("Workflow control action"),
         workflow: z
           .enum(["develop", "research", "design"])
@@ -566,7 +587,13 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .min(1)
           .max(500)
           .default(50)
-          .describe("Events-only: max events to return"),
+          .describe("Events-only: max log lines to scan (seq is line-based)"),
+        allRuns: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Events-only: include lines from all runIds. When false, lines from other runs are skipped but still count toward the line window — use true for full history or debugging.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -617,17 +644,87 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             workflow,
             params.afterSeq,
             params.limit,
-            { filterRunId: currentStatus.runId || "" },
+            {
+              filterRunId: currentStatus.runId || "",
+              allRuns: params.allRuns === true,
+            },
           );
           return {
             content: [
               {
                 type: "text",
                 text: JSON.stringify(
-                  { action, workflow, log: `${workflow}.jsonl`, ...result },
+                  {
+                    action,
+                    workflow,
+                    log: `${workflow}.jsonl`,
+                    eventsNote:
+                      "seq is the 1-based line index in the jsonl file; with run filtering, some pages may contain fewer events than limit.",
+                    ...result,
+                  },
                   null,
                   2,
                 ),
+              },
+            ],
+          };
+        }
+
+        if (action === "reconcile") {
+          const st = await readWorkflowStatus(ws);
+          if (!st.isStale) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    reconciled: false,
+                    reason: "not_stale",
+                    runId: st.runId ?? null,
+                    staleReason: st.staleReason ?? null,
+                    hint: "Status tooling only marks stale runs (dead runner PID or heartbeat truly stuck).",
+                  }),
+                },
+              ],
+            };
+          }
+          const loop = await loadLoopState(ws);
+          if (!loop.runId) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    reconciled: false,
+                    reason: "no_loop_run_id",
+                  }),
+                },
+              ],
+            };
+          }
+          const written = await markRunTerminalOnDisk(
+            ws,
+            loop.runId,
+            workflow,
+            "failed",
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  action,
+                  workflow,
+                  reconciled: written,
+                  reason: written
+                    ? "marked_failed_on_disk"
+                    : "persist_rejected_or_already_terminal",
+                  runId: loop.runId,
+                }),
               },
             ],
           };

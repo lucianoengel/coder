@@ -116,7 +116,7 @@ export default defineMachine({
           ? `\n\nNote: This is revision round ${input.round + 1}. The prior plan was rejected. Focus on whether the issues from the prior critique have been addressed.`
           : "";
 
-      const reviewPrompt = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
+      const basePromptBody = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
 
 Required sections (in order):
 1. Critical Issues (Must Fix)
@@ -130,32 +130,50 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      const reviewRes = await withSessionResume({
-        agentName: planReviewerName,
-        agent: planReviewerAgent,
-        state,
-        sessionKey: "planReviewSessionId",
-        agentNameKey: "planReviewAgentName",
-        workspaceDir: ctx.workspaceDir,
-        log: ctx.log,
-        executeFn: (sessionOpts) =>
-          planReviewerAgent.execute(reviewPrompt, {
-            ...sessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.planReview,
-          }),
-      });
-      requireExitZero(planReviewerName, "plan review failed", reviewRes);
+      const strictRetryNote = `\n\nCRITICAL: You MUST create or overwrite ${paths.critique} with the full critique markdown. Empty output or a summary-only reply is not acceptable.`;
 
-      if (!existsSync(paths.critique)) {
+      let reviewRes;
+      for (let reviewAttempt = 0; reviewAttempt < 2; reviewAttempt++) {
+        const reviewPrompt =
+          basePromptBody + (reviewAttempt > 0 ? strictRetryNote : "");
+
+        reviewRes = await withSessionResume({
+          agentName: planReviewerName,
+          agent: planReviewerAgent,
+          state,
+          sessionKey: "planReviewSessionId",
+          agentNameKey: "planReviewAgentName",
+          workspaceDir: ctx.workspaceDir,
+          log: ctx.log,
+          executeFn: (sessionOpts) =>
+            planReviewerAgent.execute(reviewPrompt, {
+              ...sessionOpts,
+              timeoutMs: ctx.config.workflow.timeouts.planReview,
+            }),
+        });
+        requireExitZero(planReviewerName, "plan review failed", reviewRes);
+
+        if (existsSync(paths.critique)) break;
+
         const cleaned = stripAgentNoise(reviewRes.stdout || "", {
           dropLeadingOnly: true,
         });
         const filtered = stripAgentNoise(cleaned).trim();
-        if (!filtered)
-          throw new Error(
-            `${planReviewerName} plan review produced no critique output.`,
-          );
-        writeFileSync(paths.critique, filtered + "\n", "utf8");
+        if (filtered) {
+          writeFileSync(paths.critique, filtered + "\n", "utf8");
+          break;
+        }
+
+        if (reviewAttempt === 0) {
+          ctx.log({ event: "plan_review_empty_retry", attempt: 1 });
+          continue;
+        }
+
+        const err = new Error(
+          `${planReviewerName} plan review produced no critique output.`,
+        );
+        err.code = "PLAN_REVIEW_EMPTY_OUTPUT";
+        throw err;
       }
     }
 
