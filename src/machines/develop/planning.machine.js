@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { z } from "zod";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
@@ -48,11 +48,16 @@ export default defineMachine({
       if (existsSync(paths.plan)) {
         return { status: "ok", data: { planMd: "(cached)" } };
       }
-      // wrotePlan is true but PLAN.md missing — clear flag and session so
-      // the planner starts fresh instead of resuming a stale session
+      // wrotePlan is true but PLAN.md missing — clear plan + critique state
+      // so the planner starts fresh (not resuming a stale session) and the
+      // plan-reviewer doesn't short-circuit on an outdated PLANREVIEW.md
       state.steps.wrotePlan = false;
+      state.steps.wroteCritique = false;
       state.planningSessionId = null;
       state.plannerAgentName = null;
+      try {
+        if (existsSync(paths.critique)) unlinkSync(paths.critique);
+      } catch {}
       await saveState(ctx.workspaceDir, state);
     }
 
