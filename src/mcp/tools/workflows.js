@@ -211,8 +211,7 @@ export async function applyLauncherNormalCompletion({
       activeAgent: null,
       completedAt: diskState.completedAt ?? at,
     };
-    if (finalStatus === "failed")
-      context.error = result.error || "unknown";
+    if (finalStatus === "failed") context.error = result.error || "unknown";
     await saveWorkflowTerminalState(workspaceDir, {
       runId,
       workflow,
