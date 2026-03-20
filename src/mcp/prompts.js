@@ -90,7 +90,7 @@ You can resume a partially-completed workflow — check status first.
 
 For autonomous multi-issue processing:
 \`coder_workflow { action: "start", workflow: "develop", goal: "resolve all assigned issues" }\`
-Monitor with \`coder_workflow { action: "status" }\``,
+To monitor progress, use \`coder_workflow { action: "status" }\` or \`coder_status\` — do NOT call action: "start" to check status; that would cancel and restart the run.`,
           },
         },
       ],

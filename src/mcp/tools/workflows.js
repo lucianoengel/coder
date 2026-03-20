@@ -429,6 +429,12 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .boolean()
           .default(false)
           .describe("Start-only: aggressively reset between issues"),
+        forceRestart: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Start-only: allow starting when a run is already in progress (cancels it). Without this, start is rejected to prevent accidental restarts.",
+          ),
         ppcommitPreset: z
           .enum(["strict", "relaxed", "minimal"])
           .default("strict")
@@ -566,6 +572,35 @@ export function registerWorkflowTools(server, resolveWorkspace) {
         }
 
         if (action === "start") {
+          // Guard: reject start if a run is already in progress, unless forceRestart
+          const hasActiveRun = [...activeRuns.values()].some(
+            (r) => r.workspace === ws,
+          );
+          const diskLoopState = await loadLoopState(ws);
+          const diskRunInProgress =
+            diskLoopState.status === "running" ||
+            diskLoopState.status === "paused";
+          if (
+            (hasActiveRun || diskRunInProgress) &&
+            params.forceRestart !== true
+          ) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    status: "blocked",
+                    reason: "run_already_in_progress",
+                    runId: diskLoopState.runId || null,
+                    hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
+                  }),
+                },
+              ],
+            };
+          }
+
           let startContext;
           try {
             startContext = await withStartLock(ws, async () => {
@@ -617,7 +652,16 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
 
               const nextRunId = randomUUID().slice(0, 8);
-              const initialAgent = params.agentRoles?.issueSelector || "gemini";
+              const configForAgent = resolveConfig(
+                ws,
+                params.agentRoles
+                  ? { workflow: { agentRoles: params.agentRoles } }
+                  : {},
+              );
+              const initialAgent =
+                params.agentRoles?.issueSelector ||
+                configForAgent.workflow?.agentRoles?.issueSelector ||
+                "gemini";
 
               // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
               const priorLoopState = await loadLoopState(ws);

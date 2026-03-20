@@ -741,9 +741,6 @@ async function runDebugEnvCli() {
   process.stdout.write("\n=== Secrets (passEnv) resolved ===\n");
   const apiKeys = [
     "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_AUTH_TOKEN",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "OPENAI_API_KEY",
@@ -762,8 +759,7 @@ async function runDebugEnvCli() {
     "\n  passEnv: " +
       JSON.stringify(passEnv) +
       "\n" +
-      "  Add ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ANTHROPIC_AUTH_TOKEN to\n" +
-      "  sandbox.passEnv in coder.json if using OpenRouter.\n",
+      "  OpenRouter: set models.claude.apiEndpoint + apiKeyEnv; routing vars are injected for the CLI.\n",
   );
 }
 
