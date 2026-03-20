@@ -106,7 +106,7 @@ Do not leave the doc at “better errors only” without addressing the **asymme
 ## 4. Out of scope / already addressed elsewhere
 
 - **Multi-issue loop terminal status** / lifecycle **SYNC** — covered by workflow reliability + follow-up work on `feat/workflow-reliability`.
-- **Empty PLANREVIEW** retries — reliability track.
+- **Plan-review resilience** (structured failure logs, fresh-session empty-output retry) — see **[workflow-plan-review-resilience-plan.md](./workflow-plan-review-resilience-plan.md)**.
 
 ---
 

@@ -463,9 +463,19 @@ ${branchSections}`;
       trySalvagePlanFromStdout(lastPlannerResult, paths.plan, ctx.log);
     }
     if (!existsSync(paths.plan)) {
+      ctx.log({
+        event: "plan_missing_final",
+        planPath: paths.plan,
+        stdoutLen: lastPlannerResult
+          ? (lastPlannerResult.stdout || "").length
+          : 0,
+        stderrLen: lastPlannerResult
+          ? (lastPlannerResult.stderr || "").length
+          : 0,
+      });
       throw new Error(
         `PLAN.md not found at ${paths.plan} (artifactsDir=${ctx.artifactsDir}). ` +
-          `Planner exited 0 but did not write the file.`,
+          `Planner exited 0 but did not write the file. See plan_missing_after_planner and plan_missing_final logs.`,
       );
     }
     state.steps.wrotePlan = true;
