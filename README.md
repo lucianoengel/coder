@@ -334,6 +334,16 @@ Events: `workflow_start`, `workflow_complete`, `workflow_failed`, `machine_start
 
 Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATUS`, `CODER_HOOK_DATA`, and `CODER_HOOK_RUN_ID` environment variables. Failures are logged but never break the workflow.
 
+## Monitoring develop workflow (`coder_status`)
+
+The MCP tool **`coder_status`** (and the same payload shape when embedded elsewhere) includes:
+
+- **`currentStage` / `activeAgent`** — coarse runner position from loop or lifecycle state. It can lag briefly right after a stage change.
+- **`steps` and `artifacts`** (`issueExists`, `planExists`, `critiqueExists`) — what exists on disk for the develop pipeline. **Prefer these** when you need to know whether ISSUE/PLAN/PLANREVIEW are present.
+- **`derivedArtifactPhase`** (when `runStatus` is `running` or `paused`) — `issue_draft` → `planning` → `plan_review` → `past_plan_review`, derived from `steps` plus artifact files. Use it when `currentStage` disagrees with `artifacts` (e.g. stage still `develop_starting` while `planExists` is true).
+
+MCP tools are not shell commands — call **`coder_status`** through the MCP integration, not as a bash command name.
+
 ## Safety
 
 - Workspace boundaries enforced — symlink escape detection on workspace and scratchpad paths
@@ -342,7 +352,7 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 - Health-check URLs restricted to localhost
 - One active run per workspace (concurrent starts force-cancel previous)
 - Session TTL with automatic cleanup (HTTP mode)
-- Agent hang detection with configurable timeout (default 5 min)
+- Agent hang detection with configurable timeout (default 5 min); **planning** and **plan review** disable per-call hang so `workflow.timeouts.planning` / `planReview` bound silence instead
 - Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs

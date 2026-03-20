@@ -6,10 +6,15 @@ import { defineMachine } from "../_base.js";
 import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
+  buildStepCliOpts,
   maybeCheckpointWip,
   requireExitZero,
   resolveRepoRoot,
 } from "./_shared.js";
+
+export function buildPlanReviewExecuteOpts(ctx) {
+  return buildStepCliOpts(ctx.config.workflow.timeouts.planReview);
+}
 
 /**
  * Parse the Verdict section from a plan critique markdown string.
@@ -130,6 +135,7 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
+      const reviewCli = buildPlanReviewExecuteOpts(ctx);
       const reviewRes = await withSessionResume({
         agentName: planReviewerName,
         agent: planReviewerAgent,
@@ -141,7 +147,7 @@ Constraints:
         executeFn: (sessionOpts) =>
           planReviewerAgent.execute(reviewPrompt, {
             ...sessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.planReview,
+            ...reviewCli,
           }),
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);

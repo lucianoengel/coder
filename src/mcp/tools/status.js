@@ -91,6 +91,33 @@ function readResearchState(workspaceDir) {
   }
 }
 
+/**
+ * Coarse develop pipeline position from machine `steps` + artifact files.
+ * `currentStage` / loop state can lag; use this when they disagree with `artifacts`.
+ *
+ * @param {{ steps?: object }} state
+ * @param {{ issueExists: boolean, planExists: boolean, critiqueExists: boolean }} artifacts
+ * @returns {"issue_draft" | "planning" | "plan_review" | "past_plan_review" | null}
+ */
+export function deriveDevelopArtifactPhase(state, artifacts) {
+  const s = state?.steps || {};
+  const touched =
+    artifacts.issueExists ||
+    s.wroteIssue ||
+    artifacts.planExists ||
+    s.wrotePlan ||
+    artifacts.critiqueExists ||
+    s.wroteCritique;
+  if (!touched) return null;
+  const issue = artifacts.issueExists || s.wroteIssue;
+  const plan = artifacts.planExists || s.wrotePlan;
+  const critique = artifacts.critiqueExists || s.wroteCritique;
+  if (!issue) return "issue_draft";
+  if (!plan) return "planning";
+  if (!critique) return "plan_review";
+  return "past_plan_review";
+}
+
 export async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
   const state = await loadState(workspaceDir);
@@ -102,6 +129,21 @@ export async function getStatus(workspaceDir) {
     : null;
 
   const runState = await readWorkflowRunState(workspaceDir);
+
+  const artifacts = {
+    issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
+    planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
+    critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+    reviewFindingsExists: existsSync(
+      path.join(artifactsDir, "REVIEW_FINDINGS.md"),
+    ),
+  };
+
+  const rs = runState?.runStatus;
+  const derivedArtifactPhase =
+    rs === "running" || rs === "paused"
+      ? deriveDevelopArtifactPhase(state, artifacts)
+      : null;
 
   return {
     selected: state.selected || null,
@@ -122,14 +164,7 @@ export async function getStatus(workspaceDir) {
       includeUntracked: config.workflow.wip.includeUntracked,
       lastPushedAt: state.lastWipPushAt || null,
     },
-    artifacts: {
-      issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
-      planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
-      critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
-      reviewFindingsExists: existsSync(
-        path.join(artifactsDir, "REVIEW_FINDINGS.md"),
-      ),
-    },
+    artifacts,
     scratchpad: {
       dir: scratchpadDir,
       current: state.scratchpadPath || null,
@@ -146,6 +181,7 @@ export async function getStatus(workspaceDir) {
     activeAgent: runState?.activeAgent ?? null,
     runId: runState?.runId ?? null,
     runStatus: runState?.runStatus ?? null,
+    derivedArtifactPhase,
     mcpHealth: readMcpHealth(workspaceDir),
     researchWorkflow: readResearchState(workspaceDir),
   };
@@ -157,7 +193,9 @@ export function registerStatusTools(server, resolveWorkspace) {
     {
       description:
         "Returns the current workflow state: which steps are complete, selected issue, " +
-        "branch, and repo path. Call this to check progress or resume a partially-completed workflow.",
+        "branch, and repo path. When `runStatus` is running/paused, `derivedArtifactPhase` " +
+        "summarizes develop progress from artifacts + steps (use when `currentStage` lags). " +
+        "Prefer `steps` and `artifacts` for what exists on disk; `currentStage` is coarse runner position.",
       inputSchema: {
         workspace: z
           .string()

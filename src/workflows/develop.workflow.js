@@ -54,6 +54,7 @@ import {
   extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   resetForNextIssue,
 } from "./develop-git.js";
 
@@ -658,6 +659,7 @@ export {
   extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   prepareForIssue,
   resetForNextIssue,
 };
