@@ -1114,7 +1114,7 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
   }
 });
 
-test("gitlab: glab stderr unknown shorthand flag is treated as format mismatch", () => {
+test("gitlab: glab stderr with unknown shorthand flag is a format mismatch (not fatal)", () => {
   assert.ok(
     isGlabMrListFormatMismatchStderr(
       "unknown shorthand flag: 'F' in -F\n\nUsage: glab mr list [flags]",

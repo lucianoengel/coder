@@ -1,4 +1,10 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { z } from "zod";
 import {
   formatCommandFailure,
@@ -222,7 +228,7 @@ export default defineMachine({
           ? `\n\nNote: This is revision round ${input.round + 1}. The prior plan was rejected. Focus on whether the issues from the prior critique have been addressed.`
           : "";
 
-      const reviewPrompt = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
+      const basePromptBody = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
 
 Required sections (in order):
 1. Critical Issues (Must Fix)
@@ -236,7 +242,23 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
+      const strictRetryNote = `\n\nCRITICAL: You MUST create or overwrite ${paths.critique} with the full critique markdown. Empty output or a summary-only reply is not acceptable.`;
+
       const reviewCli = buildPlanReviewExecuteOpts(ctx);
+
+      const removeWhitespaceOnlyCritique = () => {
+        if (!existsSync(paths.critique)) return;
+        try {
+          const trimmed = stripAgentNoise(
+            readFileSync(paths.critique, "utf8"),
+          ).trim();
+          if (trimmed.length === 0) {
+            rmSync(paths.critique, { force: true });
+          }
+        } catch {
+          /* best-effort — treat as missing and fall through */
+        }
+      };
 
       const runReviewRound = async (prompt) => {
         let reviewRes;
@@ -284,7 +306,8 @@ Constraints:
         return reviewRes;
       };
 
-      let reviewRes = await runReviewRound(reviewPrompt);
+      let reviewRes = await runReviewRound(basePromptBody);
+      removeWhitespaceOnlyCritique();
       tryWriteCritiqueFromStdout(reviewRes, paths.critique);
 
       if (
@@ -305,6 +328,15 @@ Constraints:
         reviewRes = await runReviewRound(
           buildCritiqueRetryPrompt(paths.plan, paths.critique, input.round),
         );
+        removeWhitespaceOnlyCritique();
+        tryWriteCritiqueFromStdout(reviewRes, paths.critique);
+      } else if (
+        !existsSync(paths.critique) &&
+        !critiqueStdoutStrippedEmpty(reviewRes)
+      ) {
+        ctx.log({ event: "plan_review_empty_retry", attempt: 1 });
+        reviewRes = await runReviewRound(basePromptBody + strictRetryNote);
+        removeWhitespaceOnlyCritique();
         tryWriteCritiqueFromStdout(reviewRes, paths.critique);
       }
 
@@ -328,6 +360,17 @@ Constraints:
           );
         }
         writeFileSync(paths.critique, `${filtered}\n`, "utf8");
+      }
+
+      if (
+        stripAgentNoise(readFileSync(paths.critique, "utf8")).trim().length ===
+        0
+      ) {
+        const err = new Error(
+          `${planReviewerName} plan review produced no critique output.`,
+        );
+        err.code = "PLAN_REVIEW_EMPTY_OUTPUT";
+        throw err;
       }
     }
 

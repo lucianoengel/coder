@@ -66,7 +66,8 @@ From intents/descriptions, generates UI designs via Google Stitch.
 Unified control plane for all three workflows:
 - \`action: "start"\` — Launch a workflow run (returns runId)
 - \`action: "status"\` — Check progress, current stage, heartbeat
-- \`action: "events"\` — Read structured events with cursor pagination
+- \`action: "events"\` — Read structured events (\`afterSeq\` / \`limit\`; \`seq\` is line-based). Use \`allRuns: true\` if pages look empty due to runId filtering.
+- \`action: "reconcile"\` — If \`status\` shows a stale run, mark the loop failed on disk so \`start\` can run again.
 - \`action: "cancel"\` — Cooperative cancellation (requires runId)
 - \`action: "pause" / "resume"\` — Control execution at stage boundaries
 
