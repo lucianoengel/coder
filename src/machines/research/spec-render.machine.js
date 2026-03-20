@@ -246,9 +246,11 @@ export default defineMachine({
     }
 
     // --- Remap depends_on references to stable SPEC IDs ---
+    // Use first-match for duplicate titles to preserve ordering
     const titleToId = new Map();
     for (const gi of generatedIssues) {
-      titleToId.set(gi.title.toLowerCase(), gi.id);
+      const key = gi.title.toLowerCase();
+      if (!titleToId.has(key)) titleToId.set(key, gi.id);
     }
     for (const gi of generatedIssues) {
       gi.depends_on = gi.depends_on
@@ -409,9 +411,12 @@ export default defineMachine({
     }));
 
     const bridgeManifestPath = path.join(bridgeDir, "manifest.json");
+    // Use workspaceDir as repoRoot/repoPath in the bridge manifest since
+    // filePath entries are relative to workspaceDir, not the subrepo root.
+    // Each issue carries its own repo_path for the develop workflow.
     const bridgeManifest = {
-      repoRoot,
-      repoPath,
+      repoRoot: ctx.workspaceDir,
+      repoPath: ".",
       issues: bridgeIssues,
     };
     writeFileSync(

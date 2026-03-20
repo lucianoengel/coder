@@ -45,6 +45,18 @@ export default defineMachine({
         throw new Error(`existingSpecDir does not exist: ${specDir}`);
       }
 
+      // Try to recover repoRoot from the spec's own manifest (monorepo support)
+      const specManifestPath = path.join(specDir, "manifest.json");
+      let specManifest = null;
+      if (existsSync(specManifestPath)) {
+        try {
+          specManifest = JSON.parse(readFileSync(specManifestPath, "utf8"));
+        } catch {
+          /* best effort */
+        }
+      }
+      const effectiveRepoRoot = specManifest?.repoRoot || repoRoot;
+
       const mdFiles = readdirSync(specDir)
         .filter((f) => f.endsWith(".md"))
         .map((f) => ({
@@ -122,7 +134,7 @@ export default defineMachine({
           issuesDir,
           scratchpadPath,
           pipelinePath,
-          repoRoot,
+          repoRoot: effectiveRepoRoot,
           mode: "ingest",
           parsedDomains,
           parsedDecisions,
