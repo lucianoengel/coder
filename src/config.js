@@ -261,7 +261,12 @@ export const CoderConfigSchema = z.object({
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),
       /** Cap how many fetched issues are embedded in the issue-selector LLM prompt. */
-      issueListPromptMaxIssues: z.number().int().positive().max(1000).default(50),
+      issueListPromptMaxIssues: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .default(50),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
       preflight: z

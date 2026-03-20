@@ -46,7 +46,13 @@ test("slimGithubIssuesForPrompt: caps count and drops comments", () => {
 
 test("slimGitlabIssuesForPrompt: caps count and truncates description", () => {
   const raw = [
-    { iid: 1, title: "A", description: "z".repeat(500), labels: [], web_url: "u" },
+    {
+      iid: 1,
+      title: "A",
+      description: "z".repeat(500),
+      labels: [],
+      web_url: "u",
+    },
     { iid: 2, title: "B", description: "", labels: [], web_url: "v" },
   ];
   const slim = slimGitlabIssuesForPrompt(raw, 1);

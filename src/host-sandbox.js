@@ -345,7 +345,7 @@ class HostSandboxInstance extends EventEmitter {
 
       killTimer =
         timeoutMs > 0
-            ? setTimeout(() => {
+          ? setTimeout(() => {
               if (pendingFatalError) {
                 terminateChild("SIGKILL", "timeout_escalate");
                 scheduleForceSettle(pendingFatalError);

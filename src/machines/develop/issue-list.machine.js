@@ -29,8 +29,7 @@ function slimGithubIssuesForPrompt(issues, maxN) {
     labels: (issue.labels || []).map((l) =>
       typeof l === "string" ? l : l.name || String(l),
     ),
-    body:
-      typeof issue.body === "string" ? issue.body.slice(0, 400) : "",
+    body: typeof issue.body === "string" ? issue.body.slice(0, 400) : "",
     url: issue.url,
   }));
 }
