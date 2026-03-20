@@ -109,7 +109,7 @@ So even with **`maxIssues: 1`**, issue selection can still send a **massive** pr
 - **`persistTerminalLoopState`** in `workflows.js` (**exported** for tests); runs **before** `activeRuns.delete` / actor teardown on the normal path; uses **`saveLoopState(..., { guardRunId })`** so a stale finish cannot overwrite a newer run’s loop-state; **`saveLoopState` returns `false`** when the guard skips a write, and **`persistTerminalLoopState` returns false** in that case so **`markRunTerminalOnDisk`** does not send terminal actor events for the wrong run; **wraps errors** (logs to stderr, returns false) so a disk failure does not fall through to `catch` and reclassify success as failure.
 - **`markRunTerminalOnDisk`** refactored to reuse **`persistTerminalLoopState`**.
 - **`workflow.timeouts.issueSelectionHangMs`** (default **0** = hang detection off; wall-clock still **`issueSelection`**) and **`workflow.issueListPromptMaxIssues`** (default **50**); GitHub/GitLab prompts use slimmed rows and log **`step1_prompt_trimmed`** when capped. **`resolveIssueListHangTimeoutMs`** / slim helpers are **named exports** from `issue-list.machine.js` for tests.
-- **Tests:** `test/workflow-launcher-loop-state.test.js`, `test/issue-list-selector-prompt.test.js`.
+- **Tests:** `test/workflow-launcher-loop-state.test.js`, `test/issue-list-selector-prompt.test.js`, `test/workflow-launcher-completion.test.js` (end-to-end normal completion: `applyLauncherNormalCompletion` + `startWorkflowActor`, asserts `loop-state.json` and `workflow-state.json` agree for `completed` / `failed` / `blocked`).
 - **`host-sandbox.js`**: force-settle after fatal kill if **`close`** never arrives (separate concern; review independently).
 
 ---

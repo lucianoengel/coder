@@ -36,7 +36,7 @@ function workflowSqlitePath(workspaceDir) {
   return path.resolve(workspaceDir, config.workflow.scratchpad.sqlitePath);
 }
 
-function startWorkflowActor({
+export function startWorkflowActor({
   workflow = "develop",
   workspaceDir,
   runId,
@@ -149,6 +149,44 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
     );
     return false;
   }
+}
+
+/**
+ * Normal MCP launcher path after develop / research / design resolves without throw.
+ * Persists loop-state (before activeRuns release), lifecycle actor terminal event, cleanup.
+ * Exported for integration tests; invoked from the background `runPromise` handler.
+ */
+export async function applyLauncherNormalCompletion({
+  workspaceDir,
+  runId,
+  result,
+  agentPool,
+}) {
+  const finalStatus =
+    result.status === "completed"
+      ? "completed"
+      : result.status === "blocked"
+        ? "blocked"
+        : "failed";
+  const at = new Date().toISOString();
+  await persistTerminalLoopState(workspaceDir, runId, finalStatus);
+  const actorEntry = workflowActors.get(runId);
+  if (actorEntry) {
+    if (finalStatus === "completed")
+      actorEntry.actor.send({ type: "COMPLETE", at });
+    else if (finalStatus === "blocked")
+      actorEntry.actor.send({ type: "BLOCKED", at });
+    else
+      actorEntry.actor.send({
+        type: "FAIL",
+        at,
+        error: result.error || "unknown",
+      });
+    actorEntry.actor.stop();
+    workflowActors.delete(runId);
+  }
+  activeRuns.delete(runId);
+  await agentPool.killAll();
 }
 
 async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
@@ -835,33 +873,12 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 };
               }
 
-              const finalStatus =
-                result.status === "completed"
-                  ? "completed"
-                  : result.status === "blocked"
-                    ? "blocked"
-                    : "failed";
-              const at = new Date().toISOString();
-              // Loop-state before activeRuns.delete: narrows the window where a new start interleaves;
-              // guardRunId on save prevents overwriting a newer run if we still lose the race.
-              await persistTerminalLoopState(ws, nextRunId, finalStatus);
-              const actorEntry = workflowActors.get(nextRunId);
-              if (actorEntry) {
-                if (finalStatus === "completed")
-                  actorEntry.actor.send({ type: "COMPLETE", at });
-                else if (finalStatus === "blocked")
-                  actorEntry.actor.send({ type: "BLOCKED", at });
-                else
-                  actorEntry.actor.send({
-                    type: "FAIL",
-                    at,
-                    error: result.error || "unknown",
-                  });
-                actorEntry.actor.stop();
-                workflowActors.delete(nextRunId);
-              }
-              activeRuns.delete(nextRunId);
-              await agentPool.killAll();
+              await applyLauncherNormalCompletion({
+                workspaceDir: ws,
+                runId: nextRunId,
+                result,
+                agentPool,
+              });
             } catch (err) {
               const at = new Date().toISOString();
               const actorEntry = workflowActors.get(nextRunId);
