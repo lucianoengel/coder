@@ -119,7 +119,11 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   };
 }
 
-async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
+/**
+ * Persist terminal workflow status to loop-state.json (runner finished).
+ * Does not notify the lifecycle actor — use when the launcher already sent COMPLETE/FAIL/BLOCKED.
+ */
+async function persistTerminalLoopState(workspaceDir, runId, status) {
   const diskState = await loadLoopState(workspaceDir);
   if (diskState.runId !== runId) return false;
   if (!["running", "paused", "cancelling"].includes(diskState.status))
@@ -132,6 +136,14 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   diskState.lastHeartbeatAt = new Date().toISOString();
   diskState.completedAt = new Date().toISOString();
   await saveLoopState(workspaceDir, diskState);
+  return true;
+}
+
+async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
+  const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
+  if (!persisted) return false;
+
+  const diskState = await loadLoopState(workspaceDir);
 
   const actorEntry = workflowActors.get(runId);
   if (actorEntry?.workspace === workspaceDir) {
@@ -835,6 +847,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
               activeRuns.delete(nextRunId);
               await agentPool.killAll();
+              await persistTerminalLoopState(ws, nextRunId, finalStatus);
             } catch (err) {
               const at = new Date().toISOString();
               const actorEntry = workflowActors.get(nextRunId);
