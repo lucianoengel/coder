@@ -49,6 +49,12 @@ function slimGitlabIssuesForPrompt(issues, maxN) {
   }));
 }
 
+export {
+  resolveIssueListHangTimeoutMs,
+  slimGithubIssuesForPrompt,
+  slimGitlabIssuesForPrompt,
+};
+
 function isNoiseOnlyGeminiResult(agentName, res) {
   if (agentName !== "gemini") return "";
   const cleaned = stripAgentNoise(res?.stdout || "").trim();

@@ -122,21 +122,30 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
 /**
  * Persist terminal workflow status to loop-state.json (runner finished).
  * Does not notify the lifecycle actor — use when the launcher already sent COMPLETE/FAIL/BLOCKED.
+ * Swallows errors so a disk failure cannot reclassify an already-successful workflow as failed.
+ * Uses saveLoopState guardRunId so a newer run cannot be overwritten if this run lost a load/save race.
  */
-async function persistTerminalLoopState(workspaceDir, runId, status) {
-  const diskState = await loadLoopState(workspaceDir);
-  if (diskState.runId !== runId) return false;
-  if (!["running", "paused", "cancelling"].includes(diskState.status))
+export async function persistTerminalLoopState(workspaceDir, runId, status) {
+  try {
+    const diskState = await loadLoopState(workspaceDir);
+    if (diskState.runId !== runId) return false;
+    if (!["running", "paused", "cancelling"].includes(diskState.status))
+      return false;
+    diskState.status = status;
+    diskState.currentStage = null;
+    diskState.currentStageStartedAt = null;
+    diskState.activeAgent = null;
+    diskState.runnerPid = null;
+    diskState.lastHeartbeatAt = new Date().toISOString();
+    diskState.completedAt = new Date().toISOString();
+    await saveLoopState(workspaceDir, diskState, { guardRunId: runId });
+    return true;
+  } catch (err) {
+    process.stderr.write(
+      `[coder] persistTerminalLoopState failed runId=${runId}: ${err?.message || err}\n`,
+    );
     return false;
-  diskState.status = status;
-  diskState.currentStage = null;
-  diskState.currentStageStartedAt = null;
-  diskState.activeAgent = null;
-  diskState.runnerPid = null;
-  diskState.lastHeartbeatAt = new Date().toISOString();
-  diskState.completedAt = new Date().toISOString();
-  await saveLoopState(workspaceDir, diskState);
-  return true;
+  }
 }
 
 async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
@@ -830,6 +839,9 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     ? "blocked"
                     : "failed";
               const at = new Date().toISOString();
+              // Loop-state before activeRuns.delete: narrows the window where a new start interleaves;
+              // guardRunId on save prevents overwriting a newer run if we still lose the race.
+              await persistTerminalLoopState(ws, nextRunId, finalStatus);
               const actorEntry = workflowActors.get(nextRunId);
               if (actorEntry) {
                 if (finalStatus === "completed")
@@ -847,7 +859,6 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
               activeRuns.delete(nextRunId);
               await agentPool.killAll();
-              await persistTerminalLoopState(ws, nextRunId, finalStatus);
             } catch (err) {
               const at = new Date().toISOString();
               const actorEntry = workflowActors.get(nextRunId);
