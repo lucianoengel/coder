@@ -16,6 +16,12 @@ import {
   resolveRepoRoot,
 } from "./_shared.js";
 
+/** Wall-clock and hang budgets for the programmer CLI during implementation (must stay aligned). @internal */
+export function implementationAgentExecTimeouts(config) {
+  const timeoutMs = config.workflow.timeouts.implementation;
+  return { timeoutMs, hangTimeoutMs: timeoutMs };
+}
+
 export default defineMachine({
   name: "develop.implementation",
   description:
@@ -78,9 +84,7 @@ export default defineMachine({
       // gemini: no session create path in this iteration
     }
     const sessionOrResumeId = state[sessionKey];
-    const execOpts = {
-      timeoutMs: ctx.config.workflow.timeouts.implementation,
-    };
+    const execOpts = implementationAgentExecTimeouts(ctx.config);
     const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
     if (state.sessionsDisabled) {
       if (codexWithoutSession) execOpts.execWithJsonCapture = true;
@@ -242,7 +246,7 @@ FORBIDDEN patterns:
         const retryRunStart = codexWithoutSession ? Date.now() : 0;
         try {
           res = await programmerAgent.execute(implPrompt, {
-            timeoutMs: ctx.config.workflow.timeouts.implementation,
+            ...implementationAgentExecTimeouts(ctx.config),
             ...(codexWithoutSession && { execWithJsonCapture: true }),
           });
           if (codexWithoutSession) {

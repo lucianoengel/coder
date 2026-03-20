@@ -161,6 +161,8 @@ Three backends, assigned to roles via config:
 
 Agents include automatic retry with configurable backoff and hang detection. If a primary agent fails, an optional fallback agent can take over (configured via `agents.fallback`).
 
+During **develop implementation**, the programmer CLI uses `workflow.timeouts.implementation` for both wall-clock and hang detection so a long quiet session is not cut off by the default `agents.retry.hangTimeoutMs` (5 minutes).
+
 ### Workflow control
 
 `coder_workflow` is the unified control plane:
@@ -169,7 +171,8 @@ Agents include automatic retry with configurable backoff and hang detection. If 
 |--------|-------------|
 | `start` | Launch a pipeline run |
 | `status` | Current stage, heartbeat, loop state, progress |
-| `events` | Structured event log with cursor pagination |
+| `events` | Structured event log (`afterSeq` / `limit`). `seq` is the 1-based line index; run filtering can yield sparse pages — use `allRuns: true` for cross-run history. |
+| `reconcile` | If `status` shows a stale run (dead runner PID or heartbeat), mark the loop failed on disk so a new `start` is allowed. |
 | `pause` | Pause at next checkpoint |
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
@@ -346,6 +349,10 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 - Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
+
+### Troubleshooting
+
+- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json` (or your agent profile) so long plans and reviews are not cut off.
 
 ## Environment variables
 
