@@ -27,7 +27,7 @@ function slimGithubIssuesForPrompt(issues, maxN) {
     number: issue.number,
     title: issue.title,
     labels: (issue.labels || []).map((l) =>
-      typeof l === "string" ? l : l.name || String(l),
+      typeof l === "string" ? l : (l.name ?? String(l)),
     ),
     body: typeof issue.body === "string" ? issue.body.slice(0, 400) : "",
     url: issue.url,
@@ -231,7 +231,7 @@ export function fetchGitlabIssues(cwd) {
         title: issue.title,
         description: (issue.description || "").slice(0, 500),
         labels: (issue.labels || []).map((label) =>
-          typeof label === "string" ? label : label.name || String(label),
+          typeof label === "string" ? label : (label.name ?? String(label)),
         ),
         web_url: issue.web_url,
       })),

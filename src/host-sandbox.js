@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import {
   buildSystemdRunArgs,
   canUseSystemdRun,
+  killSystemdUnit,
   makeSystemdUnitName,
   stopSystemdUnit,
 } from "./systemd-run.js";
@@ -282,12 +283,20 @@ class HostSandboxInstance extends EventEmitter {
           log({
             event: "sandbox_terminate_signal",
             pid: child.pid,
-            signal,
+            signal: this.currentUnit
+              ? signal === "SIGKILL"
+                ? "systemd_kill"
+                : "systemd_stop"
+              : signal,
             reason,
           });
         }
         if (this.currentUnit) {
-          stopSystemdUnit(this.currentUnit);
+          if (signal === "SIGKILL") {
+            killSystemdUnit(this.currentUnit, "SIGKILL");
+          } else {
+            stopSystemdUnit(this.currentUnit);
+          }
           return;
         }
         try {
@@ -295,7 +304,9 @@ class HostSandboxInstance extends EventEmitter {
         } catch {
           try {
             child.kill(signal);
-          } catch {}
+          } catch {
+            /* ESRCH expected after process exit */
+          }
         }
       };
       /** If SIGKILL does not yield `close`, avoid hanging forever. */
@@ -358,6 +369,45 @@ class HostSandboxInstance extends EventEmitter {
       };
       resetHangTimer();
 
+      const handleFatalMatch = (stream, patterns, chunk, ErrorClass) => {
+        if (patterns.length === 0) return;
+        const lower = chunk.toLowerCase();
+        const hit = patterns.find((p) =>
+          lower.includes(p.pattern.toLowerCase()),
+        );
+        if (!hit || pendingFatalError) return;
+        fatalMatchTs = Date.now();
+        if (log) {
+          log({
+            event: "sandbox_fatal_match",
+            stream,
+            pattern: hit.pattern,
+            category: hit.category,
+            pid: child.pid,
+          });
+        }
+        terminateChild("SIGTERM", "fatal");
+        const err = new ErrorClass(hit.pattern, hit.category);
+        err.stdout = stdout;
+        err.stderr = stderr;
+        pendingFatalError = err;
+        if (escalationTimer) clearTimeout(escalationTimer);
+        escalationTimer = setTimeout(() => {
+          if (pendingFatalError) {
+            if (log) {
+              log({
+                event: "sandbox_fatal_escalate_sigkill",
+                pattern: pendingFatalError.pattern,
+                category: pendingFatalError.category,
+                pid: child.pid,
+              });
+            }
+            terminateChild("SIGKILL", "fatal_escalate");
+            scheduleForceSettle(pendingFatalError);
+          }
+        }, FATAL_ESCALATION_MS);
+      };
+
       child.stdout.on("data", (buf) => {
         const chunk = buf.toString();
         stdout = appendCapped(stdout, chunk);
@@ -365,45 +415,12 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
-
-        if (killOnStdoutPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
-          const hit = killOnStdoutPatterns.find((p) =>
-            lower.includes(p.pattern.toLowerCase()),
-          );
-          if (hit && !pendingFatalError) {
-            fatalMatchTs = Date.now();
-            if (log) {
-              log({
-                event: "sandbox_fatal_match",
-                stream: "stdout",
-                pattern: hit.pattern,
-                category: hit.category,
-                pid: child.pid,
-              });
-            }
-            terminateChild("SIGTERM", "fatal");
-            const err = new CommandFatalStdoutError(hit.pattern, hit.category);
-            err.stdout = stdout;
-            err.stderr = stderr;
-            pendingFatalError = err;
-            if (escalationTimer) clearTimeout(escalationTimer);
-            escalationTimer = setTimeout(() => {
-              if (pendingFatalError) {
-                if (log) {
-                  log({
-                    event: "sandbox_fatal_escalate_sigkill",
-                    pattern: pendingFatalError.pattern,
-                    category: pendingFatalError.category,
-                    pid: child.pid,
-                  });
-                }
-                terminateChild("SIGKILL", "fatal_escalate");
-                scheduleForceSettle(pendingFatalError);
-              }
-            }, FATAL_ESCALATION_MS);
-          }
-        }
+        handleFatalMatch(
+          "stdout",
+          killOnStdoutPatterns,
+          chunk,
+          CommandFatalStdoutError,
+        );
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
@@ -412,45 +429,12 @@ class HostSandboxInstance extends EventEmitter {
         if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);
         this.emit("stderr", chunk);
-
-        if (killOnStderrPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
-          const hit = killOnStderrPatterns.find((p) =>
-            lower.includes(p.pattern.toLowerCase()),
-          );
-          if (hit && !pendingFatalError) {
-            fatalMatchTs = Date.now();
-            if (log) {
-              log({
-                event: "sandbox_fatal_match",
-                stream: "stderr",
-                pattern: hit.pattern,
-                category: hit.category,
-                pid: child.pid,
-              });
-            }
-            terminateChild("SIGTERM", "fatal");
-            const err = new CommandFatalStderrError(hit.pattern, hit.category);
-            err.stdout = stdout;
-            err.stderr = stderr;
-            pendingFatalError = err;
-            if (escalationTimer) clearTimeout(escalationTimer);
-            escalationTimer = setTimeout(() => {
-              if (pendingFatalError) {
-                if (log) {
-                  log({
-                    event: "sandbox_fatal_escalate_sigkill",
-                    pattern: pendingFatalError.pattern,
-                    category: pendingFatalError.category,
-                    pid: child.pid,
-                  });
-                }
-                terminateChild("SIGKILL", "fatal_escalate");
-                scheduleForceSettle(pendingFatalError);
-              }
-            }, FATAL_ESCALATION_MS);
-          }
-        }
+        handleFatalMatch(
+          "stderr",
+          killOnStderrPatterns,
+          chunk,
+          CommandFatalStderrError,
+        );
       });
 
       child.on("error", (err) => {

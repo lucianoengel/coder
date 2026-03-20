@@ -123,14 +123,14 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
 /**
  * Persist terminal workflow status to loop-state.json (runner finished).
  * Uses saveLoopState guardRunId so a newer run cannot be overwritten.
- * @returns {Promise<boolean>} true only if loop-state was written
+ * @returns {Promise<object|null>} the persisted state object, or null if skipped
  */
 export async function persistTerminalLoopState(workspaceDir, runId, status) {
   try {
     const diskState = await loadLoopState(workspaceDir);
-    if (diskState.runId !== runId) return false;
+    if (diskState.runId !== runId) return null;
     if (!["running", "paused", "cancelling"].includes(diskState.status))
-      return false;
+      return null;
     diskState.status = status;
     diskState.currentStage = null;
     diskState.currentStageStartedAt = null;
@@ -141,12 +141,12 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
     const written = await saveLoopState(workspaceDir, diskState, {
       guardRunId: runId,
     });
-    return written === true;
+    return written === true ? diskState : null;
   } catch (err) {
     process.stderr.write(
       `[coder] persistTerminalLoopState failed runId=${runId}: ${err?.message || err}\n`,
     );
-    return false;
+    return null;
   }
 }
 
@@ -191,11 +191,9 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
   if (!persisted) return false;
 
-  const diskState = await loadLoopState(workspaceDir);
-
   const actorEntry = workflowActors.get(runId);
   if (actorEntry?.workspace === workspaceDir) {
-    const at = diskState.completedAt;
+    const at = persisted.completedAt;
     if (status === "cancelled")
       actorEntry.actor.send({ type: "CANCELLED", at });
     else if (status === "failed")
@@ -223,7 +221,7 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
         workspace: workspaceDir,
         currentStage: null,
         activeAgent: null,
-        completedAt: diskState.completedAt,
+        completedAt: persisted.completedAt,
       },
       sqlitePath: workflowSqlitePath(workspaceDir),
       guardRunId: runId,
@@ -677,20 +675,69 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           let startContext;
           try {
             startContext = await withStartLock(ws, async () => {
-              // Cancel any active in-memory runs for this workspace
+              // Phase 1: Clean zombie in-memory entries (already terminal on disk)
               for (const [id, run] of activeRuns) {
                 if (run.workspace !== ws) continue;
-                const diskState = await loadLoopState(ws);
-                if (TERMINAL_RUN_STATUSES.includes(diskState.status)) {
+                const ds = await loadLoopState(ws);
+                if (TERMINAL_RUN_STATUSES.includes(ds.status)) {
                   activeRuns.delete(id);
                   workflowActors.delete(id);
-                  continue;
                 }
-                // Force-cancel the old run: set flag, kill agents, await exit
+              }
+
+              // Phase 2: Assess whether a run is genuinely active
+              const hasActiveInMemory = [...activeRuns.values()].some(
+                (r) => r.workspace === ws,
+              );
+              const diskLoopState = await loadLoopState(ws);
+              const diskActive =
+                diskLoopState.status === "running" ||
+                diskLoopState.status === "paused";
+
+              // For disk-only runs (no in-memory representation), use staleness
+              // detection to distinguish orphaned runs from genuinely active ones
+              // owned by another process.
+              let diskIsOrphan = false;
+              if (diskActive && !hasActiveInMemory) {
+                const staleness = detectStaleness(diskLoopState);
+                diskIsOrphan = staleness.isStale;
+              }
+
+              const genuinelyActive =
+                hasActiveInMemory || (diskActive && !diskIsOrphan);
+
+              // Phase 3: Guard — block if active and not force-restarting
+              if (genuinelyActive && params.forceRestart !== true) {
+                return {
+                  action,
+                  workflow,
+                  status: "blocked",
+                  reason: "run_already_in_progress",
+                  runId: diskLoopState.runId || null,
+                  hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
+                };
+              }
+
+              // Phase 4: Clean up proven-orphan disk runs
+              if (diskActive && diskIsOrphan) {
+                await markRunTerminalOnDisk(
+                  ws,
+                  diskLoopState.runId,
+                  workflow,
+                  "failed",
+                );
+              }
+
+              // Phase 5: Force-cancel in-memory runs (only reached when
+              // forceRestart is true or no active runs remain)
+              for (const [id, run] of activeRuns) {
+                if (run.workspace !== ws) continue;
                 run.cancelToken.cancelled = true;
                 try {
                   await run.agentPool?.killAll();
-                } catch {}
+                } catch {
+                  /* ESRCH expected */
+                }
                 const actorEntry = workflowActors.get(id);
                 if (actorEntry?.workspace === ws) {
                   actorEntry.actor.send({
@@ -707,44 +754,20 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 workflowActors.delete(id);
               }
 
-              // Also check disk state — guards against restarts where activeRuns was cleared
+              // Phase 6: Handle forceRestart for disk-only active runs (genuine
+              // but force-replaced — mark failed after the guard passed)
               {
-                const diskLoopState = await loadLoopState(ws);
+                const postCleanup = await loadLoopState(ws);
                 if (
-                  diskLoopState.status === "running" ||
-                  diskLoopState.status === "paused"
+                  postCleanup.status === "running" ||
+                  postCleanup.status === "paused"
                 ) {
-                  // Mark stale or orphaned disk runs as failed so the new run can start
                   await markRunTerminalOnDisk(
                     ws,
-                    diskLoopState.runId,
+                    postCleanup.runId,
                     workflow,
                     "failed",
                   );
-                }
-              }
-
-              // Guard: after orphan cleanup, reject if a run is still genuinely active
-              {
-                const hasActiveRun = [...activeRuns.values()].some(
-                  (r) => r.workspace === ws,
-                );
-                const postCleanupState = await loadLoopState(ws);
-                const diskRunInProgress =
-                  postCleanupState.status === "running" ||
-                  postCleanupState.status === "paused";
-                if (
-                  (hasActiveRun || diskRunInProgress) &&
-                  params.forceRestart !== true
-                ) {
-                  return {
-                    action,
-                    workflow,
-                    status: "blocked",
-                    reason: "run_already_in_progress",
-                    runId: postCleanupState.runId || null,
-                    hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
-                  };
                 }
               }
 
