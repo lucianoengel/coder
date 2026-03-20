@@ -948,6 +948,23 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             steeringContext,
           };
 
+          if (workflow === "develop") {
+            workflowCtx.syncLifecycleActorFromDisk = async () => {
+              const ls = await loadLoopState(ws);
+              const entry = workflowActors.get(nextRunId);
+              if (!entry || entry.workspace !== ws || ls.runId !== nextRunId)
+                return;
+              entry.actor.send({
+                type: "SYNC",
+                state: {
+                  currentStage: ls.currentStage ?? null,
+                  activeAgent: ls.activeAgent ?? null,
+                  lastHeartbeatAt: ls.lastHeartbeatAt ?? null,
+                },
+              });
+            };
+          }
+
           // Fire and forget — run in background
           const runPromise = Promise.resolve().then(async () => {
             try {

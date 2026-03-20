@@ -54,6 +54,7 @@ import {
   extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   resetForNextIssue,
 } from "./develop-git.js";
 import { syncDevelopLoopStage } from "./loop-sync.js";
@@ -68,6 +69,7 @@ async function updateHeartbeat(ctx, expectedLoopRunId) {
     if (expectedLoopRunId != null && ls.runId !== expectedLoopRunId) return;
     ls.lastHeartbeatAt = new Date().toISOString();
     await saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
+    await ctx.syncLifecycleActorFromDisk?.();
   } catch {
     // Best-effort — don't fail the pipeline over a heartbeat update
   }
@@ -297,12 +299,21 @@ export async function runDevelopPipeline(opts, ctx) {
   const allResults = [];
   const loopRunId = opts.loopState?.runId ?? null;
 
+  const afterLoopPersist =
+    typeof ctx.syncLifecycleActorFromDisk === "function"
+      ? () => ctx.syncLifecycleActorFromDisk()
+      : undefined;
+
   if (loopRunId) {
     ctx.syncDevelopLoop = async (partial) => {
-      await syncDevelopLoopStage(ctx.workspaceDir, {
-        guardRunId: loopRunId,
-        ...partial,
-      });
+      await syncDevelopLoopStage(
+        ctx.workspaceDir,
+        {
+          guardRunId: loopRunId,
+          ...partial,
+        },
+        afterLoopPersist,
+      );
     };
   } else {
     ctx.syncDevelopLoop = null;
@@ -313,10 +324,14 @@ export async function runDevelopPipeline(opts, ctx) {
     if (!loopRunId) return;
     const roles = ctx.config.workflow.agentRoles;
     if (stage === "develop.quality_review" || stage === "develop.pr_creation") {
-      void syncDevelopLoopStage(ctx.workspaceDir, {
-        guardRunId: loopRunId,
-        currentStage: stage,
-      });
+      void syncDevelopLoopStage(
+        ctx.workspaceDir,
+        {
+          guardRunId: loopRunId,
+          currentStage: stage,
+        },
+        afterLoopPersist,
+      );
       return;
     }
     const roleKeyByStage = {
@@ -328,11 +343,15 @@ export async function runDevelopPipeline(opts, ctx) {
     const roleKey = roleKeyByStage[stage];
     const activeAgent = roleKey ? roles[roleKey] : undefined;
     if (activeAgent === undefined) return;
-    void syncDevelopLoopStage(ctx.workspaceDir, {
-      guardRunId: loopRunId,
-      currentStage: stage,
-      activeAgent,
-    });
+    void syncDevelopLoopStage(
+      ctx.workspaceDir,
+      {
+        guardRunId: loopRunId,
+        currentStage: stage,
+        activeAgent,
+      },
+      afterLoopPersist,
+    );
   };
 
   try {
@@ -472,6 +491,7 @@ export async function runDevelopPipeline(opts, ctx) {
           onResumeSkipped:
             opts.loopState && opts.issueIndex != null
               ? async (runId) => {
+                  // Roll-forward when resume is skipped: persist lastFailedRunId so the next attempt does not reuse a bad checkpoint.
                   opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
                     runId;
                   await saveLoopState(ctx.workspaceDir, opts.loopState, {
@@ -740,6 +760,7 @@ export {
   extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   prepareForIssue,
   resetForNextIssue,
 };
@@ -1346,6 +1367,7 @@ export async function runDevelopLoop(opts, ctx) {
           return "deferred";
         }
         if (pipelineResult.planReviewExhausted) {
+          // Defer bucket: deferredReason plan_blocked vs pipeline error text — intentional (operator queue, not hard fail).
           ctx.log({
             event: "issue_deferred_plan_blocked",
             issueId: issue.id,
@@ -1568,11 +1590,11 @@ export async function runDevelopLoop(opts, ctx) {
 
     // Skip only transitive dependents of the failed issue; independent issues continue.
     const failedIssueId = issues[i]?.id;
-    loopState.status = "failed";
     ctx.log({
       event: "loop_aborted_on_failure",
       issueId: failedIssueId,
       reason: "issue_failed",
+      continuingIndependentIssues: true,
     });
     const dependentIds = getTransitiveDependents(issues, failedIssueId);
     if (dependentIds.size > 0) {
@@ -1651,7 +1673,6 @@ export async function runDevelopLoop(opts, ctx) {
       const retryStatus = await processIssue(issues[i], i, { isRetry: true });
       if (retryStatus === "failed") {
         const failedIssueId = issues[i]?.id;
-        loopState.status = "failed";
         ctx.log({
           event: "loop_aborted_on_failure",
           issueId: failedIssueId,
@@ -1843,13 +1864,20 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
             q.deferredReason || "",
           ),
       );
-      loopState.status = hasBlockedDeferrals ? "blocked" : "completed";
+      if (hasBlockedDeferrals) {
+        loopState.status = "blocked";
+      } else if (failed > 0) {
+        loopState.status = "failed";
+      } else {
+        loopState.status = "completed";
+      }
     }
   }
   loopState.completedAt = new Date().toISOString();
   await saveLoopState(ctx.workspaceDir, loopState, {
     guardRunId: loopState.runId,
   });
+  await ctx.syncLifecycleActorFromDisk?.();
 
   runHooks(ctx, loopRunId, "loop_complete", "", {
     status: loopState.status,

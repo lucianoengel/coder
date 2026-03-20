@@ -113,6 +113,13 @@ function fetchMergeRequestsViaApi(repoRoot, _log) {
   }
 }
 
+/** True when glab stderr indicates bad CLI flags — try alternate args or API instead of failing closed. */
+export function isGlabMrListFormatMismatchStderr(stderr) {
+  return /unknown flag|unrecognized|invalid.*flag|shorthand flag/i.test(
+    String(stderr || ""),
+  );
+}
+
 /**
  * Fetch open PR/MR branches and their diff stats from the hosting platform.
  * Returns an array of { branch, issueId, title, diffStat } suitable for
@@ -147,9 +154,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
           }
         }
         const stderr = (res.stderr || "").trim();
-        const isUnknownFlag = /unknown flag|unrecognized|invalid.*flag/i.test(
-          stderr,
-        );
+        const isUnknownFlag = isGlabMrListFormatMismatchStderr(stderr);
         if (!isUnknownFlag && log) {
           log({
             event: "open_prs_fetch_failed",

@@ -8,6 +8,7 @@ import {
   extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -1111,6 +1112,14 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("gitlab: glab stderr with unknown shorthand flag is a format mismatch (not fatal)", () => {
+  assert.ok(
+    isGlabMrListFormatMismatchStderr(
+      "unknown shorthand flag: 'F' in -F\n\nUsage: glab mr list [flags]",
+    ),
+  );
 });
 
 test("config schema: workflow.conflictDetection defaults to true", async () => {

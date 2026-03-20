@@ -350,6 +350,10 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
 
+### Troubleshooting
+
+- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json` (or your agent profile) so long plans and reviews are not cut off.
+
 ## Environment variables
 
 | Variable | Purpose |

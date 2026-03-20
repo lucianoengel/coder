@@ -10,8 +10,9 @@ import { loadLoopState, saveLoopState } from "../state/workflow-state.js";
  *   currentStage?: string,
  *   activeAgent?: string | null,
  * }} patch - Omit activeAgent key to leave activeAgent unchanged; pass null to clear.
+ * @param {(() => void | Promise<void>) | undefined} [afterPersist] - Best-effort hook after a successful save (e.g. lifecycle SYNC).
  */
-export async function syncDevelopLoopStage(workspaceDir, patch) {
+export async function syncDevelopLoopStage(workspaceDir, patch, afterPersist) {
   const { guardRunId, currentStage, activeAgent } = patch;
   try {
     const ls = await loadLoopState(workspaceDir);
@@ -20,6 +21,13 @@ export async function syncDevelopLoopStage(workspaceDir, patch) {
     if (activeAgent !== undefined) ls.activeAgent = activeAgent;
     ls.lastHeartbeatAt = new Date().toISOString();
     await saveLoopState(workspaceDir, ls, { guardRunId });
+    if (typeof afterPersist === "function") {
+      try {
+        await afterPersist();
+      } catch {
+        /* best-effort */
+      }
+    }
   } catch {
     /* best-effort */
   }
