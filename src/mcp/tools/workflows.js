@@ -124,6 +124,7 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
  * Does not notify the lifecycle actor — use when the launcher already sent COMPLETE/FAIL/BLOCKED.
  * Swallows errors so a disk failure cannot reclassify an already-successful workflow as failed.
  * Uses saveLoopState guardRunId so a newer run cannot be overwritten if this run lost a load/save race.
+ * @returns {Promise<boolean>} true only if loop-state was written; false if skipped (guard), no-op, or error
  */
 export async function persistTerminalLoopState(workspaceDir, runId, status) {
   try {
@@ -138,8 +139,10 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
     diskState.runnerPid = null;
     diskState.lastHeartbeatAt = new Date().toISOString();
     diskState.completedAt = new Date().toISOString();
-    await saveLoopState(workspaceDir, diskState, { guardRunId: runId });
-    return true;
+    const written = await saveLoopState(workspaceDir, diskState, {
+      guardRunId: runId,
+    });
+    return written === true;
   } catch (err) {
     process.stderr.write(
       `[coder] persistTerminalLoopState failed runId=${runId}: ${err?.message || err}\n`,

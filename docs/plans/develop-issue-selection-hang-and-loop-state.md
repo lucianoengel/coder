@@ -106,7 +106,7 @@ So even with **`maxIssues: 1`**, issue selection can still send a **massive** pr
 
 ### Implemented (branch `feature/develop-issue-list-launcher-fixes`)
 
-- **`persistTerminalLoopState`** in `workflows.js` (**exported** for tests); runs **before** `activeRuns.delete` / actor teardown on the normal path; uses **`saveLoopState(..., { guardRunId })`** so a stale finish cannot overwrite a newer run’s loop-state; **wraps errors** (logs to stderr, returns false) so a disk failure does not fall through to `catch` and reclassify success as failure.
+- **`persistTerminalLoopState`** in `workflows.js` (**exported** for tests); runs **before** `activeRuns.delete` / actor teardown on the normal path; uses **`saveLoopState(..., { guardRunId })`** so a stale finish cannot overwrite a newer run’s loop-state; **`saveLoopState` returns `false`** when the guard skips a write, and **`persistTerminalLoopState` returns false** in that case so **`markRunTerminalOnDisk`** does not send terminal actor events for the wrong run; **wraps errors** (logs to stderr, returns false) so a disk failure does not fall through to `catch` and reclassify success as failure.
 - **`markRunTerminalOnDisk`** refactored to reuse **`persistTerminalLoopState`**.
 - **`workflow.timeouts.issueSelectionHangMs`** (default **0** = hang detection off; wall-clock still **`issueSelection`**) and **`workflow.issueListPromptMaxIssues`** (default **50**); GitHub/GitLab prompts use slimmed rows and log **`step1_prompt_trimmed`** when capped. **`resolveIssueListHangTimeoutMs`** / slim helpers are **named exports** from `issue-list.machine.js` for tests.
 - **Tests:** `test/workflow-launcher-loop-state.test.js`, `test/issue-list-selector-prompt.test.js`.

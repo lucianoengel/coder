@@ -73,10 +73,21 @@ test("persistTerminalLoopState: guardRunId prevents clobbering a newer run", asy
     stale.completedAt = new Date().toISOString();
     stale.currentStage = null;
     stale.runnerPid = null;
-    await saveLoopState(ws, stale, { guardRunId: "run-a" });
+    const written = await saveLoopState(ws, stale, { guardRunId: "run-a" });
+    assert.equal(written, false);
     const disk = await loadLoopState(ws);
     assert.equal(disk.runId, "run-b");
     assert.equal(disk.status, "running");
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("saveLoopState: returns true when write proceeds", async () => {
+  const ws = makeWs();
+  try {
+    const written = await saveLoopState(ws, baseLoop("solo"));
+    assert.equal(written, true);
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
