@@ -57,10 +57,13 @@ import {
 
 /**
  * Update the loop state heartbeat timestamp.
+ * @param {object} ctx - Workflow context
+ * @param {string} [runId] - If provided, only update if the on-disk runId matches (prevents stale runners from refreshing a replacement run's heartbeat).
  */
-async function updateHeartbeat(ctx) {
+async function updateHeartbeat(ctx, runId) {
   try {
     const ls = await loadLoopState(ctx.workspaceDir);
+    if (runId && ls.runId !== runId) return; // Stale runner — don't touch replacement run
     ls.lastHeartbeatAt = new Date().toISOString();
     await saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
   } catch {
@@ -286,12 +289,13 @@ export async function runDevelopPipeline(opts, ctx) {
   const start = Date.now();
   const allResults = [];
 
+  const heartbeatRunId = opts.loopState?.runId;
   let lastHeartbeatWrite = 0;
   const throttledHeartbeat = () => {
     const now = Date.now();
     if (now - lastHeartbeatWrite > 30_000) {
       lastHeartbeatWrite = now;
-      updateHeartbeat(ctx);
+      updateHeartbeat(ctx, heartbeatRunId);
     }
   };
 
@@ -326,7 +330,7 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Heartbeat after phase 1 (issue draft)
-  await updateHeartbeat(ctx);
+  await updateHeartbeat(ctx, heartbeatRunId);
 
   if (ctx.cancelToken.cancelled) {
     return {
@@ -355,7 +359,7 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Heartbeat after phase 2 (planning + review)
-  await updateHeartbeat(ctx);
+  await updateHeartbeat(ctx, heartbeatRunId);
 
   if (ctx.cancelToken.cancelled) {
     return {
@@ -546,7 +550,7 @@ export async function runDevelopPipeline(opts, ctx) {
   allResults.push(...phase3.results);
 
   // Heartbeat after phase 3 (implementation + review + PR)
-  await updateHeartbeat(ctx);
+  await updateHeartbeat(ctx, heartbeatRunId);
 
   return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
@@ -724,22 +728,30 @@ export async function runDevelopLoop(opts, ctx) {
   } else {
     rawIssues = listResult.data.issues.slice(0, maxIssues);
   }
-  if (rawIssues.length === 0) {
-    if (issueIds.length > 0) {
+  if (issueIds.length > 0) {
+    const foundIds = new Set(rawIssues.map((i) => String(i.id).toLowerCase()));
+    const missing = issueIds.filter(
+      (id) => !foundIds.has(String(id).toLowerCase()),
+    );
+    if (missing.length > 0) {
       ctx.log({
         event: "requested_issues_not_found",
         issueIds,
+        missing,
+        found: [...foundIds],
         source: issueListSource,
       });
       return {
         status: "failed",
-        error: `Requested issue IDs not found: ${issueIds.join(", ")}`,
+        error: `Requested issue IDs not found: ${missing.join(", ")}`,
         results: [],
         completed: 0,
         failed: 0,
         skipped: 0,
       };
     }
+  }
+  if (rawIssues.length === 0) {
     return {
       status: "completed",
       results: [],

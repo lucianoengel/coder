@@ -448,10 +448,19 @@ let _reaperInterval = null;
 
 /**
  * Reap orphaned runs from a previous server process on startup.
+ * In HTTP mode resolveWorkspace() requires an explicit workspace param,
+ * so this is a no-op there — orphaned HTTP runs are reaped lazily on
+ * the next status/start request for that workspace.
  */
 async function reapOrphanedRunsOnStartup(resolveWorkspace) {
+  let ws;
   try {
-    const ws = resolveWorkspace();
+    ws = resolveWorkspace();
+  } catch {
+    // HTTP mode (WORKSPACE_REQUIRED) or no default workspace — skip.
+    return;
+  }
+  try {
     const loopState = await loadLoopState(ws);
     if (!loopState.runId) return;
     const { isStale } = detectStaleness(loopState);
@@ -459,7 +468,7 @@ async function reapOrphanedRunsOnStartup(resolveWorkspace) {
       await reapStaleRun(ws, loopState, isStale);
     }
   } catch {
-    /* best effort — workspace may not exist yet */
+    /* best effort — workspace may not have loop-state yet */
   }
 }
 
