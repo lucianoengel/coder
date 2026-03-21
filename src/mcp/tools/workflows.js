@@ -488,12 +488,17 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             if (entry.agentPool) {
               await entry.agentPool.killAll().catch(() => {});
             }
-            // Wait for the old run's promise to settle before evicting,
-            // so the old workflow fully unwinds before a replacement can start.
-            if (entry.promise) {
-              await entry.promise.catch(() => {});
-            }
+            // Evict from activeRuns first so the workspace is unblocked,
+            // then give the promise a bounded window to settle. If the
+            // runner is stuck in JS after agent kill, we don't block forever.
             activeRuns.delete(runId);
+            if (entry.promise) {
+              const SETTLE_TIMEOUT_MS = 10_000;
+              await Promise.race([
+                entry.promise.catch(() => {}),
+                new Promise((r) => setTimeout(r, SETTLE_TIMEOUT_MS)),
+              ]);
+            }
             await reapStaleRun(entry.workspace, loopState, isStale);
           }
         } catch {
