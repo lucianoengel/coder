@@ -80,18 +80,20 @@ ${priorFindings || "(no prior findings file found)"}
 
 Verify whether each critical/major finding has been addressed. If the programmer's fix is adequate, mark it resolved. If not, explain what remains wrong.`;
 
-  const deltaSection = specDeltaSummary
-    ? `## Spec Delta Context\nThe following summary compares the original issue with the technical plan. Use it when evaluating Plan Adherence.\n\n${specDeltaSummary}\n`
-    : "";
+  const deltaSection =
+    specDeltaSummary && !planExhausted
+      ? `## Spec Delta Context\nThe following summary compares the original issue with the technical plan. Use it when evaluating Plan Adherence.\n\n${specDeltaSummary}\n`
+      : "";
 
-  const planAdherenceItem = specDeltaSummary
-    ? `
+  const planAdherenceItem =
+    specDeltaSummary && !planExhausted
+      ? `
 ### 7. Plan Adherence
 - Does the implementation follow the technical structure defined in ${paths.plan}?
 - Are there deviations from the agreed approach? Flag them by severity.
 - If the spec delta identifies additions/omissions, verify they were addressed or intentionally skipped.
 `
-    : "";
+      : "";
 
   const planCaveat = planExhausted
     ? `\n**WARNING: The plan in ${paths.plan} was NOT approved by the plan reviewer** (review rounds exhausted with unresolved concerns). Treat the plan as a tentative guide, not an agreed-upon spec. Scrutinize the implementation more carefully against the original issue requirements rather than trusting the plan as authoritative.\n`
@@ -108,7 +110,7 @@ ${deltaSection}
 ## Review Checklist
 
 ### 1. Scope Conformance
-- Does the change implement what ${paths.issue} requested and conform to the approach in ${paths.plan}?
+- Does the change implement what ${paths.issue} requested${planExhausted ? "" : ` and conform to the approach in ${paths.plan}`}?
 - Are there unrequested features? Flag them.
 - Are there unrelated refactors? Flag them.
 

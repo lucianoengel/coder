@@ -168,6 +168,15 @@ export async function runPlanLoop(
 
     if (verdict === "UNKNOWN") {
       ctx.log({ event: "plan_review_unparseable", round });
+      if (round === maxRounds - 1) {
+        // Unparseable review on final round — the gate never produced a valid
+        // verdict, so block rather than silently proceeding.
+        return {
+          status: "failed",
+          error: `Plan review produced no parseable verdict after ${maxRounds} round(s)`,
+          results: allResults,
+        };
+      }
     }
     const needsRevision =
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";

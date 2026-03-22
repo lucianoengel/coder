@@ -251,6 +251,43 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
   }
 });
 
+test("runPlanLoop: repeated UNKNOWN fails on final round (unparseable gate)", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "garbled", verdict: "UNKNOWN" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 2,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.ok(result.error.includes("no parseable verdict"));
+    assert.equal(result.planExhausted, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("runPlanLoop: UNKNOWN verdict triggers revision then APPROVED stops", async () => {
   const tmp = makeTmp();
   try {
