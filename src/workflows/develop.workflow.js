@@ -169,10 +169,11 @@ export async function runPlanLoop(
     if (verdict === "UNKNOWN") {
       ctx.log({ event: "plan_review_unparseable", round });
       if (round === maxRounds - 1) {
-        // Unparseable review on final round — the gate never produced a valid
-        // verdict, so block rather than silently proceeding.
+        // Unparseable review on final round — surface as deferred/plan_blocked
+        // so the loop treats it as operator-actionable, not a hard failure.
         return {
-          status: "failed",
+          status: "deferred",
+          deferredReason: "plan_blocked",
           error: `Plan review produced no parseable verdict after ${maxRounds} round(s)`,
           results: allResults,
         };
@@ -182,6 +183,22 @@ export async function runPlanLoop(
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
+        // Only proceed with an unapproved plan when at least one revision was
+        // attempted. A single-round config (maxRounds=1) that gets REVISE/REJECT
+        // should block — the gate was never given a chance to converge.
+        if (round === 0) {
+          ctx.log({
+            event: "plan_review_blocked",
+            lastVerdict: verdict,
+            maxRounds,
+          });
+          return {
+            status: "deferred",
+            deferredReason: "plan_blocked",
+            error: `Plan rejected on single review round (verdict: ${verdict})`,
+            results: allResults,
+          };
+        }
         ctx.log({
           event: "plan_review_exhausted",
           lastVerdict: verdict,
@@ -347,6 +364,9 @@ export async function runDevelopPipeline(opts, ctx) {
     return {
       status: loopResult.status,
       error: loopResult.error,
+      ...(loopResult.deferredReason && {
+        deferredReason: loopResult.deferredReason,
+      }),
       results: allResults,
       runId: runner.runId,
       durationMs: Date.now() - start,
@@ -1159,12 +1179,15 @@ export async function runDevelopLoop(opts, ctx) {
         ctx,
       );
 
-      // Conflict-based deferral: planner detected overlap with an active branch
+      // Pipeline-level deferral: conflict detection or plan-review gate block
       if (pipelineResult.status === "deferred") {
+        const reason = pipelineResult.deferredReason || "conflict";
         ctx.log({
-          event: "issue_deferred_conflict",
+          event: `issue_deferred_${reason}`,
           issueId: issue.id,
-          conflictBranch: pipelineResult.conflictBranch,
+          ...(pipelineResult.conflictBranch && {
+            conflictBranch: pipelineResult.conflictBranch,
+          }),
           error: pipelineResult.error,
         });
 
@@ -1183,7 +1206,7 @@ export async function runDevelopLoop(opts, ctx) {
 
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = pipelineResult.error;
-        loopState.issueQueue[i].deferredReason = "conflict";
+        loopState.issueQueue[i].deferredReason = reason;
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
@@ -1199,7 +1222,7 @@ export async function runDevelopLoop(opts, ctx) {
           loopRunId,
           "issue_deferred",
           "",
-          { status: "deferred", reason: "conflict" },
+          { status: "deferred", reason },
           issueEnv,
         );
         return "deferred";
