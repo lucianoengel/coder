@@ -181,7 +181,6 @@ class HostSandboxInstance extends EventEmitter {
     const throwOnNonZero = options.throwOnNonZero ?? false;
     const hangTimeoutMs = options.hangTimeoutMs ?? 0;
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
-    const log = typeof options.log === "function" ? options.log : null;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
           (p) =>
@@ -384,7 +383,12 @@ class HostSandboxInstance extends EventEmitter {
       };
       resetHangTimer();
 
-      const handleFatalMatch = (stream, patterns, accumulatedOutput, ErrorClass) => {
+      const handleFatalMatch = (
+        stream,
+        patterns,
+        accumulatedOutput,
+        ErrorClass,
+      ) => {
         if (patterns.length === 0) return;
         const lower = accumulatedOutput.toLowerCase();
         const hit = patterns.find((p) =>

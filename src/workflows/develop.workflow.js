@@ -822,9 +822,7 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   if (issueIds.length > 0) {
-    const foundSet = new Set(
-      rawIssues.map((i) => String(i.id).toLowerCase()),
-    );
+    const foundSet = new Set(rawIssues.map((i) => String(i.id).toLowerCase()));
     const missing = issueIds.filter(
       (id) => !foundSet.has(String(id).toLowerCase()),
     );
