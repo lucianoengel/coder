@@ -371,7 +371,7 @@ test("runPlanLoop: repeated UNKNOWN proceeds with planExhausted on final round",
   }
 });
 
-test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async () => {
+test("runPlanLoop: repeated REJECT returns failed with planReviewExhausted on final round", async () => {
   const tmp = makeTmp();
   try {
     const ctx = makeCtx(tmp);
@@ -400,8 +400,8 @@ test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async
       maxRounds: 3,
     });
 
-    assert.equal(result.status, "deferred");
-    assert.equal(result.deferredReason, "plan_blocked");
+    assert.equal(result.status, "failed");
+    assert.equal(result.planReviewExhausted, true);
     assert.equal(result.planExhausted, undefined);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
