@@ -511,6 +511,29 @@ export async function runDevelopPipeline(opts, ctx) {
       ctx,
       onFailedAttempt: async ({ attempt, maxRetries, result }) => {
         const failed = findFailedMachineResult(result);
+        // On terminal attempt with an exhausted plan, reset the full plan/review
+        // cycle regardless of which machine failed (implementation, quality_review,
+        // or pr_creation).
+        if (attempt >= maxRetries && planExhausted) {
+          const state = await loadState(ctx.workspaceDir);
+          if (state?.steps) {
+            state.steps.implemented = false;
+            state.steps.wrotePlan = false;
+            state.steps.wroteCritique = false;
+            state.steps.reviewerCompleted = false;
+            state.steps.reviewRound = undefined;
+            state.steps.reviewVerdict = undefined;
+            state.steps.programmerFixedRound = undefined;
+            state.specDeltaSummary = "";
+            state.planExhausted = false;
+            const planPaths = artifactPaths(ctx.artifactsDir);
+            if (existsSync(planPaths.plan))
+              rmSync(planPaths.plan, { force: true });
+            if (existsSync(planPaths.critique))
+              rmSync(planPaths.critique, { force: true });
+            await saveState(ctx.workspaceDir, state);
+          }
+        }
         if (failed?.machine !== "develop.quality_review") return;
         // Only inject retry feedback when another attempt will follow.
         // Always reset implemented=false and clean up state regardless.
@@ -522,27 +545,9 @@ export async function runDevelopPipeline(opts, ctx) {
           );
         } else {
           // Terminal attempt: reset implementation cache for cross-process recovery.
-          // When the plan was never approved, also invalidate plan/critique cache
-          // so a recovery run goes through a fresh plan-review cycle.
           const state = await loadState(ctx.workspaceDir);
           if (state?.steps) {
             state.steps.implemented = false;
-            if (planExhausted) {
-              state.steps.wrotePlan = false;
-              state.steps.wroteCritique = false;
-              state.steps.reviewerCompleted = false;
-              state.steps.reviewRound = undefined;
-              state.steps.reviewVerdict = undefined;
-              state.steps.programmerFixedRound = undefined;
-              state.specDeltaSummary = "";
-              state.planExhausted = false;
-              // Delete stale plan artifacts so machines regenerate them
-              const planPaths = artifactPaths(ctx.artifactsDir);
-              if (existsSync(planPaths.plan))
-                rmSync(planPaths.plan, { force: true });
-              if (existsSync(planPaths.critique))
-                rmSync(planPaths.critique, { force: true });
-            }
             await saveState(ctx.workspaceDir, state);
           }
         }

@@ -185,7 +185,7 @@ test("buildReviewerPrompt with planExhausted adds unapproved-plan caveat", () =>
   assert.ok(result.includes("tentative guide"));
 });
 
-test("buildReviewerPrompt with planExhausted disables plan adherence and scope-plan ref", () => {
+test("buildReviewerPrompt with planExhausted keeps plan adherence with revised wording", () => {
   const paths = {
     issue: "/a/ISSUE.md",
     plan: "/a/PLAN.md",
@@ -202,8 +202,9 @@ test("buildReviewerPrompt with planExhausted disables plan adherence and scope-p
       planExhausted: true,
     },
   );
-  assert.ok(!result.includes("Plan Adherence"));
-  assert.ok(!result.includes("conform to the approach in"));
+  assert.ok(result.includes("Plan Adherence"));
+  assert.ok(result.includes("revised approach"));
+  assert.ok(result.includes("NOT approved"));
 });
 
 test("buildReviewerPrompt without planExhausted omits caveat", () => {
