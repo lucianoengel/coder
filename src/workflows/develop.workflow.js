@@ -344,46 +344,35 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Phase 2: planning + review loop
-  // Check durable state first — on process restart after plan exhaustion,
-  // skip re-running the plan loop and resume from where we left off.
-  const preLoopState = await loadState(ctx.workspaceDir);
-  let planExhausted = preLoopState.planExhausted === true;
-  if (!planExhausted) {
-    const loopResult = await runPlanLoop(runner, ctx, {
-      planningMachine,
-      planReviewMachine,
-      activeBranches: opts.activeBranches,
-    });
-    allResults.push(...loopResult.results);
-    if (loopResult.status !== "completed") {
-      return {
-        status: loopResult.status,
-        error: loopResult.error,
-        ...(loopResult.deferredReason && {
-          deferredReason: loopResult.deferredReason,
-        }),
-        results: allResults,
-        runId: runner.runId,
-        durationMs: Date.now() - start,
-      };
-    }
-    planExhausted = loopResult.planExhausted === true;
-    if (planExhausted) {
-      ctx.log({
-        event: "plan_review_gate_bypassed",
-        message:
-          "Plan was never approved by reviewer — proceeding with unapproved plan",
-      });
-      // Persist to state so process restarts / retries know the plan was exhausted
-      const pState = await loadState(ctx.workspaceDir);
-      pState.planExhausted = true;
-      await saveState(ctx.workspaceDir, pState);
-    }
-  } else {
+  const loopResult = await runPlanLoop(runner, ctx, {
+    planningMachine,
+    planReviewMachine,
+    activeBranches: opts.activeBranches,
+  });
+  allResults.push(...loopResult.results);
+  if (loopResult.status !== "completed") {
+    return {
+      status: loopResult.status,
+      error: loopResult.error,
+      ...(loopResult.deferredReason && {
+        deferredReason: loopResult.deferredReason,
+      }),
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+  const planExhausted = loopResult.planExhausted === true;
+  if (planExhausted) {
     ctx.log({
-      event: "plan_exhausted_resume",
-      message: "Resuming with previously exhausted plan",
+      event: "plan_review_gate_bypassed",
+      message:
+        "Plan was never approved by reviewer — proceeding with unapproved plan",
     });
+    // Persist to state so terminal retry handler knows to reset plan cache
+    const pState = await loadState(ctx.workspaceDir);
+    pState.planExhausted = true;
+    await saveState(ctx.workspaceDir, pState);
   }
 
   // Heartbeat after phase 2 (planning + review)
@@ -544,6 +533,12 @@ export async function runDevelopPipeline(opts, ctx) {
               state.steps.reviewerCompleted = false;
               state.specDeltaSummary = "";
               state.planExhausted = false;
+              // Delete stale plan artifacts so machines regenerate them
+              const planPaths = artifactPaths(ctx.artifactsDir);
+              if (existsSync(planPaths.plan))
+                rmSync(planPaths.plan, { force: true });
+              if (existsSync(planPaths.critique))
+                rmSync(planPaths.critique, { force: true });
             }
             await saveState(ctx.workspaceDir, state);
           }
