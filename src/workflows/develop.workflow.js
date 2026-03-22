@@ -379,6 +379,14 @@ export async function runDevelopPipeline(opts, ctx) {
       message:
         "Plan was never approved by reviewer — proceeding with unapproved plan",
     });
+    // Invalidate plan/critique cache so a recovery run (e.g. phase 3 failure)
+    // goes through a fresh plan-review cycle instead of reusing the stale
+    // rejected critique.
+    const exhaustedState = await loadState(ctx.workspaceDir);
+    exhaustedState.steps ||= {};
+    exhaustedState.steps.wrotePlan = false;
+    exhaustedState.steps.wroteCritique = false;
+    await saveState(ctx.workspaceDir, exhaustedState);
   }
 
   // Heartbeat after phase 2 (planning + review)
