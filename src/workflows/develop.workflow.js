@@ -362,30 +362,45 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Phase 2: planning + review loop
-  const loopResult = await runPlanLoop(runner, ctx, {
-    planningMachine,
-    planReviewMachine,
-    activeBranches: opts.activeBranches,
-  });
-  allResults.push(...loopResult.results);
-  if (loopResult.status !== "completed") {
-    return {
-      status: loopResult.status,
-      error: loopResult.error,
-      ...(loopResult.deferredReason && {
-        deferredReason: loopResult.deferredReason,
-      }),
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
-    };
-  }
-  const planExhausted = loopResult.planExhausted === true;
-  if (planExhausted) {
+  // Check durable state first — on process restart after plan exhaustion,
+  // skip re-running the plan loop and resume from where we left off.
+  const preLoopState = await loadState(ctx.workspaceDir);
+  let planExhausted = preLoopState.planExhausted === true;
+  if (!planExhausted) {
+    const loopResult = await runPlanLoop(runner, ctx, {
+      planningMachine,
+      planReviewMachine,
+      activeBranches: opts.activeBranches,
+    });
+    allResults.push(...loopResult.results);
+    if (loopResult.status !== "completed") {
+      return {
+        status: loopResult.status,
+        error: loopResult.error,
+        ...(loopResult.deferredReason && {
+          deferredReason: loopResult.deferredReason,
+        }),
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+    planExhausted = loopResult.planExhausted === true;
+    if (planExhausted) {
+      ctx.log({
+        event: "plan_review_gate_bypassed",
+        message:
+          "Plan was never approved by reviewer — proceeding with unapproved plan",
+      });
+      // Persist to state so process restarts / retries know the plan was exhausted
+      const pState = await loadState(ctx.workspaceDir);
+      pState.planExhausted = true;
+      await saveState(ctx.workspaceDir, pState);
+    }
+  } else {
     ctx.log({
-      event: "plan_review_gate_bypassed",
-      message:
-        "Plan was never approved by reviewer — proceeding with unapproved plan",
+      event: "plan_exhausted_resume",
+      message: "Resuming with previously exhausted plan",
     });
   }
 
@@ -546,6 +561,7 @@ export async function runDevelopPipeline(opts, ctx) {
               state.steps.wroteCritique = false;
               state.steps.reviewerCompleted = false;
               state.specDeltaSummary = "";
+              state.planExhausted = false;
             }
             await saveState(ctx.workspaceDir, state);
           }

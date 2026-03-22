@@ -266,7 +266,11 @@ export default defineMachine({
     // -----------------------------------------------------------------------
     // Phase 1b: Spec delta generation
     // -----------------------------------------------------------------------
-    if (!state.specDeltaSummary && existsSync(paths.plan)) {
+    if (
+      !state.specDeltaSummary &&
+      !input.planExhausted &&
+      existsSync(paths.plan)
+    ) {
       ctx.log({ event: "spec_delta_start" });
       const deltaPrompt = buildSpecDeltaPrompt(paths.issue, paths.plan);
       const deltaRes = await reviewerAgent.execute(deltaPrompt, {
