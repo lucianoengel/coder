@@ -533,6 +533,22 @@ export async function runDevelopPipeline(opts, ctx) {
               rmSync(planPaths.critique, { force: true });
             await saveState(ctx.workspaceDir, state);
           }
+          // Clear checkpoint/resume state so the next run replans from scratch
+          // instead of resuming a stale phase-3 checkpoint.
+          if (state?.selected) saveBackup(ctx.workspaceDir, state);
+          try {
+            rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+              force: true,
+            });
+          } catch {
+            // Best-effort cleanup
+          }
+          if (opts.loopState && opts.issueIndex != null) {
+            opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+            await saveLoopState(ctx.workspaceDir, opts.loopState, {
+              guardRunId: opts.loopState.runId,
+            });
+          }
         }
         if (failed?.machine !== "develop.quality_review") return;
         // Only inject retry feedback when another attempt will follow.
