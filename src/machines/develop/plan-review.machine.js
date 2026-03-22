@@ -185,7 +185,7 @@ export function parsePlanVerdict(critiqueMd) {
   }
 
   // Pass 2: last-position-wins across the section.
-  // Guard: if 3+ distinct verdict categories appear, this is likely an echoed
+  // Guard: if 2+ distinct verdict categories appear, this is likely an echoed
   // template or truncated output — return UNKNOWN to avoid false positives.
   const kwPatterns = [
     { pattern: /\bAPPROVED\b/g, verdict: "APPROVED" },

@@ -399,7 +399,7 @@ export async function runDevelopPipeline(opts, ctx) {
     }
 
     // Heartbeat after phase 1 (issue draft)
-    await updateHeartbeat(ctx, loopRunId ?? undefined);
+    await updateHeartbeat(ctx, loopRunId);
 
     if (ctx.cancelToken.cancelled) {
       return {
@@ -444,7 +444,7 @@ export async function runDevelopPipeline(opts, ctx) {
     }
 
     // Heartbeat after phase 2 (planning + review)
-    await updateHeartbeat(ctx, loopRunId ?? undefined);
+    await updateHeartbeat(ctx, loopRunId);
 
     if (ctx.cancelToken.cancelled) {
       return {
@@ -518,7 +518,7 @@ export async function runDevelopPipeline(opts, ctx) {
             const now = Date.now();
             if (now - lastPhase3HeartbeatMs < phase3HeartbeatMinMs) return;
             lastPhase3HeartbeatMs = now;
-            void updateHeartbeat(ctx, loopRunId ?? undefined);
+            void updateHeartbeat(ctx, loopRunId);
           },
           onResumeSkipped:
             opts.loopState && opts.issueIndex != null
@@ -710,7 +710,7 @@ export async function runDevelopPipeline(opts, ctx) {
     allResults.push(...phase3.results);
 
     // Heartbeat after phase 3 (implementation + review + PR)
-    await updateHeartbeat(ctx, loopRunId ?? undefined);
+    await updateHeartbeat(ctx, loopRunId);
 
     return { ...phase3, results: allResults, durationMs: Date.now() - start };
   } finally {

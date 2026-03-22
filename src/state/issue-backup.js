@@ -230,9 +230,14 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   if (state?.selected && state?.steps?.wrotePlan) {
     saveBackup(workspaceDir, state);
   }
-  // Archive plan artifacts before switching issues (e.g. crash recovery, edge cases)
+  // Archive plan artifacts before switching issues (e.g. crash recovery, edge cases).
+  // Best-effort — don't let archival failure block the issue switch.
   if (state?.selected) {
-    archivePlanFailureArtifacts(workspaceDir, state.selected, "issue_switch");
+    try {
+      archivePlanFailureArtifacts(workspaceDir, state.selected, "issue_switch");
+    } catch {
+      /* best-effort */
+    }
   }
   clearStateAndArtifacts(workspaceDir);
 }
