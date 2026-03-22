@@ -537,6 +537,15 @@ test("runHostTests allows cd .. && bash script when script lives in parent of re
   assert.equal(res.exitCode, 0);
 });
 
+test("runHostTests throws TestCommandPathError for bash -c when inner script missing", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-bashc-"));
+  await assert.rejects(
+    async () =>
+      runHostTests(dir, { testCmd: 'bash -c "bash scripts/missing.sh"' }),
+    (err) => err instanceof TestCommandPathError,
+  );
+});
+
 test("runHostTests testConfigPath validates setup script before run", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tc-"));
   writeFileSync(

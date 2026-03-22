@@ -33,6 +33,96 @@ export function stripOuterShellQuotes(s) {
 }
 
 /**
+ * Drop shell redirections at the end of a segment so `cd .. >/dev/null && …`
+ * is parsed as `cd ..` for cwd simulation.
+ */
+export function stripTrailingRedirects(segment) {
+  const t = segment.trim();
+  const cut = t.search(/\s+[0-9]*>>?|\s+2>&1/);
+  if (cut >= 0) return t.slice(0, cut).trim();
+  return t;
+}
+
+/**
+ * Index of closing `"` for an opening `"` at `openIdx`, respecting backslash escapes (`\\`, `\"`).
+ * @returns {number} closing index, or -1
+ */
+export function findClosingDoubleQuote(str, openIdx) {
+  if (str[openIdx] !== '"') return -1;
+  let i = openIdx + 1;
+  while (i < str.length) {
+    if (str[i] === "\\" && i + 1 < str.length) {
+      i += 2;
+      continue;
+    }
+    if (str[i] === '"') return i;
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Unescape a double-quoted bash string body (e.g. `-c` argument) for validation.
+ * Handles `\\`, `\"`, `\$`, `` \` ``, and `\` before newline (line continuation).
+ */
+export function unescapeDoubleQuotedBashBody(s) {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      const n = s[i + 1];
+      if (n === "\\" || n === '"' || n === "$" || n === "`") {
+        out += n;
+        i++;
+        continue;
+      }
+      if (n === "\n") {
+        i++;
+        continue;
+      }
+      out += n;
+      i++;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+/**
+ * Extract inner script strings passed to `bash`/`sh`/`dash` when `-c` is used, including
+ * clustered short options ending in `c` (`-c`, `-ec`, `-lc`, `-xec`, `-uec`, …) and
+ * chains like `bash -n -c "…"`.
+ */
+export function extractBashCInnerStrings(segment) {
+  if (typeof segment !== "string" || !segment.trim()) return [];
+  const out = [];
+  const seen = new Set();
+  // Match `-c` and clustered forms ending in `c` (`-ec`, `-lc`, `-xec`, …) plus `-flag … -c` chains.
+  const re = /\b(?:bash|sh|dash)\s+(?:-[a-zA-Z\d#]+\s+)*-[a-zA-Z]*c\s+/g;
+  let m;
+  for (;;) {
+    m = re.exec(segment);
+    if (!m) break;
+    const after = segment.slice(m.index + m[0].length).trimStart();
+    let inner = null;
+    if (after[0] === '"') {
+      const close = findClosingDoubleQuote(after, 0);
+      if (close === -1) continue;
+      const rawInner = after.slice(1, close);
+      inner = unescapeDoubleQuotedBashBody(rawInner);
+    } else if (after[0] === "'") {
+      const sq = after.match(/^'([^']*)'/);
+      if (sq) inner = sq[1];
+    }
+    if (inner != null && !seen.has(inner)) {
+      seen.add(inner);
+      out.push(inner);
+    }
+  }
+  return out;
+}
+
+/**
  * Tokens that look like repo-relative script paths (not bare shell builtins like `bash echo`).
  * @param {string} token - Raw capture from regex (may include quotes)
  */
@@ -59,8 +149,8 @@ function normalizeRepoRel(p) {
  * If the whole segment is a lone `cd <dir>`, return { applied, cwd }.
  */
 function applyCdSegment(segment, cwd) {
-  const s = segment.trim();
-  // Quoted targets before `\S+`, otherwise `cd ".."` is parsed as dir name `".."` (quotes included).
+  const s = stripTrailingRedirects(segment.trim());
+  if (!s) return { applied: false, cwd };
   const dq = s.match(/^\s*cd\s+"([^"]*)"\s*$/);
   if (dq) {
     return { applied: true, cwd: path.resolve(cwd, dq[1]) };
@@ -95,7 +185,6 @@ export function collectRelativePathsFromShellCommand(cmd) {
     out.add(normalizeRepoRel(token));
   }
 
-  // Use && / || / ; / | explicitly — \b fails before & (both sides non-word).
   const reDot = /(?:^|&&|\|\||[;|])\s*\.\/([^\s;|&]+)/g;
   for (;;) {
     const m = reDot.exec(cmd);
@@ -118,13 +207,50 @@ export function collectRelativePathsFromShellCommand(cmd) {
 }
 
 /**
- * Split on `&&` only so `cd .. && bash scripts/x.sh` can be modeled (simulated cwd).
+ * Split on `&&` only, but do not split `&&` inside single- or double-quoted regions
+ * (so `bash -c "cd .. && bash scripts/x.sh"` stays one segment).
  */
-function splitAndChainSegments(cmd) {
-  return cmd
-    .split(/\s*&&\s*/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+export function splitAndChainSegmentsRespectingQuotes(cmd) {
+  const segments = [];
+  let buf = "";
+  let quote = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < cmd.length) {
+        buf += ch + cmd[i + 1];
+        i++;
+        continue;
+      }
+      buf += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (quote === "'") {
+      buf += ch;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      buf += ch + cmd[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === "&" && cmd[i + 1] === "&") {
+      segments.push(buf.trim());
+      buf = "";
+      i++;
+      continue;
+    }
+    buf += ch;
+  }
+  segments.push(buf.trim());
+  return segments.filter(Boolean);
 }
 
 function throwMissingPath(fullCmd, rel, abs, root, effectiveCwd, meta) {
@@ -165,6 +291,40 @@ function throwMissingPath(fullCmd, rel, abs, root, effectiveCwd, meta) {
 }
 
 /**
+ * Validate paths for one logical command line (may recurse into bash -c bodies).
+ */
+function validateCommandString(root, cwd, cmd, meta, fullCmdForError) {
+  const s = typeof cmd === "string" ? cmd.trim() : String(cmd).trim();
+  if (!s) return;
+
+  for (const inner of extractBashCInnerStrings(s)) {
+    validateCommandString(root, cwd, inner, meta, fullCmdForError);
+  }
+
+  const segments = splitAndChainSegmentsRespectingQuotes(s);
+  let c = cwd;
+  for (const segment of segments) {
+    const stripped = stripTrailingRedirects(segment);
+    const { applied, cwd: nextCwd } = applyCdSegment(stripped, c);
+    if (applied) {
+      c = nextCwd;
+      continue;
+    }
+
+    for (const inner of extractBashCInnerStrings(segment)) {
+      validateCommandString(root, c, inner, meta, fullCmdForError);
+    }
+
+    for (const rel of collectRelativePathsFromShellCommand(segment)) {
+      const abs = path.resolve(c, rel);
+      if (!existsSync(abs)) {
+        throwMissingPath(fullCmdForError, rel, abs, root, c, meta);
+      }
+    }
+  }
+}
+
+/**
  * @param {string} repoDir - Absolute repo root (test cwd)
  * @param {string[]} commands - Shell command strings (setup / test / teardown / testCmd)
  * @param {object} [meta]
@@ -183,23 +343,6 @@ export function assertTestCommandPathsExist(repoDir, commands, meta = {}) {
   for (const cmd of commands) {
     const s = typeof cmd === "string" ? cmd.trim() : String(cmd).trim();
     if (!s) continue;
-
-    const segments = splitAndChainSegments(s);
-    let cwd = root;
-
-    for (const segment of segments) {
-      const { applied, cwd: nextCwd } = applyCdSegment(segment, cwd);
-      if (applied) {
-        cwd = nextCwd;
-        continue;
-      }
-
-      for (const rel of collectRelativePathsFromShellCommand(segment)) {
-        const abs = path.resolve(cwd, rel);
-        if (!existsSync(abs)) {
-          throwMissingPath(s, rel, abs, root, cwd, meta);
-        }
-      }
-    }
+    validateCommandString(root, root, s, meta, s);
   }
 }
