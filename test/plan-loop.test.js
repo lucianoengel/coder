@@ -282,7 +282,44 @@ test("runPlanLoop: repeated UNKNOWN defers on final round (unparseable gate)", a
 
     assert.equal(result.status, "deferred");
     assert.equal(result.deferredReason, "plan_blocked");
-    assert.ok(result.error.includes("no parseable verdict"));
+    assert.ok(result.error.includes("blocked on final round"));
+    assert.equal(result.planExhausted, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "unsound", verdict: "REJECT" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 3,
+    });
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.deferredReason, "plan_blocked");
     assert.equal(result.planExhausted, undefined);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

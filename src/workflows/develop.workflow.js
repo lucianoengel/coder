@@ -166,15 +166,24 @@ export async function runPlanLoop(
     const verdict = reviewRound.results[0]?.data?.verdict;
     ctx.log({ event: "plan_review_verdict", verdict, round, maxRounds });
 
-    if (verdict === "UNKNOWN") {
-      ctx.log({ event: "plan_review_unparseable", round });
+    if (verdict === "UNKNOWN" || verdict === "REJECT") {
+      if (verdict === "UNKNOWN") {
+        ctx.log({ event: "plan_review_unparseable", round });
+      }
       if (round === maxRounds - 1) {
-        // Unparseable review on final round — surface as deferred/plan_blocked
-        // so the loop treats it as operator-actionable, not a hard failure.
+        // UNKNOWN = unparseable review, REJECT = fundamentally unsound plan.
+        // Both are hard blocks — surface as deferred/plan_blocked for operator
+        // intervention rather than silently proceeding.
+        ctx.log({
+          event: "plan_review_blocked",
+          lastVerdict: verdict,
+          roundsUsed: round + 1,
+          maxRounds,
+        });
         return {
           status: "deferred",
           deferredReason: "plan_blocked",
-          error: `Plan review produced no parseable verdict after ${maxRounds} round(s)`,
+          error: `Plan review blocked on final round (verdict: ${verdict})`,
           results: allResults,
         };
       }
@@ -183,9 +192,7 @@ export async function runPlanLoop(
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
-        // Only proceed with an unapproved plan when at least one revision was
-        // attempted. A single-round config (maxRounds=1) that gets REVISE/REJECT
-        // should block — the gate was never given a chance to converge.
+        // Single-round config: no revision was ever attempted, so block.
         if (round === 0) {
           ctx.log({
             event: "plan_review_blocked",
@@ -195,17 +202,18 @@ export async function runPlanLoop(
           return {
             status: "deferred",
             deferredReason: "plan_blocked",
-            error: `Plan rejected on single review round (verdict: ${verdict})`,
+            error: `Plan review blocked on single round (verdict: ${verdict})`,
             results: allResults,
           };
         }
+        // REVISE on final round after at least one revision attempt — proceed
+        // with the unapproved plan but flag it for downstream awareness.
         ctx.log({
           event: "plan_review_exhausted",
           lastVerdict: verdict,
           roundsUsed: round + 1,
           maxRounds,
         });
-        // Proceed with the last plan — flag as unapproved so downstream is aware
         return {
           status: "completed",
           planExhausted: true,
@@ -379,14 +387,6 @@ export async function runDevelopPipeline(opts, ctx) {
       message:
         "Plan was never approved by reviewer — proceeding with unapproved plan",
     });
-    // Invalidate plan/critique cache so a recovery run (e.g. phase 3 failure)
-    // goes through a fresh plan-review cycle instead of reusing the stale
-    // rejected critique.
-    const exhaustedState = await loadState(ctx.workspaceDir);
-    exhaustedState.steps ||= {};
-    exhaustedState.steps.wrotePlan = false;
-    exhaustedState.steps.wroteCritique = false;
-    await saveState(ctx.workspaceDir, exhaustedState);
   }
 
   // Heartbeat after phase 2 (planning + review)
@@ -535,10 +535,16 @@ export async function runDevelopPipeline(opts, ctx) {
             failed.error || result.error || "",
           );
         } else {
-          // Terminal attempt: still reset implementation cache for cross-process recovery
+          // Terminal attempt: reset implementation cache for cross-process recovery.
+          // When the plan was never approved, also invalidate plan/critique cache
+          // so a recovery run goes through a fresh plan-review cycle.
           const state = await loadState(ctx.workspaceDir);
-          if (state?.steps?.implemented) {
+          if (state?.steps) {
             state.steps.implemented = false;
+            if (planExhausted) {
+              state.steps.wrotePlan = false;
+              state.steps.wroteCritique = false;
+            }
             await saveState(ctx.workspaceDir, state);
           }
         }
