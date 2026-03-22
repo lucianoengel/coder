@@ -172,10 +172,27 @@ export async function runPlanLoop(
     if (verdict === "UNKNOWN") {
       ctx.log({ event: "plan_review_unparseable", round });
     }
+    // REJECT is the strongest reviewer signal — block immediately on final round.
+    if (verdict === "REJECT" && round === maxRounds - 1) {
+      ctx.log({
+        event: "plan_review_blocked",
+        lastVerdict: verdict,
+        roundsUsed: round + 1,
+        maxRounds,
+      });
+      return {
+        status: "deferred",
+        deferredReason: "plan_blocked",
+        error: `Plan rejected on final round — fundamentally unsound`,
+        results: allResults,
+      };
+    }
     const needsRevision =
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
+        // REVISE or UNKNOWN on final round (including single-round configs) —
+        // proceed with the unapproved plan but flag it for downstream awareness.
         ctx.log({
           event: "plan_review_exhausted",
           lastVerdict: verdict,
@@ -183,9 +200,8 @@ export async function runPlanLoop(
           maxRounds,
         });
         return {
-          status: "failed",
-          error: "plan_review_exhausted",
-          planReviewExhausted: true,
+          status: "completed",
+          planExhausted: true,
           results: allResults,
         };
       }
@@ -352,10 +368,25 @@ export async function runDevelopPipeline(opts, ctx) {
     return {
       status: loopResult.status,
       error: loopResult.error,
+      ...(loopResult.deferredReason && {
+        deferredReason: loopResult.deferredReason,
+      }),
       results: allResults,
       runId: runner.runId,
       durationMs: Date.now() - start,
     };
+  }
+  const planExhausted = loopResult.planExhausted === true;
+  if (planExhausted) {
+    ctx.log({
+      event: "plan_review_gate_bypassed",
+      message:
+        "Plan was never approved by reviewer — proceeding with unapproved plan",
+    });
+    // Persist to state so terminal retry handler knows to reset plan cache
+    const pState = await loadState(ctx.workspaceDir);
+    pState.planExhausted = true;
+    await saveState(ctx.workspaceDir, pState);
   }
 
   // Heartbeat after phase 2 (planning + review)
@@ -407,6 +438,7 @@ export async function runDevelopPipeline(opts, ctx) {
         testConfigPath: opts.testConfigPath || "",
         allowNoTests: opts.allowNoTests ?? false,
         ppcommitPreset: opts.ppcommitPreset || "strict",
+        planExhausted,
       }),
     },
     {
@@ -494,6 +526,49 @@ export async function runDevelopPipeline(opts, ctx) {
       ctx,
       onFailedAttempt: async ({ attempt, maxRetries, result }) => {
         const failed = findFailedMachineResult(result);
+        // On terminal attempt with an exhausted plan, reset the full plan/review
+        // cycle — but skip if only PR creation failed, since that means the code
+        // was implemented and reviewed successfully.
+        if (
+          attempt >= maxRetries &&
+          planExhausted &&
+          failed?.machine !== "develop.pr_creation"
+        ) {
+          const state = await loadState(ctx.workspaceDir);
+          if (state?.steps) {
+            state.steps.implemented = false;
+            state.steps.wrotePlan = false;
+            state.steps.wroteCritique = false;
+            state.steps.reviewerCompleted = false;
+            state.steps.reviewRound = undefined;
+            state.steps.reviewVerdict = undefined;
+            state.steps.programmerFixedRound = undefined;
+            state.specDeltaSummary = "";
+            state.planExhausted = false;
+            const planPaths = artifactPaths(ctx.artifactsDir);
+            if (existsSync(planPaths.plan))
+              rmSync(planPaths.plan, { force: true });
+            if (existsSync(planPaths.critique))
+              rmSync(planPaths.critique, { force: true });
+            await saveState(ctx.workspaceDir, state);
+          }
+          // Clear checkpoint/resume state so the next run replans from scratch
+          // instead of resuming a stale phase-3 checkpoint.
+          if (state?.selected) saveBackup(ctx.workspaceDir, state);
+          try {
+            rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+              force: true,
+            });
+          } catch {
+            // Best-effort cleanup
+          }
+          if (opts.loopState && opts.issueIndex != null) {
+            opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+            await saveLoopState(ctx.workspaceDir, opts.loopState, {
+              guardRunId: opts.loopState.runId,
+            });
+          }
+        }
         if (failed?.machine !== "develop.quality_review") return;
         // Only inject retry feedback when another attempt will follow.
         // Always reset implemented=false and clean up state regardless.
@@ -504,9 +579,9 @@ export async function runDevelopPipeline(opts, ctx) {
             failed.error || result.error || "",
           );
         } else {
-          // Terminal attempt: still reset implementation cache for cross-process recovery
+          // Terminal attempt: reset implementation cache for cross-process recovery.
           const state = await loadState(ctx.workspaceDir);
-          if (state?.steps?.implemented) {
+          if (state?.steps) {
             state.steps.implemented = false;
             await saveState(ctx.workspaceDir, state);
           }
@@ -1182,12 +1257,15 @@ export async function runDevelopLoop(opts, ctx) {
         ctx,
       );
 
-      // Conflict-based deferral: planner detected overlap with an active branch
+      // Pipeline-level deferral: conflict detection or plan-review gate block
       if (pipelineResult.status === "deferred") {
+        const reason = pipelineResult.deferredReason || "conflict";
         ctx.log({
-          event: "issue_deferred_conflict",
+          event: `issue_deferred_${reason}`,
           issueId: issue.id,
-          conflictBranch: pipelineResult.conflictBranch,
+          ...(pipelineResult.conflictBranch && {
+            conflictBranch: pipelineResult.conflictBranch,
+          }),
           error: pipelineResult.error,
         });
 
@@ -1196,6 +1274,7 @@ export async function runDevelopLoop(opts, ctx) {
         deferState.steps ||= {};
         deferState.steps.wrotePlan = false;
         deferState.steps.wroteCritique = false;
+        deferState.planExhausted = false;
         await saveState(ctx.workspaceDir, deferState);
 
         const deferPaths = artifactPaths(ctx.artifactsDir);
@@ -1206,7 +1285,7 @@ export async function runDevelopLoop(opts, ctx) {
 
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = pipelineResult.error;
-        loopState.issueQueue[i].deferredReason = "conflict";
+        loopState.issueQueue[i].deferredReason = reason;
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
@@ -1222,7 +1301,7 @@ export async function runDevelopLoop(opts, ctx) {
           loopRunId,
           "issue_deferred",
           "",
-          { status: "deferred", reason: "conflict" },
+          { status: "deferred", reason },
           issueEnv,
         );
         return "deferred";
@@ -1296,28 +1375,6 @@ export async function runDevelopLoop(opts, ctx) {
             "issue_deferred",
             "",
             { status: "deferred" },
-            issueEnv,
-          );
-          return "deferred";
-        }
-        if (pipelineResult.planReviewExhausted) {
-          ctx.log({
-            event: "issue_deferred_plan_blocked",
-            issueId: issue.id,
-            reason: "plan_review_exhausted",
-          });
-          loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = errText;
-          loopState.issueQueue[i].deferredReason = "plan_blocked";
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_deferred",
-            "",
-            { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
           return "deferred";

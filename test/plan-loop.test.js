@@ -197,6 +197,7 @@ test("runPlanLoop: APPROVED on round 1 runs each machine once", async () => {
     });
 
     assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, undefined);
     assert.equal(planCount, 1);
     assert.equal(reviewCount, 1);
     assert.equal(capturedCritique, "");
@@ -326,9 +327,118 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
       maxRounds: 3,
     });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.planReviewExhausted, true);
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
     assert.equal(planCount, 3);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: repeated UNKNOWN proceeds with planExhausted on final round", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "garbled", verdict: "UNKNOWN" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 2,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "unsound", verdict: "REJECT" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 3,
+    });
+
+    assert.equal(result.status, "deferred");
+    assert.equal(result.deferredReason, "plan_blocked");
+    assert.equal(result.planExhausted, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: single-round REVISE proceeds with planExhausted", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "bad plan", verdict: "REVISE" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 1,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
