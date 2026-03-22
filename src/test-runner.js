@@ -5,6 +5,7 @@ import process from "node:process";
 import { loadConfig } from "./config.js";
 import { TestConfigSchema } from "./schemas.js";
 import { runShellSync } from "./systemd-run.js";
+import { assertTestCommandPathsExist } from "./test-command-paths.js";
 
 export function detectTestCommand(repoDir) {
   const has = (rel) => existsSync(path.join(repoDir, rel));
@@ -136,9 +137,21 @@ export async function waitForHealthCheck(url, retries, intervalMs) {
  * @param {string} repoDir
  * @param {object} config - Parsed TestConfigSchema
  * @param {boolean} [allowNoTests=false] - If true, pytest exit 5 (no tests) is treated as success
+ * @param {object} [pathMeta] - Passed to path validation (testConfigPath, repoPath for errors)
  * @returns {Promise<{ cmd: string, exitCode: number, stdout: string, stderr: string, details: object }>}
  */
-export async function runTestConfig(repoDir, config, allowNoTests = false) {
+export async function runTestConfig(
+  repoDir,
+  config,
+  allowNoTests = false,
+  pathMeta = {},
+) {
+  assertTestCommandPathsExist(
+    repoDir,
+    [...config.setup, config.test, ...config.teardown].filter(Boolean),
+    pathMeta,
+  );
+
   const details = { setup: [], healthCheck: null, teardown: [] };
 
   try {

@@ -556,6 +556,9 @@ Hard constraints:
       testCmd: input.testCmd || ctx.config.test.command,
       testConfigPath: input.testConfigPath || "",
       allowNoTests: input.allowNoTests ?? ctx.config.test.allowNoTests ?? false,
+      workspaceDir: ctx.workspaceDir,
+      repoPath: state.repoPath ?? "",
+      log: ctx.log,
     });
     if (testRes.exitCode !== 0) {
       throw new Error(

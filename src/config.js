@@ -62,7 +62,12 @@ export const PpcommitConfigSchema = z.object({
 });
 
 export const TestSectionSchema = z.object({
-  setup: z.array(z.string()).default([]),
+  setup: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "cwd = repo root (repo_path) for this workflow; relative scripts must exist under that root.",
+    ),
   healthCheck: z
     .object({
       url: z.string(),
@@ -71,8 +76,16 @@ export const TestSectionSchema = z.object({
     })
     .nullable()
     .default(null),
-  command: z.string().default(""),
-  teardown: z.array(z.string()).default([]),
+  command: z
+    .string()
+    .default("")
+    .describe(
+      "Test shell command with cwd = repo root; use cd … && when scripts are outside repo_path.",
+    ),
+  teardown: z
+    .array(z.string())
+    .default([])
+    .describe("cwd = repo root; relative paths are under that root."),
   timeoutMs: z.number().int().positive().default(600000),
   allowNoTests: z.boolean().default(false),
 });
