@@ -531,6 +531,9 @@ export async function runDevelopPipeline(opts, ctx) {
               state.steps.wrotePlan = false;
               state.steps.wroteCritique = false;
               state.steps.reviewerCompleted = false;
+              state.steps.reviewRound = undefined;
+              state.steps.reviewVerdict = undefined;
+              state.steps.programmerFixedRound = undefined;
               state.specDeltaSummary = "";
               state.planExhausted = false;
               // Delete stale plan artifacts so machines regenerate them
