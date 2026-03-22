@@ -1,45 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-let cacheId = 0;
-
-function mockChildProcess(t, spawnSyncStub) {
-  t.mock.module("node:child_process", {
-    namedExports: {
-      spawnSync: spawnSyncStub,
-      spawn: () => {},
-      execSync: () => "",
-    },
-  });
-}
+import {
+  fetchGithubIssues,
+  fetchGitlabIssues,
+} from "../src/machines/develop/issue-list.machine.js";
 
 // --- fetchGithubIssues ---
 
-test("fetchGithubIssues throws on missing binary (ENOENT)", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues throws on missing binary (ENOENT)", () => {
+  const stub = () => ({
     error: new Error("spawn gh ENOENT"),
     status: null,
     stdout: "",
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+    /gh:.*ENOENT/,
   );
-  assert.throws(() => fetchGithubIssues("/tmp"), /gh:.*ENOENT/);
 });
 
-test("fetchGithubIssues throws on non-zero exit with stderr", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues throws on non-zero exit with stderr", () => {
+  const stub = () => ({
     error: null,
     status: 1,
     stderr: "auth token expired",
     stdout: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
+  });
   assert.throws(
-    () => fetchGithubIssues("/tmp"),
+    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
     (err) => {
       assert.match(err.message, /gh issue list failed/);
       assert.match(err.message, /exit 1/);
@@ -49,59 +38,53 @@ test("fetchGithubIssues throws on non-zero exit with stderr", async (t) => {
   );
 });
 
-test("fetchGithubIssues throws on invalid JSON output", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues throws on invalid JSON output", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "not json{",
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+    /invalid JSON/,
   );
-  assert.throws(() => fetchGithubIssues("/tmp"), /invalid JSON/);
 });
 
-test("fetchGithubIssues throws on non-array JSON output", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues throws on non-array JSON output", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: '{"foo":1}',
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+    /non-array JSON/,
   );
-  assert.throws(() => fetchGithubIssues("/tmp"), /non-array JSON/);
 });
 
-test("fetchGithubIssues returns [] on empty stdout", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues returns [] on empty stdout", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "",
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  assert.deepEqual(fetchGithubIssues("/tmp"), []);
+  });
+  assert.deepEqual(fetchGithubIssues("/tmp", { _spawnSync: stub }), []);
 });
 
-test("fetchGithubIssues returns [] on empty JSON array", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGithubIssues returns [] on empty JSON array", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "[]",
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  assert.deepEqual(fetchGithubIssues("/tmp"), []);
+  });
+  assert.deepEqual(fetchGithubIssues("/tmp", { _spawnSync: stub }), []);
 });
 
-test("fetchGithubIssues returns parsed array on valid JSON", async (t) => {
+test("fetchGithubIssues returns parsed array on valid JSON", () => {
   const payload = [
     {
       number: 1,
@@ -112,16 +95,13 @@ test("fetchGithubIssues returns parsed array on valid JSON", async (t) => {
       comments: [],
     },
   ];
-  mockChildProcess(t, () => ({
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  }));
-  const { fetchGithubIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  const result = fetchGithubIssues("/tmp");
+  });
+  const result = fetchGithubIssues("/tmp", { _spawnSync: stub });
   assert.equal(result.length, 1);
   assert.equal(result[0].number, 1);
   assert.equal(result[0].title, "test");
@@ -129,31 +109,28 @@ test("fetchGithubIssues returns parsed array on valid JSON", async (t) => {
 
 // --- fetchGitlabIssues ---
 
-test("fetchGitlabIssues throws on missing binary (ENOENT)", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues throws on missing binary (ENOENT)", () => {
+  const stub = () => ({
     error: new Error("spawn glab ENOENT"),
     status: null,
     stdout: "",
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+    /glab:.*ENOENT/,
   );
-  assert.throws(() => fetchGitlabIssues("/tmp"), /glab:.*ENOENT/);
 });
 
-test("fetchGitlabIssues throws on non-zero exit with stderr", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues throws on non-zero exit with stderr", () => {
+  const stub = () => ({
     error: null,
     status: 1,
     stderr: "token revoked",
     stdout: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
+  });
   assert.throws(
-    () => fetchGitlabIssues("/tmp"),
+    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
     (err) => {
       assert.match(err.message, /glab issue list failed/);
       assert.match(err.message, /exit 1/);
@@ -163,59 +140,53 @@ test("fetchGitlabIssues throws on non-zero exit with stderr", async (t) => {
   );
 });
 
-test("fetchGitlabIssues throws on invalid JSON output", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues throws on invalid JSON output", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "{broken",
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+    /invalid JSON/,
   );
-  assert.throws(() => fetchGitlabIssues("/tmp"), /invalid JSON/);
 });
 
-test("fetchGitlabIssues throws on non-array JSON output", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues throws on non-array JSON output", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: '{"foo":1}',
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  });
+  assert.throws(
+    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+    /non-array JSON/,
   );
-  assert.throws(() => fetchGitlabIssues("/tmp"), /non-array JSON/);
 });
 
-test("fetchGitlabIssues returns [] on empty stdout (first page)", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues returns [] on empty stdout (first page)", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "",
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  assert.deepEqual(fetchGitlabIssues("/tmp"), []);
+  });
+  assert.deepEqual(fetchGitlabIssues("/tmp", { _spawnSync: stub }), []);
 });
 
-test("fetchGitlabIssues returns [] on empty JSON array", async (t) => {
-  mockChildProcess(t, () => ({
+test("fetchGitlabIssues returns [] on empty JSON array", () => {
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: "[]",
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  assert.deepEqual(fetchGitlabIssues("/tmp"), []);
+  });
+  assert.deepEqual(fetchGitlabIssues("/tmp", { _spawnSync: stub }), []);
 });
 
-test("fetchGitlabIssues returns mapped data on valid JSON", async (t) => {
+test("fetchGitlabIssues returns mapped data on valid JSON", () => {
   const payload = [
     {
       iid: 7,
@@ -225,16 +196,13 @@ test("fetchGitlabIssues returns mapped data on valid JSON", async (t) => {
       web_url: "https://gl.example.com/7",
     },
   ];
-  mockChildProcess(t, () => ({
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  const result = fetchGitlabIssues("/tmp");
+  });
+  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
   assert.equal(result.length, 1);
   assert.equal(result[0].iid, 7);
   assert.equal(result[0].title, "Fix CI");
@@ -243,7 +211,7 @@ test("fetchGitlabIssues returns mapped data on valid JSON", async (t) => {
   assert.equal(result[0].web_url, "https://gl.example.com/7");
 });
 
-test("fetchGitlabIssues handles string labels alongside object labels", async (t) => {
+test("fetchGitlabIssues handles string labels alongside object labels", () => {
   const payload = [
     {
       iid: 10,
@@ -253,20 +221,17 @@ test("fetchGitlabIssues handles string labels alongside object labels", async (t
       web_url: "https://gl.example.com/10",
     },
   ];
-  mockChildProcess(t, () => ({
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  const result = fetchGitlabIssues("/tmp");
+  });
+  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
   assert.deepEqual(result[0].labels, ["plain-string", "object-label", "42"]);
 });
 
-test("fetchGitlabIssues truncates description to 500 chars", async (t) => {
+test("fetchGitlabIssues truncates description to 500 chars", () => {
   const longDesc = "x".repeat(600);
   const payload = [
     {
@@ -277,20 +242,17 @@ test("fetchGitlabIssues truncates description to 500 chars", async (t) => {
       web_url: "https://gl.example.com/11",
     },
   ];
-  mockChildProcess(t, () => ({
+  const stub = () => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  }));
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  const result = fetchGitlabIssues("/tmp");
+  });
+  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
   assert.equal(result[0].description.length, 500);
 });
 
-test("fetchGitlabIssues paginates across multiple pages", async (t) => {
+test("fetchGitlabIssues paginates across multiple pages", () => {
   let callCount = 0;
   const page1 = Array.from({ length: 100 }, (_, i) => ({
     iid: i + 1,
@@ -309,7 +271,7 @@ test("fetchGitlabIssues paginates across multiple pages", async (t) => {
     },
   ];
 
-  mockChildProcess(t, () => {
+  const stub = () => {
     callCount++;
     return {
       error: null,
@@ -317,11 +279,8 @@ test("fetchGitlabIssues paginates across multiple pages", async (t) => {
       stdout: JSON.stringify(callCount === 1 ? page1 : page2),
       stderr: "",
     };
-  });
-  const { fetchGitlabIssues } = await import(
-    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
-  );
-  const result = fetchGitlabIssues("/tmp");
+  };
+  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
   assert.equal(result.length, 101);
   assert.equal(result[0].iid, 1);
   assert.equal(result[100].iid, 101);

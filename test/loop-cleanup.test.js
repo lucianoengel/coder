@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -11,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveRepoRoot } from "../src/machines/develop/_shared.js";
+import { archivePlanFailureArtifacts } from "../src/state/issue-backup.js";
 import {
   backupKeyFor,
   ensureCleanLoopStart,
@@ -603,6 +606,61 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
   }
 });
 
+test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue #34\n");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    writeFileSync(
+      path.join(artifactsDir, "PLANREVIEW.md"),
+      "## Verdict\nREJECT\n\n## Critique\nToo vague.",
+    );
+
+    archivePlanFailureArtifacts(
+      tmp,
+      { source: "gitlab", id: "#34" },
+      "plan_review_exhausted",
+    );
+
+    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    assert.ok(existsSync(failuresDir));
+    const entries = readdirSync(failuresDir);
+    assert.ok(entries.length >= 1, "should have at least one archive dir");
+    const archiveDir = path.join(failuresDir, entries[0]);
+    assert.ok(entries[0].includes("34"), "archive dir should include issue id");
+    assert.ok(existsSync(path.join(archiveDir, "PLAN.md")));
+    assert.ok(existsSync(path.join(archiveDir, "PLANREVIEW.md")));
+    assert.ok(existsSync(path.join(archiveDir, "ISSUE.md")));
+    assert.ok(existsSync(path.join(archiveDir, "reason.txt")));
+    assert.ok(
+      readFileSync(path.join(archiveDir, "reason.txt"), "utf8").includes(
+        "plan_review_exhausted",
+      ),
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("archivePlanFailureArtifacts: no-op when PLANREVIEW.md missing", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+
+    archivePlanFailureArtifacts(tmp, { id: "#34" }, "failed");
+
+    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    assert.ok(
+      !existsSync(failuresDir),
+      "should not create archive without critique",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("resolveRepoRoot: file path resolves to its directory and logs correction", () => {
   const tmp = makeTmpRepo();
   try {
@@ -869,6 +927,66 @@ test("resetForNextIssue: removes stale artifacts and state", async () => {
     assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
     assert.ok(!existsSync(path.join(artifactsDir, "ISSUE.md")));
     assert.ok(!existsSync(statePath));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepareForIssue: restoring backup clears sessionsDisabled and stale session IDs", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "99", title: "Session test" };
+    const backupKey = "github-99-root";
+    const backupDir = path.join(tmp, ".coder", "backups", backupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "99", title: "Session test" },
+        repoPath: ".",
+        steps: { wroteIssue: true, wrotePlan: true },
+        sessionsDisabled: true,
+        planningSessionId: "old-session-1",
+        implementationSessionId: "old-session-2",
+        planReviewSessionId: "old-session-3",
+        programmerFixSessionId: null,
+        reviewerSessionId: null,
+      }),
+    );
+    writeFileSync(path.join(backupDir, "artifacts", "ISSUE.md"), "# Issue\n");
+    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Plan\n");
+
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: () => {},
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    const state = JSON.parse(
+      readFileSync(path.join(tmp, ".coder", "state.json"), "utf8"),
+    );
+    assert.equal(
+      state.sessionsDisabled,
+      false,
+      "sessionsDisabled should be cleared on backup restore",
+    );
+    assert.equal(
+      state.planningSessionId,
+      null,
+      "stale planningSessionId cleared",
+    );
+    assert.equal(
+      state.implementationSessionId,
+      null,
+      "stale implementationSessionId cleared",
+    );
+    assert.equal(
+      state.planReviewSessionId,
+      null,
+      "stale planReviewSessionId cleared",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

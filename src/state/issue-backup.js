@@ -46,6 +46,39 @@ export function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
   return true;
 }
 
+/**
+ * Archive plan artifacts (PLAN.md, PLANREVIEW.md) to .coder/plan-failures/
+ * for debugging when an issue fails or is deferred. Only archives if
+ * PLANREVIEW.md exists (plan was reviewed). Call before cleanup.
+ *
+ * @param {string} workspaceDir
+ * @param {{ source?: string, id: string, title?: string }} issue
+ * @param {string} [reason] - e.g. "plan_review_exhausted", "failed", "deferred"
+ */
+export function archivePlanFailureArtifacts(workspaceDir, issue, reason = "") {
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+  if (!existsSync(critiquePath)) return;
+
+  const safeId = String(issue?.id ?? "unknown").replace(/[/\\:*?"<>|]/g, "-");
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const archiveDir = path.join(
+    workspaceDir,
+    ".coder",
+    "plan-failures",
+    `${safeId}-${ts}`,
+  );
+  mkdirSync(archiveDir, { recursive: true });
+
+  for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
+    const src = path.join(artifactsDir, name);
+    if (existsSync(src))
+      cpSync(src, path.join(archiveDir, name), { force: true });
+  }
+  if (reason)
+    writeFileSync(path.join(archiveDir, "reason.txt"), `${reason}\n`, "utf8");
+}
+
 export function clearStateAndArtifacts(workspaceDir) {
   const sp = statePathFor(workspaceDir);
   if (existsSync(sp)) rmSync(sp, { force: true });
@@ -128,6 +161,15 @@ export async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
   // other issues' scratchpad rows. The .md file is enough; DB will sync on use.
   const restored = await loadStateFromPath(path.join(backupDir, "state.json"));
   if (restored) {
+    // Cross-process restore: sessions from the old run are stale.
+    // sessionsDisabled may have been set due to a transient auth failure —
+    // clear it so the new run starts with sessions enabled.
+    restored.sessionsDisabled = false;
+    restored.planningSessionId = null;
+    restored.planReviewSessionId = null;
+    restored.implementationSessionId = null;
+    restored.programmerFixSessionId = null;
+    restored.reviewerSessionId = null;
     if (existsSync(backupMd))
       restored.scratchpadPath = path.relative(
         workspaceDir,
@@ -196,6 +238,15 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   }
   if (state?.selected && state?.steps?.wrotePlan) {
     saveBackup(workspaceDir, state);
+  }
+  // Archive plan artifacts before switching issues (e.g. crash recovery, edge cases).
+  // Best-effort — don't let archival failure block the issue switch.
+  if (state?.selected) {
+    try {
+      archivePlanFailureArtifacts(workspaceDir, state.selected, "issue_switch");
+    } catch {
+      /* best-effort */
+    }
   }
   clearStateAndArtifacts(workspaceDir);
 }

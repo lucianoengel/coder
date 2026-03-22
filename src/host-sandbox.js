@@ -90,6 +90,20 @@ function filterEnv(env) {
   return out;
 }
 
+/**
+ * Compute the effective env that agent subprocesses receive.
+ * Used for debugging (coder debug env).
+ * @param {NodeJS.ProcessEnv} processEnv
+ * @param {Record<string, string>} [baseEnv]
+ * @param {Record<string, string>} [extraEnv]
+ * @returns {Record<string, string>}
+ */
+export function computeSandboxEnv(processEnv, baseEnv = {}, extraEnv = {}) {
+  return stripNestedClaudeEnv(
+    mergeEnv(mergeEnv(filterEnv(processEnv), baseEnv), extraEnv),
+  );
+}
+
 export class HostSandboxProvider {
   /**
    * @param {{ defaultCwd?: string, baseEnv?: Record<string,string>, useSystemdRun?: boolean }} [config]
@@ -266,6 +280,11 @@ class HostSandboxInstance extends EventEmitter {
       };
 
       const FATAL_ESCALATION_MS = 2000;
+      // Sliding window for fatal-pattern matching: overlap >= max pattern length
+      // so patterns split across chunk boundaries are still caught.
+      const FATAL_PATTERN_TAIL_BYTES = 256;
+      let stdoutPatternTail = "";
+      let stderrPatternTail = "";
       const FORCE_SETTLE_AFTER_KILL_MS = 15_000;
       const log = typeof options.log === "function" ? options.log : null;
 
@@ -309,7 +328,7 @@ class HostSandboxInstance extends EventEmitter {
           }
         }
       };
-      /** If SIGKILL does not yield `close`, avoid hanging forever. */
+      /** If SIGKILL/stopSystemdUnit does not yield `close`, avoid hanging forever. */
       const scheduleForceSettle = (err) => {
         if (forceSettleTimer) clearTimeout(forceSettleTimer);
         forceSettleTimer = setTimeout(() => {
@@ -369,9 +388,14 @@ class HostSandboxInstance extends EventEmitter {
       };
       resetHangTimer();
 
-      const handleFatalMatch = (stream, patterns, chunk, ErrorClass) => {
+      const handleFatalMatch = (
+        stream,
+        patterns,
+        accumulatedOutput,
+        ErrorClass,
+      ) => {
         if (patterns.length === 0) return;
-        const lower = chunk.toLowerCase();
+        const lower = accumulatedOutput.toLowerCase();
         const hit = patterns.find((p) =>
           lower.includes(p.pattern.toLowerCase()),
         );
@@ -415,12 +439,16 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
+        // Sliding window: check tail overlap + current chunk to catch patterns
+        // split across stream chunks without scanning the full accumulated buffer.
+        const stdoutWindow = stdoutPatternTail + chunk;
         handleFatalMatch(
           "stdout",
           killOnStdoutPatterns,
-          chunk,
+          stdoutWindow,
           CommandFatalStdoutError,
         );
+        stdoutPatternTail = stdoutWindow.slice(-FATAL_PATTERN_TAIL_BYTES);
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
@@ -429,12 +457,14 @@ class HostSandboxInstance extends EventEmitter {
         if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);
         this.emit("stderr", chunk);
+        const stderrWindow = stderrPatternTail + chunk;
         handleFatalMatch(
           "stderr",
           killOnStderrPatterns,
-          chunk,
+          stderrWindow,
           CommandFatalStderrError,
         );
+        stderrPatternTail = stderrWindow.slice(-FATAL_PATTERN_TAIL_BYTES);
       });
 
       child.on("error", (err) => {

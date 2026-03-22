@@ -98,6 +98,14 @@ REVISE`;
   assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
+test("parsePlanVerdict: 2 categories in pass-2 uses last-position-wins", () => {
+  // Two categories (REVISE, APPROVED) — no line starts with a keyword (pass-1 misses),
+  // but last-position-wins in pass-2 picks APPROVED. With >= 3 threshold, this resolves.
+  const md = `## Verdict
+The plan does not need to be REVISEd. It is APPROVED.`;
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
 test("parsePlanVerdict: echoed template without final verdict returns UNKNOWN", () => {
   // Truncated output that only contains the echoed prompt template —
   // no standalone verdict, and pass 2 finds 3+ categories → UNKNOWN.
@@ -371,7 +379,7 @@ test("runPlanLoop: repeated UNKNOWN proceeds with planExhausted on final round",
   }
 });
 
-test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async () => {
+test("runPlanLoop: repeated REJECT returns failed with planReviewExhausted on final round", async () => {
   const tmp = makeTmp();
   try {
     const ctx = makeCtx(tmp);
@@ -400,8 +408,8 @@ test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async
       maxRounds: 3,
     });
 
-    assert.equal(result.status, "deferred");
-    assert.equal(result.deferredReason, "plan_blocked");
+    assert.equal(result.status, "failed");
+    assert.equal(result.planReviewExhausted, true);
     assert.equal(result.planExhausted, undefined);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

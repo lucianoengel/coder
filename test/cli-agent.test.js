@@ -102,7 +102,7 @@ test("claude: malicious model name is shell-escaped", () => {
   assert.ok(!cmd.includes(`--model '; touch`));
 });
 
-test("claude: session auth patterns include 'is already in use' for collision detection", () => {
+test("claude: session auth patterns include 'already in use' for collision detection", () => {
   const sessionCollisionError =
     "Error: Session ID 9b211b3e-9d0b-4f76-b5dd-2262c20b95e6 is already in use.";
   const match = CLAUDE_RESUME_FAILURE_PATTERNS.find(
