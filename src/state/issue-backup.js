@@ -161,6 +161,15 @@ export async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
   // other issues' scratchpad rows. The .md file is enough; DB will sync on use.
   const restored = await loadStateFromPath(path.join(backupDir, "state.json"));
   if (restored) {
+    // Cross-process restore: sessions from the old run are stale.
+    // sessionsDisabled may have been set due to a transient auth failure —
+    // clear it so the new run starts with sessions enabled.
+    restored.sessionsDisabled = false;
+    restored.planningSessionId = null;
+    restored.planReviewSessionId = null;
+    restored.implementationSessionId = null;
+    restored.programmerFixSessionId = null;
+    restored.reviewerSessionId = null;
     if (existsSync(backupMd))
       restored.scratchpadPath = path.relative(
         workspaceDir,

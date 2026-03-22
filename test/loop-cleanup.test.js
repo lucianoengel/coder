@@ -931,3 +931,63 @@ test("resetForNextIssue: removes stale artifacts and state", async () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("prepareForIssue: restoring backup clears sessionsDisabled and stale session IDs", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "99", title: "Session test" };
+    const backupKey = "github-99-root";
+    const backupDir = path.join(tmp, ".coder", "backups", backupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "99", title: "Session test" },
+        repoPath: ".",
+        steps: { wroteIssue: true, wrotePlan: true },
+        sessionsDisabled: true,
+        planningSessionId: "old-session-1",
+        implementationSessionId: "old-session-2",
+        planReviewSessionId: "old-session-3",
+        programmerFixSessionId: null,
+        reviewerSessionId: null,
+      }),
+    );
+    writeFileSync(path.join(backupDir, "artifacts", "ISSUE.md"), "# Issue\n");
+    writeFileSync(path.join(backupDir, "artifacts", "PLAN.md"), "# Plan\n");
+
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: () => {},
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    const state = JSON.parse(
+      readFileSync(path.join(tmp, ".coder", "state.json"), "utf8"),
+    );
+    assert.equal(
+      state.sessionsDisabled,
+      false,
+      "sessionsDisabled should be cleared on backup restore",
+    );
+    assert.equal(
+      state.planningSessionId,
+      null,
+      "stale planningSessionId cleared",
+    );
+    assert.equal(
+      state.implementationSessionId,
+      null,
+      "stale implementationSessionId cleared",
+    );
+    assert.equal(
+      state.planReviewSessionId,
+      null,
+      "stale planReviewSessionId cleared",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

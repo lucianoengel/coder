@@ -139,8 +139,11 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-export function fetchGithubIssues(cwd, { limit = 50 } = {}) {
-  const res = spawnSync(
+export function fetchGithubIssues(
+  cwd,
+  { limit = 50, _spawnSync = spawnSync } = {},
+) {
+  const res = _spawnSync(
     "gh",
     [
       "issue",
@@ -189,12 +192,15 @@ export function fetchGithubIssues(cwd, { limit = 50 } = {}) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-export function fetchGitlabIssues(cwd, { limit = 1000 } = {}) {
+export function fetchGitlabIssues(
+  cwd,
+  { limit = 1000, _spawnSync = spawnSync } = {},
+) {
   const allIssues = [];
   const maxPages = Math.max(1, Math.ceil(limit / 100));
 
   for (let page = 1; page <= maxPages; page++) {
-    const res = spawnSync(
+    const res = _spawnSync(
       "glab",
       ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
       { cwd, encoding: "utf8", timeout: 15000 },

@@ -280,6 +280,11 @@ class HostSandboxInstance extends EventEmitter {
       };
 
       const FATAL_ESCALATION_MS = 2000;
+      // Sliding window for fatal-pattern matching: overlap >= max pattern length
+      // so patterns split across chunk boundaries are still caught.
+      const FATAL_PATTERN_TAIL_BYTES = 256;
+      let stdoutPatternTail = "";
+      let stderrPatternTail = "";
       const FORCE_SETTLE_AFTER_KILL_MS = 15_000;
       const log = typeof options.log === "function" ? options.log : null;
 
@@ -434,13 +439,16 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
-        // Check accumulated stdout so split messages (e.g. across stream chunks) are caught
+        // Sliding window: check tail overlap + current chunk to catch patterns
+        // split across stream chunks without scanning the full accumulated buffer.
+        const stdoutWindow = stdoutPatternTail + chunk;
         handleFatalMatch(
           "stdout",
           killOnStdoutPatterns,
-          stdout,
+          stdoutWindow,
           CommandFatalStdoutError,
         );
+        stdoutPatternTail = stdoutWindow.slice(-FATAL_PATTERN_TAIL_BYTES);
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
@@ -449,12 +457,14 @@ class HostSandboxInstance extends EventEmitter {
         if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);
         this.emit("stderr", chunk);
+        const stderrWindow = stderrPatternTail + chunk;
         handleFatalMatch(
           "stderr",
           killOnStderrPatterns,
-          stderr,
+          stderrWindow,
           CommandFatalStderrError,
         );
+        stderrPatternTail = stderrWindow.slice(-FATAL_PATTERN_TAIL_BYTES);
       });
 
       child.on("error", (err) => {
