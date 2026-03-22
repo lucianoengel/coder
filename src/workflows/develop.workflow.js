@@ -512,9 +512,13 @@ export async function runDevelopPipeline(opts, ctx) {
       onFailedAttempt: async ({ attempt, maxRetries, result }) => {
         const failed = findFailedMachineResult(result);
         // On terminal attempt with an exhausted plan, reset the full plan/review
-        // cycle regardless of which machine failed (implementation, quality_review,
-        // or pr_creation).
-        if (attempt >= maxRetries && planExhausted) {
+        // cycle — but skip if only PR creation failed, since that means the code
+        // was implemented and reviewed successfully.
+        if (
+          attempt >= maxRetries &&
+          planExhausted &&
+          failed?.machine !== "develop.pr_creation"
+        ) {
           const state = await loadState(ctx.workspaceDir);
           if (state?.steps) {
             state.steps.implemented = false;
