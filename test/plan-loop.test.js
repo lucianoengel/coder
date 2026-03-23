@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -525,6 +531,50 @@ test("runPlanLoop: plan machine error aborts and returns failed", async () => {
 
     assert.equal(result.status, "failed");
     assert.match(result.error, /plan failed/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: cancelToken.cancelled before round > 0 preserves PLAN.md", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    // Pre-create PLAN.md so we can verify it survives cancellation
+    const planPath = path.join(tmp, ".coder", "artifacts", "PLAN.md");
+    writeFileSync(planPath, "# Existing plan\n", "utf8");
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        // After round 0 review, cancel the token so round 1 sees it
+        ctx.cancelToken.cancelled = true;
+        return {
+          status: "ok",
+          data: { critiqueMd: "needs work", verdict: "REVISE" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.ok(
+      existsSync(planPath),
+      "PLAN.md must not be deleted on cancellation",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

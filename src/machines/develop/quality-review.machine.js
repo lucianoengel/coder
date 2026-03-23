@@ -231,7 +231,8 @@ export default defineMachine({
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
     ensureBranch(repoRoot, state.branch);
-    const baseBranch = state.baseBranch || detectDefaultBranch(repoRoot);
+    const baseBranch =
+      state.baseBranch || (await detectDefaultBranch(repoRoot));
 
     const { agentName: programmerName, agent: programmerAgent } =
       ctx.agentPool.getAgent("programmer", { scope: "repo" });

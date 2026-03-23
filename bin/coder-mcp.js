@@ -138,7 +138,7 @@ async function runStdio(workspace) {
   await server.connect(transport);
 }
 
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 
 async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
@@ -244,7 +244,8 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       if (transport.sessionId)
         sessionLastSeen.set(transport.sessionId, Date.now());
       await transport.handleRequest(req, res, req.body);
-    } catch {
+    } catch (err) {
+      console.error("[coder-mcp] HTTP transport error:", err);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -258,6 +259,13 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
     }
   });
 
+  const healthPath = routePath.endsWith("/")
+    ? `${routePath}health`
+    : `${routePath}/health`;
+  app.get(healthPath, (_req, res) =>
+    res.json({ status: "ok", sessions: transports.size }),
+  );
+
   app.get(routePath, async (req, res) => {
     const sessionIdHeader = req.headers["mcp-session-id"];
     const sessionId = Array.isArray(sessionIdHeader)
@@ -268,7 +276,18 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("[coder-mcp] HTTP transport error (GET):", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
   });
 
   app.delete(routePath, async (req, res) => {
@@ -281,7 +300,18 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("[coder-mcp] HTTP transport error (DELETE):", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
   });
 
   // Periodic cleanup of stale sessions

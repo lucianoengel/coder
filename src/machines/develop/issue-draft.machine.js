@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   gitCleanOrThrow,
   sanitizeIssueMarkdown,
+  spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
 import { ScratchpadPersistence } from "../../state/persistence.js";
@@ -55,15 +56,23 @@ function formatBodyWithComments(body, comments) {
  * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
  * @returns {string | null}
  */
-function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
+async function fetchIssueBody(
+  source,
+  id,
+  repoRoot,
+  localIssuesDir,
+  { signal } = {},
+) {
   if (source === "github") {
     const num = id.replace(/^#/, "");
-    const res = spawnSync(
+    const res = await spawnAsync(
       "gh",
       ["issue", "view", num, "--json", "body,comments"],
-      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      { cwd: repoRoot, signal, timeout: 10000 },
     );
-    if (res.status !== 0 || !res.stdout) return null;
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.body, data.comments);
@@ -74,12 +83,14 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
 
   if (source === "gitlab") {
     const iid = id.replace(/^[#!]/, "");
-    const res = spawnSync("glab", ["issue", "view", iid, "--output", "json"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 10000,
-    });
-    if (res.status !== 0 || !res.stdout) return null;
+    const res = await spawnAsync(
+      "glab",
+      ["issue", "view", iid, "--output", "json"],
+      { cwd: repoRoot, signal, timeout: 10000 },
+    );
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.description, data.notes);
@@ -260,10 +271,20 @@ export default defineMachine({
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
       // Fetch the branch in case it only exists on the remote (#108)
-      spawnSync("git", ["fetch", "origin", state.baseBranch], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
+      const fetchRes = await spawnAsync(
+        "git",
+        ["fetch", "origin", state.baseBranch],
+        { cwd: repoRoot, signal: ctx.signal },
+      );
+      // Propagate abort/timeout, but treat other fetch failures as best-effort
+      // (offline, no remote, etc.) — the subsequent checkout will fail if needed.
+      if (
+        fetchRes.error &&
+        (fetchRes.error.code === "ABORT_ERR" ||
+          fetchRes.error.code === "ETIMEDOUT")
+      ) {
+        throw fetchRes.error;
+      }
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,
         encoding: "utf8",
@@ -302,11 +323,12 @@ export default defineMachine({
         : path.resolve(ctx.workspaceDir, rawLocalIssuesDir)
       : null;
 
-    const issueBody = fetchIssueBody(
+    const issueBody = await fetchIssueBody(
       input.issue.source,
       input.issue.id,
       repoRoot,
       resolvedLocalIssuesDir,
+      { signal: ctx.signal },
     );
 
     const issueBodySection = issueBody

@@ -5,30 +5,36 @@ import {
   fetchGitlabIssues,
 } from "../src/machines/develop/issue-list.machine.js";
 
+// Async stub helper — wraps a sync return value in a resolved promise
+const asyncStub =
+  (fn) =>
+  (...args) =>
+    Promise.resolve(fn(...args));
+
 // --- fetchGithubIssues ---
 
-test("fetchGithubIssues throws on missing binary (ENOENT)", () => {
-  const stub = () => ({
+test("fetchGithubIssues throws on missing binary (ENOENT)", async () => {
+  const stub = asyncStub(() => ({
     error: new Error("spawn gh ENOENT"),
     status: null,
     stdout: "",
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGithubIssues("/tmp", { _spawn: stub }),
     /gh:.*ENOENT/,
   );
 });
 
-test("fetchGithubIssues throws on non-zero exit with stderr", () => {
-  const stub = () => ({
+test("fetchGithubIssues throws on non-zero exit with stderr", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 1,
     stderr: "auth token expired",
     stdout: "",
-  });
-  assert.throws(
-    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGithubIssues("/tmp", { _spawn: stub }),
     (err) => {
       assert.match(err.message, /gh issue list failed/);
       assert.match(err.message, /exit 1/);
@@ -38,53 +44,53 @@ test("fetchGithubIssues throws on non-zero exit with stderr", () => {
   );
 });
 
-test("fetchGithubIssues throws on invalid JSON output", () => {
-  const stub = () => ({
+test("fetchGithubIssues throws on invalid JSON output", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "not json{",
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGithubIssues("/tmp", { _spawn: stub }),
     /invalid JSON/,
   );
 });
 
-test("fetchGithubIssues throws on non-array JSON output", () => {
-  const stub = () => ({
+test("fetchGithubIssues throws on non-array JSON output", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: '{"foo":1}',
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGithubIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGithubIssues("/tmp", { _spawn: stub }),
     /non-array JSON/,
   );
 });
 
-test("fetchGithubIssues returns [] on empty stdout", () => {
-  const stub = () => ({
+test("fetchGithubIssues returns [] on empty stdout", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "",
     stderr: "",
-  });
-  assert.deepEqual(fetchGithubIssues("/tmp", { _spawnSync: stub }), []);
+  }));
+  assert.deepEqual(await fetchGithubIssues("/tmp", { _spawn: stub }), []);
 });
 
-test("fetchGithubIssues returns [] on empty JSON array", () => {
-  const stub = () => ({
+test("fetchGithubIssues returns [] on empty JSON array", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "[]",
     stderr: "",
-  });
-  assert.deepEqual(fetchGithubIssues("/tmp", { _spawnSync: stub }), []);
+  }));
+  assert.deepEqual(await fetchGithubIssues("/tmp", { _spawn: stub }), []);
 });
 
-test("fetchGithubIssues returns parsed array on valid JSON", () => {
+test("fetchGithubIssues returns parsed array on valid JSON", async () => {
   const payload = [
     {
       number: 1,
@@ -95,13 +101,13 @@ test("fetchGithubIssues returns parsed array on valid JSON", () => {
       comments: [],
     },
   ];
-  const stub = () => ({
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  });
-  const result = fetchGithubIssues("/tmp", { _spawnSync: stub });
+  }));
+  const result = await fetchGithubIssues("/tmp", { _spawn: stub });
   assert.equal(result.length, 1);
   assert.equal(result[0].number, 1);
   assert.equal(result[0].title, "test");
@@ -109,28 +115,28 @@ test("fetchGithubIssues returns parsed array on valid JSON", () => {
 
 // --- fetchGitlabIssues ---
 
-test("fetchGitlabIssues throws on missing binary (ENOENT)", () => {
-  const stub = () => ({
+test("fetchGitlabIssues throws on missing binary (ENOENT)", async () => {
+  const stub = asyncStub(() => ({
     error: new Error("spawn glab ENOENT"),
     status: null,
     stdout: "",
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGitlabIssues("/tmp", { _spawn: stub }),
     /glab:.*ENOENT/,
   );
 });
 
-test("fetchGitlabIssues throws on non-zero exit with stderr", () => {
-  const stub = () => ({
+test("fetchGitlabIssues throws on non-zero exit with stderr", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 1,
     stderr: "token revoked",
     stdout: "",
-  });
-  assert.throws(
-    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGitlabIssues("/tmp", { _spawn: stub }),
     (err) => {
       assert.match(err.message, /glab issue list failed/);
       assert.match(err.message, /exit 1/);
@@ -140,53 +146,53 @@ test("fetchGitlabIssues throws on non-zero exit with stderr", () => {
   );
 });
 
-test("fetchGitlabIssues throws on invalid JSON output", () => {
-  const stub = () => ({
+test("fetchGitlabIssues throws on invalid JSON output", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "{broken",
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGitlabIssues("/tmp", { _spawn: stub }),
     /invalid JSON/,
   );
 });
 
-test("fetchGitlabIssues throws on non-array JSON output", () => {
-  const stub = () => ({
+test("fetchGitlabIssues throws on non-array JSON output", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: '{"foo":1}',
     stderr: "",
-  });
-  assert.throws(
-    () => fetchGitlabIssues("/tmp", { _spawnSync: stub }),
+  }));
+  await assert.rejects(
+    () => fetchGitlabIssues("/tmp", { _spawn: stub }),
     /non-array JSON/,
   );
 });
 
-test("fetchGitlabIssues returns [] on empty stdout (first page)", () => {
-  const stub = () => ({
+test("fetchGitlabIssues returns [] on empty stdout (first page)", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "",
     stderr: "",
-  });
-  assert.deepEqual(fetchGitlabIssues("/tmp", { _spawnSync: stub }), []);
+  }));
+  assert.deepEqual(await fetchGitlabIssues("/tmp", { _spawn: stub }), []);
 });
 
-test("fetchGitlabIssues returns [] on empty JSON array", () => {
-  const stub = () => ({
+test("fetchGitlabIssues returns [] on empty JSON array", async () => {
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: "[]",
     stderr: "",
-  });
-  assert.deepEqual(fetchGitlabIssues("/tmp", { _spawnSync: stub }), []);
+  }));
+  assert.deepEqual(await fetchGitlabIssues("/tmp", { _spawn: stub }), []);
 });
 
-test("fetchGitlabIssues returns mapped data on valid JSON", () => {
+test("fetchGitlabIssues returns mapped data on valid JSON", async () => {
   const payload = [
     {
       iid: 7,
@@ -196,13 +202,13 @@ test("fetchGitlabIssues returns mapped data on valid JSON", () => {
       web_url: "https://gl.example.com/7",
     },
   ];
-  const stub = () => ({
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  });
-  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
+  }));
+  const result = await fetchGitlabIssues("/tmp", { _spawn: stub });
   assert.equal(result.length, 1);
   assert.equal(result[0].iid, 7);
   assert.equal(result[0].title, "Fix CI");
@@ -211,7 +217,7 @@ test("fetchGitlabIssues returns mapped data on valid JSON", () => {
   assert.equal(result[0].web_url, "https://gl.example.com/7");
 });
 
-test("fetchGitlabIssues handles string labels alongside object labels", () => {
+test("fetchGitlabIssues handles string labels alongside object labels", async () => {
   const payload = [
     {
       iid: 10,
@@ -221,17 +227,17 @@ test("fetchGitlabIssues handles string labels alongside object labels", () => {
       web_url: "https://gl.example.com/10",
     },
   ];
-  const stub = () => ({
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  });
-  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
+  }));
+  const result = await fetchGitlabIssues("/tmp", { _spawn: stub });
   assert.deepEqual(result[0].labels, ["plain-string", "object-label", "42"]);
 });
 
-test("fetchGitlabIssues truncates description to 500 chars", () => {
+test("fetchGitlabIssues truncates description to 500 chars", async () => {
   const longDesc = "x".repeat(600);
   const payload = [
     {
@@ -242,17 +248,17 @@ test("fetchGitlabIssues truncates description to 500 chars", () => {
       web_url: "https://gl.example.com/11",
     },
   ];
-  const stub = () => ({
+  const stub = asyncStub(() => ({
     error: null,
     status: 0,
     stdout: JSON.stringify(payload),
     stderr: "",
-  });
-  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
+  }));
+  const result = await fetchGitlabIssues("/tmp", { _spawn: stub });
   assert.equal(result[0].description.length, 500);
 });
 
-test("fetchGitlabIssues paginates across multiple pages", () => {
+test("fetchGitlabIssues paginates across multiple pages", async () => {
   let callCount = 0;
   const page1 = Array.from({ length: 100 }, (_, i) => ({
     iid: i + 1,
@@ -271,7 +277,7 @@ test("fetchGitlabIssues paginates across multiple pages", () => {
     },
   ];
 
-  const stub = () => {
+  const stub = asyncStub(() => {
     callCount++;
     return {
       error: null,
@@ -279,8 +285,8 @@ test("fetchGitlabIssues paginates across multiple pages", () => {
       stdout: JSON.stringify(callCount === 1 ? page1 : page2),
       stderr: "",
     };
-  };
-  const result = fetchGitlabIssues("/tmp", { _spawnSync: stub });
+  });
+  const result = await fetchGitlabIssues("/tmp", { _spawn: stub });
   assert.equal(result.length, 101);
   assert.equal(result[0].iid, 1);
   assert.equal(result[100].iid, 101);

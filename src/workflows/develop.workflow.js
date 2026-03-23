@@ -133,6 +133,9 @@ export async function runPlanLoop(
 
   for (let round = 0; round < maxRounds; round++) {
     if (round > 0) {
+      if (ctx.cancelToken?.cancelled) {
+        return { status: "cancelled", results: allResults };
+      }
       const paths = artifactPaths(ctx.artifactsDir);
       rmSync(paths.plan, { force: true });
       rmSync(paths.critique, { force: true });
@@ -1020,7 +1023,7 @@ export async function runDevelopLoop(opts, ctx) {
   // Recovers from prior crashed/interrupted runs without touching loop-state.json.
   // Throws if git is broken — no point continuing if the workspace can't be cleaned.
   const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
-  const loopDefaultBranch = detectDefaultBranch(loopRepoRoot);
+  const loopDefaultBranch = await detectDefaultBranch(loopRepoRoot);
   const knownBranches = new Set(
     priorQueue.map((q) => q.branch).filter(Boolean),
   );
@@ -1098,7 +1101,7 @@ export async function runDevelopLoop(opts, ctx) {
       entry.repoPath = priorRepoPath;
       if (prior.branch) {
         const priorRepoRoot = resolveRepoRoot(ctx.workspaceDir, priorRepoPath);
-        const priorDefault = detectDefaultBranch(priorRepoRoot);
+        const priorDefault = await detectDefaultBranch(priorRepoRoot);
         const stat = spawnSync(
           "git",
           ["diff", "--stat", `${priorDefault}...${prior.branch}`],
@@ -1217,8 +1220,8 @@ export async function runDevelopLoop(opts, ctx) {
     const issueRepoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
 
     // Resolve per-issue default branch before git ops
-    const issueDefaultBranch = detectDefaultBranch(issueRepoRoot);
-    const trackingOk = checkDefaultBranchTracking(
+    const issueDefaultBranch = await detectDefaultBranch(issueRepoRoot);
+    const trackingOk = await checkDefaultBranchTracking(
       issueRepoRoot,
       issueDefaultBranch,
       ctx.log,
@@ -2086,7 +2089,7 @@ export async function ensureCleanLoopStartRecovery(workspaceDir, ctx) {
   const repoRoot = resolveRepoRoot(workspaceDir, ".");
   if (!existsSync(repoRoot)) return;
 
-  const defaultBranch = detectDefaultBranch(repoRoot);
+  const defaultBranch = await detectDefaultBranch(repoRoot);
 
   // 1. Detect current branch
   const headRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
