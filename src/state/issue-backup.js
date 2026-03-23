@@ -23,6 +23,15 @@ export function backupKeyFor(issue) {
   );
 }
 
+/**
+ * Stable per-issue RCA file path — immune to archive/clear races.
+ * Used by the failure monitor (write) and retry flow (read).
+ */
+export function issueRcaPath(workspaceDir, issue) {
+  const safeId = String(issue?.id ?? "unknown").replace(/[/\\:*?"<>|]/g, "-");
+  return path.join(workspaceDir, ".coder", "rca", `${safeId}.md`);
+}
+
 /** @deprecated Use reconcileSteps for graceful partial recovery. */
 export function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
   const { rolledBack } = reconcileSteps(

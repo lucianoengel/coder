@@ -36,6 +36,7 @@ import { runPreflight } from "../preflight.js";
 import {
   archiveFailureArtifacts,
   backupKeyFor,
+  issueRcaPath,
   prepareForIssue,
   saveBackup,
 } from "../state/issue-backup.js";
@@ -1334,9 +1335,13 @@ export async function runDevelopLoop(opts, ctx) {
       await prepareForIssue(ctx.workspaceDir, issue, ctx);
     }
 
-    // Build clarifications — reference RCA file from prior failure if available
+    // Build clarifications — reference RCA file from prior failure if available.
+    // Read from the stable per-issue RCA path (immune to archive/clear races),
+    // falling back to the legacy artifacts location for backwards compat.
     let clarifications = `Autonomous mode. Goal: ${goal}`;
-    const rcaPath = artifactPaths(ctx.artifactsDir).rca;
+    const stableRcaPath = issueRcaPath(ctx.workspaceDir, issue);
+    const legacyRcaPath = artifactPaths(ctx.artifactsDir).rca;
+    const rcaPath = existsSync(stableRcaPath) ? stableRcaPath : legacyRcaPath;
     if (isRetry && existsSync(rcaPath)) {
       clarifications +=
         "\n\n---\n## Prior Failure Analysis\n\n" +

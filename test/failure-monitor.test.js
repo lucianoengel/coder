@@ -327,7 +327,7 @@ test("runFailureRca: agent failure is non-blocking", async () => {
   }
 });
 
-test("runFailureRca: persists RCA.md to artifacts for agent consumption", async () => {
+test("runFailureRca: persists RCA.md to per-issue rca dir for agent consumption", async () => {
   const tmp = makeTmpWorkspace();
   try {
     const loopState = {
@@ -362,9 +362,9 @@ test("runFailureRca: persists RCA.md to artifacts for agent consumption", async 
       ctx,
     );
 
-    // RCA.md should be written to artifacts dir for agents to read
-    const rcaPath = path.join(tmp, ".coder", "artifacts", "RCA.md");
-    assert.ok(existsSync(rcaPath), "RCA.md should be persisted");
+    // RCA.md should be written to per-issue rca dir (immune to archive/clear races)
+    const rcaPath = path.join(tmp, ".coder", "rca", "#5.md");
+    assert.ok(existsSync(rcaPath), "RCA.md should be persisted to per-issue path");
     const rcaContent = readFileSync(rcaPath, "utf8");
     assert.ok(
       rcaContent.includes("Missing import"),

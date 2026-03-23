@@ -5,12 +5,12 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { logsDir } from "../logging.js";
+import { issueRcaPath } from "../state/issue-backup.js";
 import { saveLoopState } from "../state/workflow-state.js";
 import { runHooks } from "./_base.js";
 
@@ -502,13 +502,14 @@ export async function runFailureRca(failureCtx, ctx) {
 
     const classification = parseRcaClassification(rcaAnalysis);
 
-    // Persist RCA to artifacts dir so it survives archival and process restarts.
+    // Persist RCA to a stable per-issue location so it survives archive/clear
+    // races (the main loop resets artifacts before pending RCA promises settle).
     // Agents read this file on retry to understand the prior failure.
     try {
-      const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
-      mkdirSync(artifactsDir, { recursive: true });
+      const rcaDest = issueRcaPath(ctx.workspaceDir, issue);
+      mkdirSync(path.dirname(rcaDest), { recursive: true });
       writeFileSync(
-        path.join(artifactsDir, "RCA.md"),
+        rcaDest,
         `# Root Cause Analysis: ${issue.title || issue.id}\n\n` +
           `**Classification:** ${classification}\n\n${rcaAnalysis}\n`,
         "utf8",
