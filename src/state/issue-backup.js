@@ -25,11 +25,12 @@ export function backupKeyFor(issue) {
 
 /**
  * Stable per-issue RCA file path — immune to archive/clear races.
- * Used by the failure monitor (write) and retry flow (read).
+ * Uses the same composite key as backupKeyFor (source + id + repo_path)
+ * to avoid collisions across sources/repos with the same issue id.
  */
 export function issueRcaPath(workspaceDir, issue) {
-  const safeId = String(issue?.id ?? "unknown").replace(/[/\\:*?"<>|]/g, "-");
-  return path.join(workspaceDir, ".coder", "rca", `${safeId}.md`);
+  const key = backupKeyFor(issue);
+  return path.join(workspaceDir, ".coder", "rca", `${key}.md`);
 }
 
 /** @deprecated Use reconcileSteps for graceful partial recovery. */
