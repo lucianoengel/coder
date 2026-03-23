@@ -303,6 +303,10 @@ export async function runFailureRca(failureCtx, ctx) {
       return { issueUrl: null, skipped: true };
     }
 
+    // Yield to the event loop before running spawnSync-heavy work so callers
+    // that fire-and-forget this promise are not blocked synchronously.
+    await new Promise((r) => setImmediate(r));
+
     const { issue, loopRunId, loopState, issueIndex } = failureCtx;
     const repoRoot = ctx.workspaceDir;
 
@@ -322,6 +326,15 @@ export async function runFailureRca(failureCtx, ctx) {
       loopState,
       issueIndex,
     );
+
+    // Prefer caller-supplied error/deferredReason over loop-state values
+    // so runFailureRca is self-contained and not dependent on mutation ordering.
+    if (failureCtx.error && !failureContext.error) {
+      failureContext.error = failureCtx.error;
+    }
+    if (failureCtx.deferredReason && !failureContext.deferredReason) {
+      failureContext.deferredReason = failureCtx.deferredReason;
+    }
 
     // Get agent and run RCA
     const { agent, agentName } = ctx.agentPool.getAgent("failureMonitor", {
