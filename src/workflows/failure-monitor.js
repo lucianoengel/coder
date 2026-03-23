@@ -303,23 +303,23 @@ export async function runFailureRca(failureCtx, ctx) {
       return { issueUrl: null, skipped: true };
     }
 
-    // Yield to the event loop before running spawnSync-heavy work so callers
-    // that fire-and-forget this promise are not blocked synchronously.
-    await new Promise((r) => setImmediate(r));
-
     const { issue, loopRunId, loopState, issueIndex } = failureCtx;
     const repoRoot = ctx.workspaceDir;
 
-    // Dedup check
-    if (hasDuplicateRcaIssue(repoRoot, issue.id)) {
+    // Gate: only file RCA issues for GitHub-sourced repos (gh CLI required).
+    const issueSource = issue.source || ctx.config?.workflow?.issueSource;
+    if (issueSource && issueSource !== "github") {
       ctx.log({
-        event: "failure_monitor_dedup",
+        event: "failure_monitor_skipped_source",
         issueId: issue.id,
+        source: issueSource,
       });
       return { issueUrl: null, skipped: true };
     }
 
-    // Gather context
+    // Snapshot failure context synchronously BEFORE yielding so that
+    // artifact files and loop-state entries are captured before the
+    // main loop resets them for the next issue.
     const failureContext = gatherFailureContext(
       ctx.workspaceDir,
       issue,
@@ -334,6 +334,19 @@ export async function runFailureRca(failureCtx, ctx) {
     }
     if (failureCtx.deferredReason && !failureContext.deferredReason) {
       failureContext.deferredReason = failureCtx.deferredReason;
+    }
+
+    // Yield to the event loop before the expensive dedup check and agent call
+    // so callers that fire-and-forget this promise are not blocked.
+    await new Promise((r) => setImmediate(r));
+
+    // Dedup check
+    if (hasDuplicateRcaIssue(repoRoot, issue.id)) {
+      ctx.log({
+        event: "failure_monitor_dedup",
+        issueId: issue.id,
+      });
+      return { issueUrl: null, skipped: true };
     }
 
     // Get agent and run RCA
