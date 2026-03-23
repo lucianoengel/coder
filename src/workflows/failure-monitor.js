@@ -167,10 +167,10 @@ function buildRcaPrompt(issue, failureContext) {
 Perform a root cause analysis. Structure your response EXACTLY as shown:
 
 ### Classification
-One of:
-- **CODER_BUG** — the failure is caused by a bug or limitation in the coder workflow engine itself (e.g. incorrect prompt construction, state management error, missing error handling in a machine, wrong git operations, sandbox misconfiguration, agent orchestration bug). These are issues in the coder project that affect any user project.
-- **PROJECT_ISSUE** — the failure is specific to the user's project (e.g. build errors in their code, missing dependencies, test failures in their tests, merge conflicts in their repo, flaky CI). The coder workflow operated correctly but the project has issues the agent couldn't resolve.
-- **INFRA** — external infrastructure failure (API rate limits, network timeouts, disk full, auth expired). Neither coder nor the project is at fault.
+Classify by whether the coder project can act on this. Pick one:
+- **CODER_BUG** — a bug or limitation in the coder workflow engine (e.g. incorrect prompt construction, state management error, missing error handling in a machine, wrong git operations, sandbox misconfiguration, agent orchestration bug).
+- **INFRA** — external infrastructure issue (API rate limits, network timeouts, disk full, auth expired, unsupported environment setup). The coder project may be able to handle these more gracefully — better retries, clearer errors, broader environment support.
+- **PROJECT_ISSUE** — the failure is specific to the user's project (e.g. build errors in their code, missing dependencies, test failures in their tests, merge conflicts in their repo). The coder workflow operated correctly but the project has issues the agent couldn't resolve. This is the ONLY classification where no upstream action is needed.
 - **UNCLEAR** — not enough information to determine the root cause.
 
 ### Root Cause
@@ -437,12 +437,13 @@ export async function runFailureRca(failureCtx, ctx) {
       return { issueUrl: null, skipped: true, classification };
     }
 
-    // Only file upstream bug reports when the RCA concludes this is a coder
-    // infrastructure bug — not a project-specific issue or external infra failure.
-    // The GitHub issue goes to the upstream coder repo as an automated bug report
-    // so the coder project can fix the underlying issue.
+    // File upstream bug reports for anything the coder project can act on.
+    // Only PROJECT_ISSUE is excluded — those are the user's own code/build/test
+    // failures that coder handled correctly. CODER_BUG, INFRA, and UNCLEAR all
+    // get filed: bugs are obvious, infra issues often reveal missing resilience
+    // or environment support gaps, and unclear failures need investigation.
     let issueUrl = null;
-    if (classification === "CODER_BUG") {
+    if (classification !== "PROJECT_ISSUE") {
       const upstreamRepo = monitorConfig.upstreamRepo;
       try {
         const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
@@ -487,7 +488,7 @@ export async function runFailureRca(failureCtx, ctx) {
         event: "failure_monitor_filing_skipped",
         issueId: issue.id,
         classification,
-        reason: "not a coder bug",
+        reason: "project-specific issue, not actionable upstream",
       });
     }
 
