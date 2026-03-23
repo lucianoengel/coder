@@ -34,8 +34,9 @@ import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import { runPreflight } from "../preflight.js";
 import {
-  archivePlanFailureArtifacts,
+  archiveFailureArtifacts,
   backupKeyFor,
+  issueRcaPath,
   prepareForIssue,
   saveBackup,
 } from "../state/issue-backup.js";
@@ -57,6 +58,7 @@ import {
   isGlabMrListFormatMismatchStderr,
   resetForNextIssue,
 } from "./develop-git.js";
+import { runFailureRca } from "./failure-monitor.js";
 import { syncDevelopLoopStage } from "./loop-sync.js";
 
 /**
@@ -895,9 +897,12 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   if (issueIds.length > 0) {
-    const foundSet = new Set(rawIssues.map((i) => String(i.id).toLowerCase()));
+    // Validate against the full fetched list (not the maxIssues-truncated one)
+    // so that a requested issue beyond the truncation point isn't rejected.
+    const fullList = listResult.data.issues;
+    const fullSet = new Set(fullList.map((i) => String(i.id).toLowerCase()));
     const missing = issueIds.filter(
-      (id) => !foundSet.has(String(id).toLowerCase()),
+      (id) => !fullSet.has(String(id).toLowerCase()),
     );
     if (missing.length > 0) {
       return {
@@ -906,6 +911,10 @@ export async function runDevelopLoop(opts, ctx) {
         results: [],
       };
     }
+    // Filter rawIssues to requested IDs so maxIssues truncation doesn't
+    // silently drop explicitly requested issues.
+    const reqSet = new Set(issueIds.map((id) => String(id).toLowerCase()));
+    rawIssues = fullList.filter((i) => reqSet.has(String(i.id).toLowerCase()));
   }
 
   if (rawIssues.length === 0) {
@@ -1053,9 +1062,21 @@ export async function runDevelopLoop(opts, ctx) {
   /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
   const outcomeMap = new Map();
   const results = [];
+  /** @type {Promise<{ issueUrl: string|null, skipped: boolean, error?: string }>[]} */
+  const pendingRcas = [];
   let completed = 0;
   let failed = 0;
   let skipped = 0;
+
+  function enqueueRca(issue, error, i, extra = {}) {
+    if (!ctx.config?.workflow?.failureMonitor?.enabled) return;
+    pendingRcas.push(
+      runFailureRca(
+        { issue, error, loopRunId, loopState, issueIndex: i, ...extra },
+        ctx,
+      ),
+    );
+  }
 
   // Seed outcomeMap from terminal issues in the prior run (includes
   // issues no longer in the active list, e.g. closed/merged).
@@ -1314,12 +1335,34 @@ export async function runDevelopLoop(opts, ctx) {
       await prepareForIssue(ctx.workspaceDir, issue, ctx);
     }
 
+    // Build clarifications — reference RCA file from prior failure if available.
+    // Read from the stable per-issue RCA path (immune to archive/clear races),
+    // falling back to the legacy artifacts location for backwards compat.
+    let clarifications = `Autonomous mode. Goal: ${goal}`;
+    const stableRcaPath = issueRcaPath(ctx.workspaceDir, issue);
+    const legacyRcaPath = artifactPaths(ctx.artifactsDir).rca;
+    const rcaPath = existsSync(stableRcaPath) ? stableRcaPath : legacyRcaPath;
+    if (isRetry && existsSync(rcaPath)) {
+      clarifications +=
+        "\n\n---\n## Prior Failure Analysis\n\n" +
+        "This issue failed on a previous attempt. A root cause analysis " +
+        `is available at \`${rcaPath}\`. Read it before starting — it ` +
+        "describes what went wrong and suggests fixes. Use this to avoid " +
+        "the same failure and fix any issues if they relate to the code " +
+        "you are developing.";
+      ctx.log({
+        event: "rca_reference_injected",
+        issueId: issue.id,
+        rcaPath,
+      });
+    }
+
     try {
       const pipelineResult = await runDevelopPipeline(
         {
           issue,
           repoPath,
-          clarifications: `Autonomous mode. Goal: ${goal}`,
+          clarifications,
           baseBranch: baseBranch || undefined,
           prBase: baseBranch || "",
           testCmd,
@@ -1479,16 +1522,22 @@ export async function runDevelopLoop(opts, ctx) {
             { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
-          // Archive plan artifacts for debugging (preserve state for resume like other defers)
-          archivePlanFailureArtifacts(
+          if (ctx.config?.workflow?.failureMonitor?.monitorBlockingDefers) {
+            enqueueRca(issue, errText, i, {
+              deferredReason: "plan_blocked",
+            });
+          }
+          // Archive artifacts for debugging (preserve state for resume like other defers)
+          archiveFailureArtifacts(
             ctx.workspaceDir,
             issue,
             "plan_review_exhausted",
+            { stage: "plan_review" },
           );
           ctx.log({
-            event: "plan_failure_archived",
+            event: "failure_archived",
             issueId: issue.id,
-            path: ".coder/plan-failures/",
+            path: ".coder/failures/",
           });
           return "deferred";
         }
@@ -1534,6 +1583,7 @@ export async function runDevelopLoop(opts, ctx) {
           { status: "failed", error: errText },
           issueEnv,
         );
+        enqueueRca(issue, errText, i);
       }
     } catch (err) {
       if (ctx.cancelToken.cancelled) {
@@ -1600,6 +1650,7 @@ export async function runDevelopLoop(opts, ctx) {
         { status: "failed", error: err.message },
         issueEnv,
       );
+      enqueueRca(issue, err.message, i);
     }
 
     await saveLoopState(ctx.workspaceDir, loopState, {
@@ -1610,12 +1661,14 @@ export async function runDevelopLoop(opts, ctx) {
     // subsequent issues would run from the wrong branch/worktree.
     const issueStatus = loopState.issueQueue[i].status;
     if (issueStatus === "failed" || issueStatus === "skipped") {
-      archivePlanFailureArtifacts(ctx.workspaceDir, issue, issueStatus);
+      archiveFailureArtifacts(ctx.workspaceDir, issue, issueStatus, {
+        stage: loopState.currentStage || undefined,
+      });
       ctx.log({
-        event: "plan_failure_archived",
+        event: "failure_archived",
         issueId: issue.id,
         reason: issueStatus,
-        path: ".coder/plan-failures/",
+        path: ".coder/failures/",
       });
     }
     const doReset = resetForNextIssueOverride ?? resetForNextIssue;
@@ -1664,6 +1717,7 @@ export async function runDevelopLoop(opts, ctx) {
             CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
           },
         );
+        enqueueRca(issue, loopState.issueQueue[i].error, i);
       }
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
@@ -1861,6 +1915,28 @@ export async function runDevelopLoop(opts, ctx) {
       }
     }
     ctx.log({ event: "smart_branch_cleanup", deleted, kept });
+  }
+
+  // Settle all pending failure RCA filings
+  if (pendingRcas.length > 0 && !ctx.cancelToken.cancelled) {
+    ctx.log({ event: "failure_monitor_settling", count: pendingRcas.length });
+    const rcaResults = await Promise.allSettled(pendingRcas);
+    const rcaFiled = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.issueUrl,
+    ).length;
+    const rcaSkipped = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.skipped,
+    ).length;
+    const rcaErrored = rcaResults.filter(
+      (r) =>
+        r.status === "rejected" || (r.status === "fulfilled" && r.value.error),
+    ).length;
+    ctx.log({
+      event: "failure_monitor_complete",
+      filed: rcaFiled,
+      skipped: rcaSkipped,
+      errored: rcaErrored,
+    });
   }
 
   // Agent-driven coalesce analysis for cross-branch integration review
