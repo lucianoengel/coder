@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -13,45 +13,68 @@ import {
   runTestConfig,
 } from "./test-runner.js";
 
+export function spawnAsync(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, opts);
+    let stdout = "";
+    let stderr = "";
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (d) => {
+        stdout += d;
+      });
+    }
+    if (child.stderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (d) => {
+        stderr += d;
+      });
+    }
+    child.on("error", (err) =>
+      resolve({ stdout, stderr, status: null, error: err }),
+    );
+    child.on("close", (status) => resolve({ stdout, stderr, status }));
+  });
+}
+
 /**
  * Detect the default branch for a git repository.
  * Tries `git symbolic-ref --short refs/remotes/origin/HEAD` first,
  * then falls back to checking if `main` exists, else `master`.
  *
  * @param {string} repoDir - Path to the git repository
- * @returns {string} The default branch name
+ * @param {{ signal?: AbortSignal }} [opts]
+ * @returns {Promise<string>} The default branch name
  */
-export function detectDefaultBranch(repoDir) {
-  const originHead = spawnSync(
+export async function detectDefaultBranch(repoDir, { signal } = {}) {
+  const originHead = await spawnAsync(
     "git",
     ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    {
-      cwd: repoDir,
-      encoding: "utf8",
-    },
+    { cwd: repoDir, signal },
   );
   if (originHead.status === 0) {
     const raw = (originHead.stdout || "").trim();
     if (raw.startsWith("origin/") && raw.length > "origin/".length) {
       const branch = raw.slice("origin/".length);
-      const verify = spawnSync("git", ["rev-parse", "--verify", raw], {
+      const verify = await spawnAsync("git", ["rev-parse", "--verify", raw], {
         cwd: repoDir,
-        encoding: "utf8",
+        signal,
       });
       if (verify.status === 0) return branch;
     }
   }
 
-  const mainCheck = spawnSync("git", ["rev-parse", "--verify", "main"], {
+  const mainCheck = await spawnAsync("git", ["rev-parse", "--verify", "main"], {
     cwd: repoDir,
-    encoding: "utf8",
+    signal,
   });
   if (mainCheck.status === 0) return "main";
 
-  const masterCheck = spawnSync("git", ["rev-parse", "--verify", "master"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  const masterCheck = await spawnAsync(
+    "git",
+    ["rev-parse", "--verify", "master"],
+    { cwd: repoDir, signal },
+  );
   if (masterCheck.status === 0) return "master";
 
   throw new Error(
@@ -67,22 +90,27 @@ export function detectDefaultBranch(repoDir) {
  * @param {(obj: object) => void} log - Logger function
  * @returns {boolean} true if tracking is configured or no remote exists
  */
-export function checkDefaultBranchTracking(repoDir, defaultBranch, log) {
-  const hasOrigin = spawnSync("git", ["remote", "get-url", "origin"], {
+export async function checkDefaultBranchTracking(
+  repoDir,
+  defaultBranch,
+  log,
+  { signal } = {},
+) {
+  const hasOrigin = await spawnAsync("git", ["remote", "get-url", "origin"], {
     cwd: repoDir,
-    encoding: "utf8",
+    signal,
   });
   if (hasOrigin.status !== 0) return true; // No remote; tracking check N/A
 
-  const remote = spawnSync(
+  const remote = await spawnAsync(
     "git",
     ["config", "--get", `branch.${defaultBranch}.remote`],
-    { cwd: repoDir, encoding: "utf8" },
+    { cwd: repoDir, signal },
   );
-  const merge = spawnSync(
+  const merge = await spawnAsync(
     "git",
     ["config", "--get", `branch.${defaultBranch}.merge`],
-    { cwd: repoDir, encoding: "utf8" },
+    { cwd: repoDir, signal },
   );
   if (remote.status !== 0 || merge.status !== 0) {
     const remoteName = getDefaultBranchRemoteName(repoDir, defaultBranch);

@@ -1,8 +1,11 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { formatCommandFailure, stripAgentNoise } from "../../helpers.js";
+import {
+  formatCommandFailure,
+  spawnAsync,
+  stripAgentNoise,
+} from "../../helpers.js";
 import {
   IssueItemSchema,
   IssuesPayloadSchema,
@@ -99,8 +102,8 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-function fetchGithubIssues(cwd) {
-  const res = spawnSync(
+async function fetchGithubIssues(cwd, { signal } = {}) {
+  const res = await spawnAsync(
     "gh",
     [
       "issue",
@@ -112,7 +115,7 @@ function fetchGithubIssues(cwd) {
       "--limit",
       "50",
     ],
-    { cwd, encoding: "utf8", timeout: 15000 },
+    { cwd, signal, timeout: 15000 },
   );
   if (res.error) {
     throw new Error(`gh: ${res.error.message}`);
@@ -149,14 +152,14 @@ function fetchGithubIssues(cwd) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-function fetchGitlabIssues(cwd) {
+async function fetchGitlabIssues(cwd, { signal } = {}) {
   const allIssues = [];
 
   for (let page = 1; page <= 10; page++) {
-    const res = spawnSync(
+    const res = await spawnAsync(
       "glab",
       ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
-      { cwd, encoding: "utf8", timeout: 15000 },
+      { cwd, signal, timeout: 15000 },
     );
     if (res.error) {
       throw new Error(`glab: ${res.error.message}`);
@@ -289,7 +292,7 @@ export default defineMachine({
     if (issueIds && (issueSource === "github" || issueSource === "gitlab")) {
       const fetchFn =
         issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
-      const raw = fetchFn(ctx.workspaceDir);
+      const raw = await fetchFn(ctx.workspaceDir, { signal: ctx.signal });
       const idLower = issueIds.map((id) => id.toLowerCase());
       const idSet = new Set(idLower);
       const matched = raw
@@ -418,7 +421,9 @@ Return ONLY valid JSON in this schema:
 
     let listPrompt;
     if (issueSource === "github") {
-      const issues = fetchGithubIssues(ctx.workspaceDir);
+      const issues = await fetchGithubIssues(ctx.workspaceDir, {
+        signal: ctx.signal,
+      });
       ctx.log({
         event: "step1_fetch",
         source: "github",
@@ -433,7 +438,9 @@ Return ONLY valid JSON in this schema:
 Use "github" as the source value and "#<number>" as the id (e.g. "#42").
 ${TAIL}`;
     } else if (issueSource === "gitlab") {
-      const issues = fetchGitlabIssues(ctx.workspaceDir);
+      const issues = await fetchGitlabIssues(ctx.workspaceDir, {
+        signal: ctx.signal,
+      });
       ctx.log({
         event: "step1_fetch",
         source: "gitlab",

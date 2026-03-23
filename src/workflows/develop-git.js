@@ -444,7 +444,7 @@ export async function resetForNextIssue(
       }
     }
 
-    const defaultBranch = detectDefaultBranch(repoRoot);
+    const defaultBranch = await detectDefaultBranch(repoRoot);
     const checkoutRes = spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",

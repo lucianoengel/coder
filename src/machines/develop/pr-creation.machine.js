@@ -6,6 +6,7 @@ import {
   computeGitWorktreeFingerprint,
   detectRemoteType,
   runPpcommit,
+  spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -116,12 +117,13 @@ export default defineMachine({
     const isGitLab = detectRemoteType(repoRoot) === "gitlab";
 
     // Push to remote
-    const push = spawnSync(
+    const push = await spawnAsync(
       "git",
       ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
-      { cwd: repoRoot, encoding: "utf8" },
+      { cwd: repoRoot, signal: ctx.signal },
     );
-    if (push.status !== 0) throw new Error(`git push failed: ${push.stderr}`);
+    if (push.status !== 0)
+      throw new Error(`git push failed: ${push.stderr || push.error?.message}`);
 
     // Build PR body
     let body = input.description || "";
@@ -174,7 +176,10 @@ export default defineMachine({
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
-      const mr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
+      const mr = await spawnAsync("glab", mrArgs, {
+        cwd: repoRoot,
+        signal: ctx.signal,
+      });
       if (mr.status !== 0)
         throw new Error(`glab mr create failed: ${mr.stderr || mr.stdout}`);
       const mrRaw = (mr.stdout || "").trim();
@@ -197,7 +202,10 @@ export default defineMachine({
         body,
       ];
       if (baseBranch) prArgs.push("--base", baseBranch);
-      const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+      const pr = await spawnAsync("gh", prArgs, {
+        cwd: repoRoot,
+        signal: ctx.signal,
+      });
       if (pr.status !== 0)
         throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
       const raw = (pr.stdout || "").trim();

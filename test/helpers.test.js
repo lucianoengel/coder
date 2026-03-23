@@ -106,7 +106,7 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   assert.ok(result.includes("GITLAB_TOKEN"));
 });
 
-test("detectDefaultBranch throws when only develop exists", () => {
+test("detectDefaultBranch rejects when only develop exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -124,13 +124,13 @@ test("detectDefaultBranch throws when only develop exists", () => {
     });
     if (check.status === 0) runGit("branch", "-D", b);
   }
-  assert.throws(() => detectDefaultBranch(repoDir), {
+  await assert.rejects(detectDefaultBranch(repoDir), {
     message:
       /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
   });
 });
 
-test("detectDefaultBranch returns main when it exists", () => {
+test("detectDefaultBranch resolves to main when it exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -141,7 +141,12 @@ test("detectDefaultBranch returns main when it exists", () => {
     }
   };
   runGit("branch", "-m", "main");
-  assert.equal(detectDefaultBranch(repoDir), "main");
+  const result = detectDefaultBranch(repoDir);
+  assert.ok(
+    result instanceof Promise,
+    "detectDefaultBranch should return a Promise",
+  );
+  assert.equal(await result, "main");
 });
 
 test("detectRemoteType identifies GitLab HTTPS remotes", () => {

@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   gitCleanOrThrow,
   sanitizeIssueMarkdown,
+  spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
 import { ScratchpadPersistence } from "../../state/persistence.js";
@@ -55,15 +56,21 @@ function formatBodyWithComments(body, comments) {
  * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
  * @returns {string | null}
  */
-function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
+async function fetchIssueBody(
+  source,
+  id,
+  repoRoot,
+  localIssuesDir,
+  { signal } = {},
+) {
   if (source === "github") {
     const num = id.replace(/^#/, "");
-    const res = spawnSync(
+    const res = await spawnAsync(
       "gh",
       ["issue", "view", num, "--json", "body,comments"],
-      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      { cwd: repoRoot, signal, timeout: 10000 },
     );
-    if (res.status !== 0 || !res.stdout) return null;
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.body, data.comments);
@@ -74,12 +81,12 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
 
   if (source === "gitlab") {
     const iid = id.replace(/^[#!]/, "");
-    const res = spawnSync("glab", ["issue", "view", iid, "--output", "json"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 10000,
-    });
-    if (res.status !== 0 || !res.stdout) return null;
+    const res = await spawnAsync(
+      "glab",
+      ["issue", "view", iid, "--output", "json"],
+      { cwd: repoRoot, signal, timeout: 10000 },
+    );
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.description, data.notes);
@@ -293,11 +300,12 @@ export default defineMachine({
         : path.resolve(ctx.workspaceDir, rawLocalIssuesDir)
       : null;
 
-    const issueBody = fetchIssueBody(
+    const issueBody = await fetchIssueBody(
       input.issue.source,
       input.issue.id,
       repoRoot,
       resolvedLocalIssuesDir,
+      { signal: ctx.signal },
     );
 
     const issueBodySection = issueBody
