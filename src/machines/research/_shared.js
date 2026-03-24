@@ -49,6 +49,7 @@ export function saveSessionState(runDir, state) {
  * @returns {string[]}
  */
 export function chunkPointers(text, { maxChars = 24000 } = {}) {
+  maxChars = Math.max(1, Math.floor(Number(maxChars) || 1));
   const normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -63,6 +64,9 @@ export function chunkPointers(text, { maxChars = 24000 } = {}) {
       if (newlineBoundary > cursor + Math.floor(maxChars * 0.5)) {
         end = newlineBoundary;
       }
+    }
+    if (end <= cursor) {
+      end = Math.min(cursor + maxChars, normalized.length);
     }
     const chunk = normalized.slice(cursor, end).trim();
     if (chunk) chunks.push(chunk);
