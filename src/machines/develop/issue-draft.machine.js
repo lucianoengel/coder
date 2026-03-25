@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   gitCleanOrThrow,
   sanitizeIssueMarkdown,
+  sanitizeUserData,
   spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -332,7 +333,7 @@ export default defineMachine({
     );
 
     const issueBodySection = issueBody
-      ? `\nIssue description (from ${input.issue.source}):\n${issueBody}\n`
+      ? `\nIssue description (from ${input.issue.source}):\n<user-data field="issue.body">${sanitizeUserData(issueBody)}</user-data>\n`
       : input.issue.source === "linear"
         ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
         : "";
@@ -342,11 +343,11 @@ export default defineMachine({
 Chosen issue:
 - source: ${input.issue.source}
 - id: ${input.issue.id}
-- title: ${input.issue.title}
+- title: <user-data field="issue.title">${sanitizeUserData(input.issue.title)}</user-data>
 - repo_root: ${repoRoot}
 ${issueBodySection}
 Clarifications from user:
-${input.clarifications || "(none provided)"}
+<user-data field="clarifications">${sanitizeUserData(input.clarifications || "(none provided)")}</user-data>
 
 Scratchpad for iterative notes:
 - path: ${scratchpadPath}

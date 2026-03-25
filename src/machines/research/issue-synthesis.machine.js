@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { sanitizeUserData } from "../../helpers.js";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
@@ -120,10 +121,10 @@ Repo root: ${repoRoot}
 - Validation results: ${validationPath}
 
 Clarifications:
-${clarifications || "(none provided)"}
+<user-data field="clarifications">${sanitizeUserData(clarifications || "(none provided)")}</user-data>
 
 Feedback to incorporate:
-${feedbackSection}
+<user-data field="feedback">${sanitizeUserData(feedbackSection)}</user-data>
 
 ## Phase 1: Codebase Exploration (MANDATORY)
 Before drafting issues, explore the codebase at \`${repoRoot}\`:
