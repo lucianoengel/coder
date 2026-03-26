@@ -10,17 +10,19 @@ import { resolvePassEnv } from "./helpers.js";
 const MAX_ENV_CAPTURE_BYTES = 2 * 1024 * 1024;
 
 /**
- * Run `env` in a login **interactive** bash (`-ilc`), matching `bin/coder-mcp.js`
- * PATH merge. The `-i` keeps parity with typical `~/.bashrc` usage (often sourced
- * from `~/.profile` / `~/.bash_profile` for login shells). `timeout` + `maxBuffer`
- * bound hangs and oversized output.
+ * Run `env` in a login, non-interactive bash (`-lc`).
+ *
+ * Interactive shells can engage job-control startup and touch the controlling TTY.
+ * When Claude launches MCP servers in the background, that can lead to SIGTTIN and
+ * stop the entire Claude process group. Keep MCP hydration on the login-shell path,
+ * but avoid interactive shell startup entirely.
  *
  * @param {NodeJS.ProcessEnv} [childEnv] - Child environment (default `process.env`).
- *   Tests may set `HOME` to a temp dir with `.bashrc` / `.bash_profile`.
+ *   Tests may set `HOME` to a temp dir with `.profile` / `.bash_profile`.
  * @returns {string} Raw `env` stdout
  */
 export function captureLoginShellEnv(childEnv = process.env) {
-  return execSync("bash -ilc 'env'", {
+  return execSync("bash -lc 'env'", {
     encoding: "utf8",
     timeout: 8000,
     maxBuffer: MAX_ENV_CAPTURE_BYTES,

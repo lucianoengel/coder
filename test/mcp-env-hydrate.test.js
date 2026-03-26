@@ -51,17 +51,12 @@ test("hydrateMcpEnvFromLoginShell does not throw when passEnvPatterns regex is i
   assert.doesNotThrow(() => hydrateMcpEnvFromLoginShell(dir));
 });
 
-test("captureLoginShellEnv sees exports from ~/.bashrc (login + interactive -ilc)", () => {
+test("captureLoginShellEnv sees exports from login shell startup files", () => {
   const home = mkdtempSync(path.join(os.tmpdir(), "coder-bashrc-"));
   writeFileSync(
-    path.join(home, ".bashrc"),
-    "export CODER_TEST_FROM_BASHRC=hydrate-test\n",
-  );
-  // Login shells read ~/.bash_profile first; Ubuntu-style profile sources .bashrc.
-  writeFileSync(
-    path.join(home, ".bash_profile"),
-    'test -f "$HOME/.bashrc" && . "$HOME/.bashrc"\n',
+    path.join(home, ".profile"),
+    "export CODER_TEST_FROM_PROFILE=hydrate-test\n",
   );
   const raw = captureLoginShellEnv({ ...process.env, HOME: home });
-  assert.match(raw, /(^|\n)CODER_TEST_FROM_BASHRC=hydrate-test(\n|$)/);
+  assert.match(raw, /(^|\n)CODER_TEST_FROM_PROFILE=hydrate-test(\n|$$)/);
 });
