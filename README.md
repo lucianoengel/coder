@@ -364,7 +364,7 @@ MCP tools are not shell commands — call **`coder_status`** through the MCP int
 
 ### Troubleshooting
 
-- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json` (or your agent profile) so long plans and reviews are not cut off.
+- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json`, or set `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the host environment and include it in `sandbox.passEnv` (see `coder.example.json`). Same pattern as input: `claude.maxInputTokens` / `CLAUDE_CODE_MAX_INPUT_TOKENS`.
 
 ## Environment variables
 
@@ -372,6 +372,7 @@ MCP tools are not shell commands — call **`coder_status`** through the MCP int
 |----------|---------|
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI + ppcommit LLM checks (auto-aliased) |
 | `ANTHROPIC_API_KEY` | Claude Code |
+| `CLAUDE_CODE_MAX_INPUT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Claude Code context/output caps (optional; or set `claude.maxInputTokens` / `claude.maxOutputTokens` in `coder.json`) |
 | `OPENAI_API_KEY` | Codex CLI |
 | `GITHUB_TOKEN` | GitHub API (issues, PRs) — used by `gh` CLI |
 | `GITLAB_TOKEN` / `GITLAB_API_TOKEN` | GitLab API — used by `glab` CLI |

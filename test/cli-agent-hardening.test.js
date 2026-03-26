@@ -131,3 +131,34 @@ test("unknown agent gets empty patterns and config hang timeout", async () => {
   assert.deepEqual(calls[0].killOnStderrPatterns, []);
   assert.equal(calls[0].hangTimeoutMs, 300_000);
 });
+
+test("claude: claude.maxInputTokens and claude.maxOutputTokens are injected into sandbox baseEnv", () => {
+  const config = CoderConfigSchema.parse({
+    claude: {
+      maxInputTokens: 200_000,
+      maxOutputTokens: 8192,
+    },
+  });
+  const agent = new CliAgent("claude", {
+    cwd: "/tmp",
+    secrets: {},
+    config,
+    workspaceDir: "/tmp",
+  });
+  const base = agent._provider.baseEnv;
+  assert.equal(base.CLAUDE_CODE_MAX_INPUT_TOKENS, "200000");
+  assert.equal(base.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "8192");
+});
+
+test("claude: token env vars are omitted when maxInputTokens/maxOutputTokens are unset", () => {
+  const config = CoderConfigSchema.parse({});
+  const agent = new CliAgent("claude", {
+    cwd: "/tmp",
+    secrets: {},
+    config,
+    workspaceDir: "/tmp",
+  });
+  const base = agent._provider.baseEnv;
+  assert.equal(base.CLAUDE_CODE_MAX_INPUT_TOKENS, undefined);
+  assert.equal(base.CLAUDE_CODE_MAX_OUTPUT_TOKENS, undefined);
+});

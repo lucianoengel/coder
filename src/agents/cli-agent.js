@@ -114,6 +114,10 @@ export class CliAgent extends AgentAdapter {
     if (this.name === "claude") {
       const claudeCfg = this.config.models?.claude;
       baseEnv = { ...baseEnv };
+      const maxIn = this.config.claude?.maxInputTokens;
+      if (maxIn !== undefined && maxIn !== null) {
+        baseEnv.CLAUDE_CODE_MAX_INPUT_TOKENS = String(maxIn);
+      }
       const maxTokens = this.config.claude?.maxOutputTokens;
       if (maxTokens !== undefined && maxTokens !== null) {
         baseEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);

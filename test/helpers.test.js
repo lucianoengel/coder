@@ -112,6 +112,8 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
   assert.ok(result.includes("GITLAB_TOKEN"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_INPUT_TOKENS"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_OUTPUT_TOKENS"));
 });
 
 test("spawnAsync synthesizes ETIMEDOUT error when process is killed by timeout", async () => {
