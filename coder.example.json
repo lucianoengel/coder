@@ -36,8 +36,7 @@
       "programmer": "claude",
       "reviewer": "codex",
       "committer": "gemini",
-      "coalesce": "codex",
-      "failureMonitor": "codex"
+      "coalesce": "codex"
     },
     "wip": {
       "push": true,
@@ -51,27 +50,11 @@
       "sqlitePath": ".coder/state.db"
     },
     "issueSource": "github",
-    "issueListPromptMaxIssues": 50,
     "localIssuesDir": "",
     "maxPlanRevisions": 3,
-    "resumeStepState": true,
-    "conflictDetection": true,
-    "maxMachineRetries": 2,
-    "retryBackoffMs": 5000,
-    "preflight": {
-      "checks": []
-    },
-    "failureMonitor": {
-      "enabled": false,
-      "labels": ["coder-rca", "automated"],
-      "timeoutMs": 300000,
-      "monitorBlockingDefers": false,
-      "upstreamRepo": "canesin/coder"
-    },
     "hooks": [],
     "timeouts": {
       "issueSelection": 600000,
-      "issueSelectionHangMs": 0,
       "issueDraft": 600000,
       "planning": 2400000,
       "planReview": 2400000,

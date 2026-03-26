@@ -14,7 +14,7 @@ import {
 } from "./_shared.js";
 
 export default defineMachine({
-  name: "research.issue_publish",
+  name: "research.spec_publish",
   description:
     "Pipeline final step: render issue backlog as markdown files and write manifest. " +
     "Auto-loads analysisBrief, webReferenceMap, validationPlan, validationResults from stepsDir when not passed.",
@@ -89,11 +89,11 @@ export default defineMachine({
     // Track this step in the pipeline
     const pipeline = loadPipeline(pipelinePath) || {
       version: 1,
-      current: "issue_publish",
+      current: "spec_publish",
       history: [],
       steps: {},
     };
-    beginPipelineStep(pipeline, pipelinePath, scratchpadPath, "issue_publish", {
+    beginPipelineStep(pipeline, pipelinePath, scratchpadPath, "spec_publish", {
       issueCount: selectedIssues.length,
     });
 
@@ -166,7 +166,7 @@ export default defineMachine({
       pipeline,
       pipelinePath,
       scratchpadPath,
-      "issue_publish",
+      "spec_publish",
       "completed",
       {
         issueCount: generatedIssues.length,

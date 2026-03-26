@@ -7,8 +7,6 @@ import {
 } from "../state/machine-state.js";
 import { pollControlSignal } from "../state/workflow-state.js";
 
-export { CancelledError, checkCancel } from "../machines/_base.js";
-
 export function runHooks(
   ctx,
   runId,
@@ -82,7 +80,6 @@ export class WorkflowRunner {
    *   name: string,
    *   workflowContext: import("../machines/_base.js").WorkflowContext,
    *   onStageChange?: (stage: string, agentName?: string) => void,
-   *   stageActiveAgent?: (machineName: string) => string | null | undefined,
    *   onHeartbeat?: () => void,
    *   onCheckpoint?: (machineIndex: number, result: any, machineName: string) => void,
    *   onResumeSkipped?: (runId: string) => Promise<void> | void,
@@ -92,7 +89,6 @@ export class WorkflowRunner {
     this.name = opts.name;
     this.ctx = opts.workflowContext;
     this.onStageChange = opts.onStageChange || (() => {});
-    this.stageActiveAgent = opts.stageActiveAgent;
     this.onHeartbeat = opts.onHeartbeat || (() => {});
     this.onCheckpoint = opts.onCheckpoint || (() => {});
     this.onResumeSkipped = opts.onResumeSkipped || null;
@@ -109,9 +105,6 @@ export class WorkflowRunner {
    *   machine: import("../machines/_base.js").Machine,
    *   inputMapper: (prevResult: any, state: { results: any[], runId: string }) => any,
    *   optional?: boolean,
-   *   maxRetries?: number,
-   *   backoffMs?: number,
-   *   onFailedAttempt?: (info: { attempt: number, maxRetries: number, result: any }) => Promise<void> | void,
    * }>} steps
    * @param {any} [initialInput] - Input for the first machine's inputMapper (as prevResult)
    * @param {{ resumeFromRunId?: string }} [opts] - If resumeFromRunId, load checkpoint and resume from that run
@@ -171,8 +164,6 @@ export class WorkflowRunner {
       this.results = [];
     }
 
-    this.ctx.workflowRunId = this.runId;
-
     this._heartbeatInterval = setInterval(() => {
       this.onHeartbeat();
       pollControlSignal(
@@ -219,15 +210,6 @@ export class WorkflowRunner {
         const machineName = step.machine.name;
 
         this.onStageChange(machineName);
-        if (typeof this.ctx.onWorkflowStage === "function") {
-          /** @type {{ stage: string, activeAgent?: string }} */
-          const payload = { stage: machineName };
-          if (typeof this.stageActiveAgent === "function") {
-            const agent = this.stageActiveAgent(machineName);
-            if (agent != null && agent !== "") payload.activeAgent = agent;
-          }
-          this.ctx.onWorkflowStage(payload);
-        }
         this.ctx.log({
           event: "machine_start",
           workflow: this.name,
@@ -242,57 +224,7 @@ export class WorkflowRunner {
           runId: this.runId,
         });
 
-        const stepMaxRetries =
-          step.maxRetries ?? this.ctx.config?.workflow?.maxMachineRetries ?? 0;
-        const stepBackoffMs =
-          step.backoffMs ?? this.ctx.config?.workflow?.retryBackoffMs ?? 5000;
-
-        let result;
-        for (let attempt = 0; attempt <= stepMaxRetries; attempt++) {
-          if (attempt > 0) {
-            if (this.ctx.cancelToken.cancelled) {
-              result = {
-                status: "cancelled",
-                error: "Cancelled between retry attempts",
-                durationMs: 0,
-              };
-              break;
-            }
-            this.ctx.log({
-              event: "step_retry_attempt",
-              workflow: this.name,
-              runId: this.runId,
-              machine: machineName,
-              attempt,
-              maxRetries: stepMaxRetries,
-            });
-            if (stepBackoffMs > 0)
-              await new Promise((r) => setTimeout(r, stepBackoffMs));
-          }
-
-          result = await step.machine.run(input, this.ctx);
-
-          if (result.status === "cancelled") break;
-          if (result.status !== "error") break;
-
-          this.ctx.log({
-            event: "step_retry_failed",
-            workflow: this.name,
-            runId: this.runId,
-            machine: machineName,
-            attempt,
-            maxRetries: stepMaxRetries,
-            error: result.error,
-          });
-          if (typeof step.onFailedAttempt === "function") {
-            await step.onFailedAttempt({
-              attempt,
-              maxRetries: stepMaxRetries,
-              result,
-            });
-          }
-          if (attempt === stepMaxRetries) break;
-        }
+        const result = await step.machine.run(input, this.ctx);
 
         this.results.push({ machine: machineName, ...result });
         this.onCheckpoint(i, result, machineName);
@@ -303,11 +235,9 @@ export class WorkflowRunner {
             status:
               result.status === "ok"
                 ? "ok"
-                : result.status === "cancelled"
-                  ? "cancelled"
-                  : result.status === "error"
-                    ? "error"
-                    : "skipped",
+                : result.status === "error"
+                  ? "error"
+                  : "skipped",
             data: result.data,
             error: result.error,
             durationMs: result.durationMs || 0,
@@ -330,15 +260,6 @@ export class WorkflowRunner {
           machineName,
           result,
         );
-
-        if (result.status === "cancelled") {
-          return {
-            status: "cancelled",
-            results: this.results,
-            runId: this.runId,
-            durationMs: Date.now() - start,
-          };
-        }
 
         if (result.status === "error" && !step.optional) {
           const failedResult = {
@@ -370,7 +291,6 @@ export class WorkflowRunner {
       });
       throw err;
     } finally {
-      delete this.ctx.workflowRunId;
       if (this._heartbeatInterval) {
         clearInterval(this._heartbeatInterval);
         this._heartbeatInterval = null;

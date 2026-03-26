@@ -9,19 +9,13 @@ import { WorkflowRunner } from "../src/workflows/_base.js";
 import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
-  const parent = mkdtempSync(path.join(os.tmpdir(), "gh118-"));
-  const tmp = path.join(parent, "ws");
-  mkdirSync(tmp);
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "gh118-"));
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
   execSync(
-    'git init -b main && git config user.email "test@test" && git config user.name "test" && git commit --allow-empty -m init',
+    'git init && git config user.email "test@test" && git config user.name "test" && git commit --allow-empty -m init',
     { cwd: tmp, stdio: "ignore" },
   );
-  const bare = path.join(parent, "bare.git");
-  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
-  execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
-  execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
 }
 
@@ -174,7 +168,7 @@ test("prior completed issue is not re-processed, dependency resolves for B", asy
     assert.equal(qB.status, "completed");
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
-    rmSync(path.dirname(ws), { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
   }
 });
 
@@ -232,7 +226,7 @@ test("prior failed issue is not re-processed, dependent is skipped", async () =>
     assert.equal(resultB.status, "skipped");
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
-    rmSync(path.dirname(ws), { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
   }
 });
 
@@ -285,7 +279,7 @@ test("closed prior dependency not in issue list still resolves", async () => {
     assert.equal(resultB.status, "completed");
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
-    rmSync(path.dirname(ws), { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
   }
 });
 
@@ -315,6 +309,6 @@ test("fresh run with no prior state processes all issues", async () => {
     assert.equal(result.skipped, 0);
   } finally {
     WorkflowRunner.prototype.run = originalWfRun;
-    rmSync(path.dirname(ws), { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
   }
 });

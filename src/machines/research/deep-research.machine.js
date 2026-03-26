@@ -1,12 +1,9 @@
-import path from "node:path";
 import { z } from "zod";
-import { checkCancel, defineMachine } from "../_base.js";
+import { defineMachine } from "../_base.js";
 import {
   loadPipeline,
-  loadSessionState,
   resolveArtifact,
   runStructuredStep,
-  saveSessionState,
   skipPipelineStep,
 } from "./_shared.js";
 
@@ -37,22 +34,11 @@ export default defineMachine({
       "analysis-brief",
     );
 
-    const runDir = path.dirname(stepsDir);
-    const sessionState = loadSessionState(runDir);
-    const stepOpts = {
-      stepsDir,
-      scratchpadPath,
-      pipeline,
-      pipelinePath,
-      ctx,
-      sessionState,
-      sessionKey: "deepResearchSessionId",
-    };
+    const stepOpts = { stepsDir, scratchpadPath, pipeline, pipelinePath, ctx };
 
     let webReferenceMap = { topics: [], missing_research: [] };
 
     if (webResearch) {
-      checkCancel(ctx);
       ctx.log({ event: "research_web_references" });
       const referencePrompt = `Find external implementation references for these problem spaces.
 
@@ -91,7 +77,6 @@ Return ONLY valid JSON in this schema:
         ...stepOpts,
       });
       webReferenceMap = referencesRes.payload || webReferenceMap;
-      saveSessionState(runDir, sessionState);
     } else {
       skipPipelineStep(
         pipeline,
