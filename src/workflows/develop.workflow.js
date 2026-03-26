@@ -17,6 +17,7 @@ import {
   checkDefaultBranchTracking,
   detectDefaultBranch,
   getDefaultBranchRemoteName,
+  isRateLimitError,
   isStaleUpstreamRefError,
 } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
@@ -41,6 +42,7 @@ import {
   saveBackup,
 } from "../state/issue-backup.js";
 import { checkpointPathFor } from "../state/machine-state.js";
+import { withDevelopPipelineLock } from "../state/start-lock.js";
 import {
   loadLoopState,
   loadState,
@@ -832,9 +834,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
   };
 }
 
-const isRateLimitError = (text) =>
-  /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
-
 /** Detect infra errors (DB down, connection refused) that should yield deferred, not failed. */
 const isInfraError = (text) =>
   /connection refused|ECONNREFUSED|ConnectionRefusedError|connect.*failed|connection.*refused/i.test(
@@ -971,107 +970,121 @@ export async function runDevelopLoop(opts, ctx) {
     source: issueListSource,
   });
 
-  // Initialize loop state — merge terminal statuses from prior run.
-  // By default, only preserve "completed"; failed/skipped are retried on new start.
-  // When preserveFailedIssues is true (internal/test-only), preserve failed/skipped too.
-  const loopState = await loadLoopState(ctx.workspaceDir);
-  const priorQueue = loopState.issueQueue || [];
-  const priorById = new Map(priorQueue.map((q) => [q.id, q]));
   const terminalStatuses =
     destructiveReset || !preserveFailedIssues
       ? ["completed"]
       : ["completed", "failed", "skipped"];
-
-  // Keep original state for cleanup-failure path so we don't persist overwritten
-  // queue (which would erase branch metadata needed for WIP preservation).
-  const stateForCleanupFailure = {
-    ...loopState,
-    issueQueue: priorQueue.map((q) => ({ ...q })),
-  };
-
-  loopState.status = "running";
   const listSource = listResult.data.source || "remote";
-  loopState.issueQueue = issues.map((iss) => {
-    const prior = priorById.get(iss.id);
-    const isTerminal = prior && terminalStatuses.includes(prior.status);
-    // Defensive fallback for source: local/forced list results set it per-issue;
-    // remote agent returns per-issue source. Use listSource when missing.
-    const source =
-      iss.source ??
-      (listSource === "local"
-        ? "local"
-        : listSource === "forced"
-          ? issueSource || "github"
-          : "github");
-    return {
-      ...iss,
-      source,
-      dependsOn: iss.dependsOn || iss.depends_on || [],
-      status: isTerminal ? prior.status : "pending",
-      branch: isTerminal ? prior.branch : null,
-      prUrl: isTerminal ? prior.prUrl : null,
-      error: isTerminal ? prior.error : null,
-      baseBranch: isTerminal ? prior.baseBranch : null,
-      startedAt: isTerminal ? prior.startedAt : null,
-      completedAt: isTerminal ? prior.completedAt : null,
-      lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
-    };
-  });
-  loopState.currentIndex = 0;
-  loopState.startedAt = new Date().toISOString();
-  const priorRunId = loopState.runId;
-  loopState.runId = ctx.runId || randomUUID().slice(0, 8);
 
   const loopRunId = randomUUID().slice(0, 8);
+
+  // Lock only the startup critical section: load state, initialize queue, clean
+  // workspace, and persist initial state. Released before per-issue processing
+  // to avoid blocking concurrent start attempts for the entire workflow duration.
+  const lockResult = await withDevelopPipelineLock(
+    ctx.workspaceDir,
+    async () => {
+      // NOTE: state must be loaded inside the lock to prevent races with concurrent starts.
+      const _loopState = await loadLoopState(ctx.workspaceDir);
+      const priorQueue = _loopState.issueQueue || [];
+      const priorById = new Map(priorQueue.map((q) => [q.id, q]));
+
+      // Keep original state for cleanup-failure path so we don't persist overwritten
+      // queue (which would erase branch metadata needed for WIP preservation).
+      const stateForCleanupFailure = {
+        ..._loopState,
+        issueQueue: priorQueue.map((q) => ({ ...q })),
+      };
+
+      _loopState.status = "running";
+      _loopState.issueQueue = issues.map((iss) => {
+        const prior = priorById.get(iss.id);
+        const isTerminal = prior && terminalStatuses.includes(prior.status);
+        const source =
+          iss.source ??
+          (listSource === "local"
+            ? "local"
+            : listSource === "forced"
+              ? issueSource || "github"
+              : "github");
+        return {
+          ...iss,
+          source,
+          dependsOn: iss.dependsOn || iss.depends_on || [],
+          status: isTerminal ? prior.status : "pending",
+          branch: isTerminal ? prior.branch : null,
+          prUrl: isTerminal ? prior.prUrl : null,
+          error: isTerminal ? prior.error : null,
+          baseBranch: isTerminal ? prior.baseBranch : null,
+          startedAt: isTerminal ? prior.startedAt : null,
+          completedAt: isTerminal ? prior.completedAt : null,
+          lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
+        };
+      });
+      _loopState.currentIndex = 0;
+      _loopState.startedAt = new Date().toISOString();
+      const priorRunId = _loopState.runId;
+      _loopState.runId = ctx.runId || randomUUID().slice(0, 8);
+
+      const _loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
+      const _loopDefaultBranch = await detectDefaultBranch(_loopRepoRoot);
+      const knownBranches = new Set(
+        priorQueue.map((q) => q.branch).filter(Boolean),
+      );
+      try {
+        await ensureCleanLoopStart(
+          ctx.workspaceDir,
+          _loopRepoRoot,
+          _loopDefaultBranch,
+          ctx.log,
+          knownBranches,
+          { ctx, issues: _loopState.issueQueue, destructiveReset },
+        );
+      } catch (cleanupErr) {
+        stateForCleanupFailure.status = "failed";
+        stateForCleanupFailure.error = cleanupErr.message;
+        stateForCleanupFailure.runId = _loopState.runId;
+        stateForCleanupFailure.completedAt = new Date().toISOString();
+        await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
+          guardRunId: priorRunId ?? "",
+        });
+        runHooks(ctx, loopRunId, "loop_complete", "", {
+          status: "failed",
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          error: cleanupErr.message,
+        });
+        return {
+          earlyReturn: {
+            status: "failed",
+            error: cleanupErr.message,
+            results: [],
+          },
+        };
+      }
+
+      await saveLoopState(ctx.workspaceDir, _loopState, {
+        guardRunId: priorRunId ?? "",
+      });
+
+      return {
+        loopState: _loopState,
+        loopRepoRoot: _loopRepoRoot,
+        loopDefaultBranch: _loopDefaultBranch,
+        priorQueue,
+      };
+    },
+  );
+
+  // Handle early return from cleanup failure inside lock
+  if (lockResult.earlyReturn) return lockResult.earlyReturn;
+  const { loopState, loopRepoRoot, loopDefaultBranch, priorQueue } = lockResult;
+
   runHooks(ctx, loopRunId, "loop_start", "", {
     status: "running",
     total: issues.length,
     method: rationale.method,
-  });
-
-  // Ensure a clean workspace before processing any issues.
-  // Run before persisting overwritten queue so a crash leaves prior branches
-  // intact for WIP preservation on next startup.
-  // Recovers from prior crashed/interrupted runs without touching loop-state.json.
-  // Throws if git is broken — no point continuing if the workspace can't be cleaned.
-  const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
-  const loopDefaultBranch = await detectDefaultBranch(loopRepoRoot);
-  const knownBranches = new Set(
-    priorQueue.map((q) => q.branch).filter(Boolean),
-  );
-  try {
-    await ensureCleanLoopStart(
-      ctx.workspaceDir,
-      loopRepoRoot,
-      loopDefaultBranch,
-      ctx.log,
-      knownBranches,
-      { ctx, issues: loopState.issueQueue, destructiveReset },
-    );
-  } catch (cleanupErr) {
-    stateForCleanupFailure.status = "failed";
-    stateForCleanupFailure.error = cleanupErr.message;
-    stateForCleanupFailure.runId = loopState.runId;
-    stateForCleanupFailure.completedAt = new Date().toISOString();
-    await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
-      guardRunId: priorRunId ?? "",
-    });
-    runHooks(ctx, loopRunId, "loop_complete", "", {
-      status: "failed",
-      completed: 0,
-      failed: 0,
-      skipped: 0,
-      error: cleanupErr.message,
-    });
-    return {
-      status: "failed",
-      error: cleanupErr.message,
-      results: [],
-    };
-  }
-
-  await saveLoopState(ctx.workspaceDir, loopState, {
-    guardRunId: priorRunId ?? "",
   });
 
   /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
@@ -1226,6 +1239,7 @@ export async function runDevelopLoop(opts, ctx) {
       loopState.issueQueue[i].status = "failed";
       loopState.issueQueue[i].error =
         "Multiple dependency branches found. Please merge prerequisite branches into the default branch before proceeding.";
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
       outcomeMap.set(issue.id, { status: "failed" });
       failed++;
       results.push({
@@ -1346,6 +1360,7 @@ export async function runDevelopLoop(opts, ctx) {
       const errMsg = `Git pull failed: ${stderr.slice(0, 200)}`;
       loopState.issueQueue[i].status = "failed";
       loopState.issueQueue[i].error = errMsg;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
       outcomeMap.set(issue.id, { status: "failed" });
       failed++;
       results.push({ ...issue, status: "failed", error: errMsg });
@@ -1652,6 +1667,7 @@ export async function runDevelopLoop(opts, ctx) {
         }
         loopState.issueQueue[i].status = "failed";
         loopState.issueQueue[i].error = errText;
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
         outcomeMap.set(issue.id, { status: "failed" });
         failed++;
         results.push({
@@ -1723,6 +1739,7 @@ export async function runDevelopLoop(opts, ctx) {
       }
       loopState.issueQueue[i].status = "failed";
       loopState.issueQueue[i].error = err.message;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
       outcomeMap.set(issue.id, { status: "failed" });
       failed++;
       results.push({ ...issue, status: "failed", error: err.message });
@@ -1773,6 +1790,7 @@ export async function runDevelopLoop(opts, ctx) {
         issueStatus === "completed"
           ? resetErr.message
           : `${loopState.issueQueue[i].error}; reset failed: ${resetErr.message}`;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
       outcomeMap.set(issue.id, { status: "failed" });
       if (issueStatus === "completed") {
         completed--;
@@ -1785,7 +1803,11 @@ export async function runDevelopLoop(opts, ctx) {
             error: resetErr.message,
           };
         } else {
-          results.push({ ...issue, status: "failed", error: resetErr.message });
+          results.push({
+            ...issue,
+            status: "failed",
+            error: resetErr.message,
+          });
         }
         runHooks(
           ctx,
@@ -1975,10 +1997,11 @@ export async function runDevelopLoop(opts, ctx) {
     const kept = [];
     for (const q of failedOrSkipped) {
       const branch = q.branch || buildIssueBranchName(q);
-      const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
-        cwd: loopRepoRoot,
-        encoding: "utf8",
-      });
+      const verify = spawnSync(
+        "git",
+        ["rev-parse", "--verify", `refs/heads/${branch}`],
+        { cwd: loopRepoRoot, encoding: "utf8" },
+      );
       if (verify.status !== 0) continue; // branch never created
 
       const log = spawnSync(
@@ -1986,24 +2009,49 @@ export async function runDevelopLoop(opts, ctx) {
         ["log", `${loopDefaultBranch}..${branch}`, "--oneline"],
         { cwd: loopRepoRoot, encoding: "utf8" },
       );
+      if (log.status !== 0) {
+        // git log failed — keep the branch to avoid data loss
+        kept.push(branch);
+        continue;
+      }
       const hasCommits = (log.stdout || "").trim().length > 0;
 
       if (hasCommits) {
         kept.push(branch);
       } else {
-        spawnSync("git", ["branch", "-D", branch], {
+        const delRes = spawnSync("git", ["branch", "-D", branch], {
           cwd: loopRepoRoot,
           encoding: "utf8",
         });
-        deleted.push(branch);
+        const stillThere = spawnSync(
+          "git",
+          ["rev-parse", "--verify", `refs/heads/${branch}`],
+          { cwd: loopRepoRoot, encoding: "utf8" },
+        );
+        if (stillThere.status !== 0) {
+          deleted.push(branch);
+          q.branch = null;
+        } else {
+          ctx.log({
+            event: "smart_branch_cleanup_delete_failed",
+            branch,
+            exitCode: delRes.status,
+            stderr: (delRes.stderr || "").slice(0, 200),
+          });
+        }
       }
     }
     ctx.log({ event: "smart_branch_cleanup", deleted, kept });
   }
 
-  // Settle all pending failure RCA filings
-  if (pendingRcas.length > 0 && !ctx.cancelToken.cancelled) {
-    ctx.log({ event: "failure_monitor_settling", count: pendingRcas.length });
+  // Settle all pending failure RCA filings (always drain, even on cancellation,
+  // to prevent post-finalization writes from unawaited promises)
+  if (pendingRcas.length > 0) {
+    ctx.log({
+      event: "failure_monitor_settling",
+      count: pendingRcas.length,
+      cancelled: ctx.cancelToken.cancelled,
+    });
     const rcaResults = await Promise.allSettled(pendingRcas);
     const rcaFiled = rcaResults.filter(
       (r) => r.status === "fulfilled" && r.value.issueUrl,
@@ -2064,19 +2112,19 @@ export async function runDevelopLoop(opts, ctx) {
 
       const prompt = `You are reviewing the combined changeset from ${completedBranches.length} feature branches that were implemented in parallel against the same base branch (${loopDefaultBranch}).
 
-Your task is to analyze the branches for integration issues and produce a structured report.
+  Your task is to analyze the branches for integration issues and produce a structured report.
 
-${diffSections}
+  ${diffSections}
 
-Analyze and produce a markdown report with these sections:
-1. **Overlapping File Changes** — files modified by multiple branches, with risk assessment
-2. **Duplicate Code / Helpers** — similar functions, utilities, or patterns introduced independently
-3. **Potential Merge Conflicts** — specific regions likely to conflict when merging
-4. **Cross-Cutting Concerns** — shared changes (config, types, deps) that need coordination
-5. **Simplification Opportunities** — code that could be consolidated after merging
-6. **Recommended Merge Order** — optimal sequence to minimize conflict resolution effort
+  Analyze and produce a markdown report with these sections:
+  1. **Overlapping File Changes** — files modified by multiple branches, with risk assessment
+  2. **Duplicate Code / Helpers** — similar functions, utilities, or patterns introduced independently
+  3. **Potential Merge Conflicts** — specific regions likely to conflict when merging
+  4. **Cross-Cutting Concerns** — shared changes (config, types, deps) that need coordination
+  5. **Simplification Opportunities** — code that could be consolidated after merging
+  6. **Recommended Merge Order** — optimal sequence to minimize conflict resolution effort
 
-Be concrete: reference file paths, line ranges, and function names. If no issues exist for a section, say "None detected."`;
+  Be concrete: reference file paths, line ranges, and function names. If no issues exist for a section, say "None detected."`;
 
       const { agent } = ctx.agentPool.getAgent("coalesce", {
         scope: "repo",
@@ -2139,6 +2187,10 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
     deferred: stillDeferred,
   });
 
+  const firstFailedIssueError = loopState.issueQueue.find(
+    (q) => q.status === "failed" && q.error,
+  )?.error;
+
   return {
     status: loopState.status,
     results,
@@ -2146,6 +2198,11 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
     failed,
     skipped,
     deferred: stillDeferred,
+    ...(loopState.status === "failed" && {
+      error:
+        firstFailedIssueError ||
+        (failed > 0 ? `${failed} issue(s) failed` : "Workflow failed"),
+    }),
   };
 }
 
