@@ -2,13 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { checkCancel, defineMachine } from "../_base.js";
+import { defineMachine } from "../_base.js";
 import {
   appendScratchpad,
   chunkPointers,
   initPipeline,
   initRunDirectory,
-  requirePayloadFields,
   runStructuredStep,
 } from "./_shared.js";
 
@@ -84,11 +83,7 @@ export default defineMachine({
       "utf8",
     );
 
-    // Write full input to a reference file agents can read
-    const fullInputPath = path.join(pointersDir, "full-input.md");
-    writeFileSync(fullInputPath, `${ideaPointers}\n`, "utf8");
-
-    // Chunk pointers (no upper limit — full input is always preserved)
+    // Chunk pointers
     const pointerChunks = chunkPointers(ideaPointers);
     if (pointerChunks.length === 0) {
       throw new Error("Unable to derive pointer chunks from input.");
@@ -110,29 +105,11 @@ export default defineMachine({
     ctx.log({ event: "research_analyze_chunks", count: pointerChunks.length });
     const chunkSummaries = [];
     for (let i = 0; i < pointerChunks.length; i++) {
-      checkCancel(ctx);
-
-      const chunkFile = path.join(
-        pointersDir,
-        `chunk-${String(i + 1).padStart(2, "0")}.txt`,
-      );
-      const chunkPrompt = `Analyze pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
+      const chunkPrompt = `Summarize pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
 
 Repo root: ${repoRoot}
-Read the chunk file at: ${chunkFile}
-${pointerChunks.length > 1 ? `Full input available at: ${fullInputPath}` : ""}
-
-## Phase 1: Codebase Exploration (MANDATORY)
-Before analyzing the pointers, explore the codebase at \`${repoRoot}\`:
-- List top-level directory structure to understand project layout
-- Identify key files: package.json/Cargo.toml/go.mod, README, config files
-- Search for code related to the ideas mentioned in the chunk
-- Note project structure, patterns, test conventions, and existing implementations
-- Map pointer ideas to specific existing files/modules you find
-
-## Phase 2: Chunk Analysis
-With codebase context in mind, analyze the chunk for issue decomposition.
-Ground your analysis in what actually exists in the codebase.
+Chunk:
+${pointerChunks[i]}
 
 Return ONLY valid JSON in this schema:
 {
@@ -154,36 +131,16 @@ Return ONLY valid JSON in this schema:
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
       });
-      requirePayloadFields(
-        chunkRes.payload,
-        { summary: "string", signals: "object" },
-        `analyze_chunk_${i + 1}`,
-      );
       chunkSummaries.push(chunkRes.payload);
     }
 
-    // Aggregate analysis — write summaries to file for agent to read
+    // Aggregate analysis
     ctx.log({ event: "research_aggregate_analysis" });
-    const summariesPath = path.join(stepsDir, "chunk-summaries.json");
-    writeFileSync(
-      summariesPath,
-      `${JSON.stringify(chunkSummaries, null, 2)}\n`,
-    );
-
     const analysisPrompt = `Aggregate pointer chunk summaries into a normalized analysis brief.
 
 Repo root: ${repoRoot}
-Full input: ${fullInputPath}
-Read chunk summaries from: ${summariesPath}
-
-## Codebase Validation (MANDATORY)
-Before aggregating, explore the codebase at \`${repoRoot}\` to validate and enrich the analysis:
-- Verify that files/modules referenced in the chunk summaries actually exist
-- Identify the project's architecture patterns, directory conventions, and module boundaries
-- Find the test framework, test file locations, and test naming conventions
-- Note any existing implementations relevant to the problem spaces
-
-Ground the aggregated analysis in what you find in the actual codebase.
+Chunk summaries:
+${JSON.stringify(chunkSummaries, null, 2)}
 
 Return ONLY valid JSON in this schema:
 {
@@ -203,11 +160,7 @@ Return ONLY valid JSON in this schema:
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
       ...stepOpts,
     });
-    const analysisBrief = requirePayloadFields(
-      analysisRes.payload,
-      { problem_spaces: "array", constraints: "array" },
-      "aggregate_pointer_analysis",
-    );
+    const analysisBrief = analysisRes.payload || {};
 
     appendScratchpad(scratchpadPath, "Context Gather Complete", [
       `- chunks_analyzed: ${pointerChunks.length}`,

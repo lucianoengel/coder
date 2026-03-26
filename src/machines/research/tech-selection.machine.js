@@ -1,11 +1,13 @@
 import { z } from "zod";
-import { checkCancel, defineMachine } from "../_base.js";
+import { defineMachine } from "../_base.js";
 import {
   appendScratchpad,
-  ensureArtifactOnDisk,
+  beginPipelineStep,
+  endPipelineStep,
   loadPipeline,
+  parseAgentPayload,
+  requireExitZero,
   resolveArtifact,
-  runStructuredStep,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -40,6 +42,10 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
+    const { agentName, agent } = ctx.agentPool.getAgent("planner", {
+      scope: "workspace",
+    });
+
     const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "tech-selection",
@@ -58,28 +64,23 @@ export default defineMachine({
       "web-references",
     );
 
-    checkCancel(ctx);
+    beginPipelineStep(
+      pipeline,
+      input.pipelinePath,
+      input.scratchpadPath,
+      "tech_evaluation",
+      { agent: agentName },
+    );
 
-    const flatRefs = Array.isArray(webRefs?.topics)
-      ? webRefs.topics.flatMap((t) =>
-          Array.isArray(t?.references)
-            ? t.references.map((r) => ({ ...r, topic: t.topic }))
-            : [],
-        )
-      : [];
-    const refSummary = flatRefs
-      .slice(0, 15)
-      .map(
-        (ref) =>
-          `- ${ref.title || ref.url || "untitled"} (${ref.source || "other"}): ${ref.why || ""}`,
-      )
+    const refSummary = Object.values(webRefs)
+      .slice(0, 10)
+      .map((ref) => `- ${ref.title || ref.url}: ${ref.summary || ""}`)
       .join("\n");
 
-    const briefPath = ensureArtifactOnDisk(
-      input.stepsDir,
-      "analysis-brief",
-      analysisBrief,
-    );
+    const briefSummary =
+      typeof analysisBrief === "object" && analysisBrief
+        ? JSON.stringify(analysisBrief).slice(0, 3000)
+        : String(analysisBrief || "").slice(0, 3000);
 
     const categories =
       input.categories.length > 0
@@ -98,7 +99,7 @@ ${categories}
 ${input.constraints || "No specific constraints."}
 
 ## Analysis Context
-Read the analysis brief from: ${briefPath}
+${briefSummary}
 
 ## Web References
 ${refSummary || "No web references available."}
@@ -136,23 +137,27 @@ Return JSON:
   }
 }`;
 
-    const { payload, agentName } = await runStructuredStep({
-      stepName: "tech_evaluation",
-      role: "planner",
-      prompt,
+    const res = await agent.execute(prompt, {
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
-      stepsDir: input.stepsDir,
-      scratchpadPath: input.scratchpadPath,
-      pipeline,
-      pipelinePath: input.pipelinePath,
-      ctx,
     });
+    requireExitZero(agentName, "tech_selection", res);
+
+    const payload = parseAgentPayload(agentName, res.stdout);
 
     appendScratchpad(input.scratchpadPath, "Tech Selection", [
       `- agent: ${agentName}`,
       `- categories: ${(payload?.categories || []).length}`,
       `- stack: ${payload?.stack?.summary || "unknown"}`,
     ]);
+
+    endPipelineStep(
+      pipeline,
+      input.pipelinePath,
+      input.scratchpadPath,
+      "tech_evaluation",
+      "completed",
+      { agent: agentName },
+    );
 
     return {
       status: "ok",

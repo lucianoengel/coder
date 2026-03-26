@@ -81,17 +81,9 @@ const SKIP_DIRS = new Set([
   ".gemini",
 ]);
 
-const MARKDOWN_ALLOWED_DIRS = new Set([
-  "docs",
-  "doc",
-  ".github",
-  ".claude",
-  ".claude/commands",
-]);
+const MARKDOWN_ALLOWED_DIRS = new Set(["docs", "doc", ".github"]);
 const MARKDOWN_ALLOWED_FILES = new Set([
   "README.md",
-  "DESIGN.md",
-  "SECURITY.md",
   "CHANGELOG.md",
   "LICENSE.md",
   "CONTRIBUTING.md",
@@ -793,9 +785,7 @@ function setupParsers() {
   }
 }
 
-export function getParserForFile(filePath) {
-  // Regex-only mode for CI / hosts where tree-sitter native addons SIGSEGV (see npm test script).
-  if (process.env.CODER_PPCOMMIT_NO_AST === "1") return null;
+function getParserForFile(filePath) {
   setupParsers();
   const ext = path.extname(filePath).toLowerCase();
   return PARSERS.get(ext) || null;

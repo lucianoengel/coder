@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { resolvePpcommitLlm } from "../../config.js";
@@ -11,11 +12,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
-import {
-  executeWithSessionAuthRetry,
-  makeClaudeSessionId,
-  withSessionResume,
-} from "./_session.js";
+import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
   ensureBranch,
@@ -68,7 +65,6 @@ export function buildReviewerPrompt(
   round,
   priorFindings,
   specDeltaSummary = "",
-  { planExhausted = false } = {},
 ) {
   const roundContext =
     round === 1
@@ -91,19 +87,15 @@ Verify whether each critical/major finding has been addressed. If the programmer
     ? `
 ### 7. Plan Adherence
 - Does the implementation follow the technical structure defined in ${paths.plan}?
-- Are there deviations from the ${planExhausted ? "revised" : "agreed"} approach? Flag them by severity.
+- Are there deviations from the agreed approach? Flag them by severity.
 - If the spec delta identifies additions/omissions, verify they were addressed or intentionally skipped.
 `
-    : "";
-
-  const planCaveat = planExhausted
-    ? `\n**WARNING: The plan in ${paths.plan} was NOT approved by the plan reviewer** (review rounds exhausted with unresolved concerns). Treat the plan as a tentative guide, not an agreed-upon spec. Scrutinize the implementation more carefully against the original issue requirements rather than trusting the plan as authoritative.\n`
     : "";
 
   return `You are a code reviewer. Your role is to CRITIQUE only — do NOT modify any source code files.
 
 Read ${paths.issue} to understand what was originally requested.
-Read ${paths.plan} for the technical approach and constraints.${planCaveat}
+Read ${paths.plan} for the technical approach and constraints agreed upon.
 
 ${roundContext}
 
@@ -184,21 +176,6 @@ Rules:
 - Do NOT modify ${paths.reviewFindings} — the reviewer will re-check your work`;
 }
 
-/**
- * Finer-grained workflow lifecycle updates (MCP actor + status) within this machine.
- * Stage strings are namespaced under develop.quality_review.* so they are distinct
- * from the WorkflowRunner machine boundary (develop.quality_review).
- */
-function notifyQualityReviewSubStage(ctx, sub, activeAgent = undefined) {
-  if (typeof ctx.onWorkflowStage !== "function") return;
-  /** @type {{ stage: string, activeAgent?: string | null }} */
-  const payload = { stage: `develop.quality_review.${sub}` };
-  if (activeAgent !== undefined) {
-    payload.activeAgent = activeAgent;
-  }
-  ctx.onWorkflowStage(payload);
-}
-
 function buildCommitterEscalationPrompt(paths, ppSection) {
   return `You are the final gatekeeper before a PR is created. The programmer and reviewer have already done 2 rounds each.
 
@@ -230,7 +207,6 @@ export default defineMachine({
     testConfigPath: z.string().default(""),
     allowNoTests: z.boolean().optional(),
     ppcommitPreset: z.enum(["strict", "relaxed", "minimal"]).default("strict"),
-    planExhausted: z.boolean().default(false),
   }),
 
   async execute(input, ctx) {
@@ -244,9 +220,8 @@ export default defineMachine({
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    await ensureBranch(repoRoot, state.branch, { signal: ctx.signal });
-    const baseBranch =
-      state.baseBranch || (await detectDefaultBranch(repoRoot));
+    ensureBranch(repoRoot, state.branch);
+    const baseBranch = state.baseBranch || detectDefaultBranch(repoRoot);
 
     const { agentName: programmerName, agent: programmerAgent } =
       ctx.agentPool.getAgent("programmer", { scope: "repo" });
@@ -259,7 +234,6 @@ export default defineMachine({
     // -----------------------------------------------------------------------
     // Phase 1: ppcommit initial check
     // -----------------------------------------------------------------------
-    notifyQualityReviewSubStage(ctx, "ppcommit_initial", null);
     const ppcommitLlm = resolvePpcommitLlm(ctx.config);
     const ppcommitConfig = {
       ...ctx.config.ppcommit,
@@ -286,11 +260,6 @@ export default defineMachine({
     // -----------------------------------------------------------------------
     if (!state.specDeltaSummary && existsSync(paths.plan)) {
       ctx.log({ event: "spec_delta_start" });
-      await ctx.syncDevelopLoop?.({
-        currentStage: "develop.quality_review",
-        activeAgent: reviewerName,
-      });
-      notifyQualityReviewSubStage(ctx, "spec_delta", reviewerName);
       const deltaPrompt = buildSpecDeltaPrompt(paths.issue, paths.plan);
       const deltaRes = await reviewerAgent.execute(deltaPrompt, {
         timeoutMs: ctx.config.workflow.timeouts.reviewRound,
@@ -319,16 +288,11 @@ export default defineMachine({
         state.reviewerAgentName = reviewerName;
         await saveState(ctx.workspaceDir, state);
       }
-      let createdNewSessionInThisBlock = false;
       if (reviewerSupportsSession && !state.reviewerSessionId) {
-        state.reviewerSessionId = makeClaudeSessionId(ctx.workflowRunId);
+        state.reviewerSessionId = randomUUID();
         state.reviewerAgentName = reviewerName;
-        createdNewSessionInThisBlock = true;
         await saveState(ctx.workspaceDir, state);
       }
-      // After invalidation and init: true = resuming existing session (same-issue recovery), false = creating new
-      const hadReviewerSessionBefore =
-        !createdNewSessionInThisBlock && !!state.reviewerSessionId;
 
       // Initialize review round tracking if not set (recovery-safe)
       if (state.steps.reviewRound === undefined) {
@@ -362,11 +326,6 @@ export default defineMachine({
         } else {
           // --- Reviewer critiques ---
           ctx.log({ event: "reviewer_critique", round, agent: reviewerName });
-          await ctx.syncDevelopLoop?.({
-            currentStage: "develop.quality_review",
-            activeAgent: reviewerName,
-          });
-          notifyQualityReviewSubStage(ctx, `reviewer_r${round}`, reviewerName);
 
           const priorFindings =
             round > 1
@@ -379,44 +338,42 @@ export default defineMachine({
             round,
             priorFindings,
             state.specDeltaSummary || "",
-            { planExhausted: input.planExhausted },
           );
 
-          // Round 1: create only when no session existed before (same-issue recovery uses resume)
-          // sessionsDisabled: no session opts for remainder of issue
-          const reviewSessionOpts =
-            state.sessionsDisabled || !reviewerSupportsSession
-              ? {}
-              : round === 1 && !hadReviewerSessionBefore
-                ? { sessionId: state.reviewerSessionId }
-                : { resumeId: state.reviewerSessionId };
-          if (Object.keys(reviewSessionOpts).length > 0) {
-            ctx.log({
-              event: "session_opts",
-              sessionKey: "reviewerSessionId",
-              hadSessionBefore: hadReviewerSessionBefore,
-              usingCreate: !!reviewSessionOpts.sessionId,
-              usingResume: !!reviewSessionOpts.resumeId,
-            });
-          }
+          // Round 1: new session; Round 2+: resume to retain review context
+          const reviewSessionOpts = reviewerSupportsSession
+            ? round === 1
+              ? { sessionId: state.reviewerSessionId }
+              : { resumeId: state.reviewerSessionId }
+            : {};
 
-          const reviewRes = reviewerSupportsSession
-            ? await executeWithSessionAuthRetry({
-                state,
-                sessionKey: "reviewerSessionId",
-                workspaceDir: ctx.workspaceDir,
-                log: ctx.log,
-                workflowRunId: ctx.workflowRunId,
-                initialSessionOpts: reviewSessionOpts,
-                executeFn: (so) =>
-                  reviewerAgent.execute(reviewPrompt, {
-                    ...so,
-                    timeoutMs: ctx.config.workflow.timeouts.reviewRound,
-                  }),
-              })
-            : await reviewerAgent.execute(reviewPrompt, {
+          let reviewRes;
+          try {
+            reviewRes = await reviewerAgent.execute(reviewPrompt, {
+              ...reviewSessionOpts,
+              timeoutMs: ctx.config.workflow.timeouts.reviewRound,
+            });
+          } catch (err) {
+            if (
+              reviewerSupportsSession &&
+              err.name === "CommandFatalStderrError" &&
+              err.category === "auth" &&
+              reviewSessionOpts.resumeId
+            ) {
+              ctx.log({
+                event: "session_resume_failed",
+                sessionId: state.reviewerSessionId,
+              });
+              state.reviewerSessionId = randomUUID();
+              await saveState(ctx.workspaceDir, state);
+              reviewRes = await reviewerAgent.execute(reviewPrompt, {
+                sessionId: state.reviewerSessionId,
                 timeoutMs: ctx.config.workflow.timeouts.reviewRound,
               });
+            } else {
+              throw err;
+            }
+          }
           requireExitZero(reviewerName, `review round ${round}`, reviewRes);
 
           // Parse verdict from file
@@ -450,15 +407,6 @@ export default defineMachine({
         }
 
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
-        await ctx.syncDevelopLoop?.({
-          currentStage: "develop.quality_review",
-          activeAgent: programmerName,
-        });
-        notifyQualityReviewSubStage(
-          ctx,
-          `programmer_fix_r${round}`,
-          programmerName,
-        );
 
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
         const fixRes = await withSessionResume({
@@ -469,7 +417,6 @@ export default defineMachine({
           agentNameKey: "programmerFixAgentName",
           workspaceDir: ctx.workspaceDir,
           log: ctx.log,
-          workflowRunId: ctx.workflowRunId,
           executeFn: (sessionOpts) =>
             programmerAgent.execute(fixPrompt, {
               ...sessionOpts,
@@ -500,11 +447,6 @@ export default defineMachine({
           event: "committer_escalation",
           agent: committerName,
         });
-        await ctx.syncDevelopLoop?.({
-          currentStage: "develop.quality_review",
-          activeAgent: committerName,
-        });
-        notifyQualityReviewSubStage(ctx, "committer_escalation", committerName);
 
         const escalationPrompt = buildCommitterEscalationPrompt(
           paths,
@@ -543,7 +485,6 @@ export default defineMachine({
     // -----------------------------------------------------------------------
     // Phase 3: ppcommit hard gate + committer retry loop
     // -----------------------------------------------------------------------
-    notifyQualityReviewSubStage(ctx, "ppcommit_final_gate", committerName);
     const maxPpcommitRetries = 2;
     let ppAfter = await runPpcommitScoped(repoRoot, baseBranch, ppcommitConfig);
     ctx.log({
@@ -553,10 +494,6 @@ export default defineMachine({
     });
 
     const runCommitterPass = async (agent, agentName, retrySection, label) => {
-      await ctx.syncDevelopLoop?.({
-        currentStage: "develop.quality_review",
-        activeAgent: agentName,
-      });
       const prompt = `You are reviewing uncommitted changes for commit readiness.
 Read ${paths.issue} to understand what was originally requested.
 
@@ -583,11 +520,6 @@ Hard constraints:
     ) {
       const ppAfterOutput = (ppAfter.stdout || ppAfter.stderr || "").trim();
       ctx.log({ event: "ppcommit_retry", attempt, exitCode: ppAfter.exitCode });
-      notifyQualityReviewSubStage(
-        ctx,
-        `committer_ppcommit_retry_${attempt}`,
-        committerName,
-      );
       const retrySection = `ppcommit still failing after review pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
       await runCommitterPass(
         committerAgent,
@@ -609,14 +541,10 @@ Hard constraints:
     // -----------------------------------------------------------------------
     // Phase 4: test hard gate
     // -----------------------------------------------------------------------
-    notifyQualityReviewSubStage(ctx, "tests", null);
     const testRes = await runHostTests(repoRoot, {
       testCmd: input.testCmd || ctx.config.test.command,
       testConfigPath: input.testConfigPath || "",
       allowNoTests: input.allowNoTests ?? ctx.config.test.allowNoTests ?? false,
-      workspaceDir: ctx.workspaceDir,
-      repoPath: state.repoPath ?? "",
-      log: ctx.log,
     });
     if (testRes.exitCode !== 0) {
       throw new Error(

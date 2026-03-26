@@ -6,7 +6,6 @@ import {
   computeGitWorktreeFingerprint,
   detectRemoteType,
   runPpcommit,
-  spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -57,7 +56,7 @@ export default defineMachine({
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    await ensureBranch(repoRoot, state.branch, { signal: ctx.signal });
+    ensureBranch(repoRoot, state.branch);
     const normalizedType = normalizeBranchType(input.type, {
       fallback: "feat",
     });
@@ -117,15 +116,12 @@ export default defineMachine({
     const isGitLab = detectRemoteType(repoRoot) === "gitlab";
 
     // Push to remote
-    const push = await spawnAsync(
+    const push = spawnSync(
       "git",
       ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
-      { cwd: repoRoot, signal: ctx.signal },
+      { cwd: repoRoot, encoding: "utf8" },
     );
-    if (push.error?.code === "ABORT_ERR" || push.error?.code === "ETIMEDOUT")
-      throw push.error;
-    if (push.status !== 0)
-      throw new Error(`git push failed: ${push.stderr || push.error?.message}`);
+    if (push.status !== 0) throw new Error(`git push failed: ${push.stderr}`);
 
     // Build PR body
     let body = input.description || "";
@@ -178,12 +174,7 @@ export default defineMachine({
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
-      const mr = await spawnAsync("glab", mrArgs, {
-        cwd: repoRoot,
-        signal: ctx.signal,
-      });
-      if (mr.error?.code === "ABORT_ERR" || mr.error?.code === "ETIMEDOUT")
-        throw mr.error;
+      const mr = spawnSync("glab", mrArgs, { cwd: repoRoot, encoding: "utf8" });
       if (mr.status !== 0)
         throw new Error(`glab mr create failed: ${mr.stderr || mr.stdout}`);
       const mrRaw = (mr.stdout || "").trim();
@@ -206,12 +197,7 @@ export default defineMachine({
         body,
       ];
       if (baseBranch) prArgs.push("--base", baseBranch);
-      const pr = await spawnAsync("gh", prArgs, {
-        cwd: repoRoot,
-        signal: ctx.signal,
-      });
-      if (pr.error?.code === "ABORT_ERR" || pr.error?.code === "ETIMEDOUT")
-        throw pr.error;
+      const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
       if (pr.status !== 0)
         throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
       const raw = (pr.stdout || "").trim();

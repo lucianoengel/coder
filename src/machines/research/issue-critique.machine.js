@@ -1,16 +1,15 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { checkCancel, defineMachine } from "../_base.js";
+import { defineMachine } from "../_base.js";
 import {
   appendScratchpad,
-  ensureArtifactOnDisk,
+  beginPipelineStep,
+  endPipelineStep,
   loadPipeline,
-  normalizeVerdict,
-  requirePayloadFields,
+  parseAgentPayload,
+  requireExitZero,
   resolveArtifact,
-  runStructuredStep,
-  sanitizeFilenameSegment,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -36,6 +35,10 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
+    const { agentName, agent } = ctx.agentPool.getAgent("planReviewer", {
+      scope: "workspace",
+    });
+
     const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "issue-critique",
@@ -43,12 +46,12 @@ export default defineMachine({
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const _analysisBrief = resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const webReferenceMap = resolveArtifact(
+    const _webReferenceMap = resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
@@ -59,54 +62,44 @@ export default defineMachine({
       "validation-results",
     );
 
-    checkCancel(ctx);
+    beginPipelineStep(
+      pipeline,
+      input.pipelinePath,
+      input.scratchpadPath,
+      "issue_critique",
+      { agent: agentName, issueCount: input.issues.length },
+    );
 
-    // Write issues to file for agent to read (instead of inlining/truncating)
-    const issuesPath = path.join(
-      input.stepsDir,
-      `${sanitizeFilenameSegment("critique-input-issues")}.json`,
-    );
-    writeFileSync(issuesPath, `${JSON.stringify(input.issues, null, 2)}\n`);
-
-    // Ensure research artifacts are on disk
-    const hasContent = (v) =>
-      v != null && typeof v === "object" && Object.keys(v).length > 0;
-    const briefPath = ensureArtifactOnDisk(
-      input.stepsDir,
-      "analysis-brief",
-      analysisBrief,
-    );
-    const webRefPath = ensureArtifactOnDisk(
-      input.stepsDir,
-      "web-references",
-      webReferenceMap,
-    );
-    const validationPath = ensureArtifactOnDisk(
-      input.stepsDir,
-      "validation-results",
-      validationResults,
-    );
+    const issuesSummary = input.issues
+      .map(
+        (issue, i) =>
+          `### Issue ${i + 1}: ${issue.title || issue.id || `issue-${i}`}\n` +
+          `- Priority: ${issue.priority || "P2"}\n` +
+          `- Objective: ${(issue.objective || "").slice(0, 200)}\n` +
+          `- Changes: ${(issue.changes || []).join(", ").slice(0, 200)}\n` +
+          `- Dependencies: ${(issue.depends_on || []).join(", ") || "none"}`,
+      )
+      .join("\n\n");
 
     const priorFeedbackSection =
       input.priorFeedback.length > 0
         ? `## Prior Feedback (address these)\n${input.priorFeedback.map((f) => `- ${f}`).join("\n")}`
         : "";
 
+    const validationSummary =
+      typeof validationResults === "object" && validationResults
+        ? JSON.stringify(validationResults).slice(0, 2000)
+        : "";
+
     const prompt = `You are a senior engineering reviewer. Critique this issue backlog for completeness, correctness, and actionability.
 
-## Input Artifacts (read these files)
-- Issue backlog: ${issuesPath}
-${hasContent(analysisBrief) ? `- Analysis brief: ${briefPath}` : "- Analysis brief: (not available)"}
-${hasContent(webReferenceMap) ? `- Web references: ${webRefPath}` : "- Web references: (not available)"}
-${hasContent(validationResults) ? `- Validation results: ${validationPath}` : "- Validation results: (not available)"}
+## Issue Backlog
+${issuesSummary}
 
 ${priorFeedbackSection}
 
-## Phase 1: Codebase Exploration (MANDATORY)
-Before critiquing, explore the codebase at \`${input.repoRoot}\` to verify the issues:
-- Check that files and modules referenced in issues actually exist
-- Verify that architecture patterns described in issues match the real codebase
-- Confirm test file paths and test framework conventions are accurate
+## Validation Results
+${validationSummary || "No validation data available."}
 
 ## Review Criteria
 1. **Completeness**: Does each issue have clear scope, acceptance criteria, verification command?
@@ -117,7 +110,6 @@ Before critiquing, explore the codebase at \`${input.repoRoot}\` to verify the i
 6. **Actionability**: Can a developer pick up each issue and start working immediately?
 7. **Risk**: Are high-risk items identified and mitigated?
 8. **Testing**: Does each issue include a testing strategy with references to existing tests and concrete new tests to write?
-9. **Codebase Grounding**: Do issues reference real files and patterns from the actual codebase?
 
 Return JSON:
 {
@@ -145,47 +137,43 @@ Return JSON:
   "feedback": ["actionable feedback items for next iteration"]
 }`;
 
-    const { payload, agentName } = await runStructuredStep({
-      stepName: "issue_critique",
-      role: "planReviewer",
-      prompt,
+    const res = await agent.execute(prompt, {
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
-      stepsDir: input.stepsDir,
-      scratchpadPath: input.scratchpadPath,
-      pipeline,
-      pipelinePath: input.pipelinePath,
-      ctx,
     });
+    requireExitZero(agentName, "issue_critique", res);
 
-    // Enforce output contract — deterministic verdict + required fields
-    requirePayloadFields(
-      payload,
-      { verdict: "string", issueReviews: "array" },
-      "issue_critique",
-    );
-    const verdict = normalizeVerdict(
-      payload.verdict,
-      ["approve", "revise"],
-      "revise",
-    );
+    const payload = parseAgentPayload(agentName, res.stdout);
+
+    // Save critique artifact
+    const critiquePath = path.join(input.stepsDir, "issue-critique.json");
+    writeFileSync(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
 
     appendScratchpad(input.scratchpadPath, "Issue Critique", [
       `- agent: ${agentName}`,
-      `- verdict: ${verdict}`,
-      `- score: ${payload.overallScore || "unknown"}`,
-      `- issues_reviewed: ${payload.issueReviews.length}`,
-      `- gaps_found: ${(payload.backlogIssues?.gaps || []).length}`,
+      `- verdict: ${payload?.verdict || "unknown"}`,
+      `- score: ${payload?.overallScore || "unknown"}`,
+      `- issues_reviewed: ${(payload?.issueReviews || []).length}`,
+      `- gaps_found: ${(payload?.backlogIssues?.gaps || []).length}`,
     ]);
+
+    endPipelineStep(
+      pipeline,
+      input.pipelinePath,
+      input.scratchpadPath,
+      "issue_critique",
+      "completed",
+      { agent: agentName, verdict: payload?.verdict },
+    );
 
     return {
       status: "ok",
       data: {
-        verdict,
-        overallScore: payload.overallScore || 0,
-        issueReviews: payload.issueReviews,
-        backlogIssues: payload.backlogIssues || {},
-        summary: payload.summary || "",
-        feedback: payload.feedback || [],
+        verdict: payload?.verdict || "revise",
+        overallScore: payload?.overallScore || 0,
+        issueReviews: payload?.issueReviews || [],
+        backlogIssues: payload?.backlogIssues || {},
+        summary: payload?.summary || "",
+        feedback: payload?.feedback || [],
       },
     };
   },
