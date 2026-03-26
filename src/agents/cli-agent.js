@@ -128,8 +128,15 @@ export class CliAgent extends AgentAdapter {
       if (customAnthropic) {
         baseEnv.ANTHROPIC_BASE_URL = ep;
         baseEnv.ANTHROPIC_API_KEY = "";
-        if (claudeCfg.apiKeyEnv && opts.secrets[claudeCfg.apiKeyEnv]) {
-          baseEnv.ANTHROPIC_AUTH_TOKEN = opts.secrets[claudeCfg.apiKeyEnv];
+        const keyEnv = claudeCfg.apiKeyEnv;
+        const keyVal = keyEnv ? opts.secrets[keyEnv] : undefined;
+        if (keyVal) {
+          baseEnv.ANTHROPIC_AUTH_TOKEN = keyVal;
+        } else if (keyEnv) {
+          const m = resolveModelName(claudeCfg) || "?";
+          process.stderr.write(
+            `[coder] Warning: ${keyEnv} is not set where coder runs; ANTHROPIC_AUTH_TOKEN is unset. Claude Code may call Anthropic with OpenRouter-only model "${m}" ("model may not exist"). Export ${keyEnv} for the coder-mcp / coder process.\n`,
+          );
         }
       }
       // Model is passed via --model only (see _buildCommand); not duplicated in env

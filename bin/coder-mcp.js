@@ -6,9 +6,14 @@ import path from "node:path";
 import process from "node:process";
 import { parseArgs as nodeParseArgs } from "node:util";
 
+import {
+  earlyWorkspaceDirForMcp,
+  hydrateMcpEnvFromLoginShell,
+} from "../src/mcp-env-hydrate.js";
+
 // Resolve the user's full interactive-login-shell PATH.
-// MCP servers are often launched with a minimal environment (e.g. from an IDE)
-// that lacks nvm, cargo, homebrew, and other user-installed tool directories.
+// MCP hosts (Claude Code, Cursor, etc.) often launch this process with a minimal
+// environment that lacks nvm, cargo, homebrew, and other user-installed dirs.
 // Running `bash -ilc 'echo $PATH'` sources .bashrc/.profile including nvm init.
 try {
   const shellPath = execSync("bash -ilc 'echo \"$PATH\"'", {
@@ -29,6 +34,10 @@ try {
 } catch {
   // Best-effort; fall through with existing PATH.
 }
+
+// Same situation as PATH: align with resolvePassEnv (coder.json + models.*.apiKeyEnv +
+// passEnvPatterns). See hydrateMcpEnvFromLoginShell.
+hydrateMcpEnvFromLoginShell(earlyWorkspaceDirForMcp());
 
 const PKG_VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
