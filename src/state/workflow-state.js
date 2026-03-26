@@ -42,9 +42,18 @@ function setWriteChain(key, promise) {
   );
 }
 
-/** Await all pending state writes for a workspace before cleanup/exit. */
-export function drainWriteChain(key) {
-  return _writeChains.get(key) || Promise.resolve();
+/**
+ * Return the current write-chain promise for a workspace (resolves
+ * immediately if no writes are pending).  Does NOT guarantee global
+ * quiescence — new writes appended after this call are not covered.
+ */
+export function drainWriteChain(workspaceDir) {
+  return getWriteChain(workspaceDir);
+}
+
+/** Synchronous check: true when a write-chain entry exists for `key`. */
+export function hasWriteChain(key) {
+  return _writeChains.has(key);
 }
 
 function nowIso() {

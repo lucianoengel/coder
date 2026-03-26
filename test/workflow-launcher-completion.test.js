@@ -9,6 +9,7 @@ import {
   startWorkflowActor,
 } from "../src/mcp/tools/workflows.js";
 import {
+  hasWriteChain,
   loadLoopState,
   loadWorkflowSnapshot,
   saveLoopState,
@@ -76,6 +77,14 @@ async function runLauncherNormalCompletionFixture(result, opts = {}) {
       agentPool: mockPool,
       workflow: "develop",
     });
+
+    // Drain guard: applyLauncherNormalCompletion must await its writes before
+    // returning.  After it completes, no pending write-chain should remain.
+    assert.strictEqual(
+      hasWriteChain(ws),
+      false,
+      "write chain was not drained by applyLauncherNormalCompletion",
+    );
 
     const loop = await loadLoopState(ws);
     const snap = await loadWorkflowSnapshot(ws);
