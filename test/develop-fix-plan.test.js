@@ -867,11 +867,14 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
     });
     execSync("git push", { cwd: clone2, stdio: "ignore" });
 
-    // Create a local commit in ws that diverges from the remote
+    // Create a local commit in ws that diverges from the remote.
+    // Then fetch so that origin/main is up-to-date — git pull inside
+    // runDevelopLoop needs to see the diverged ref to fail with --ff-only.
     execSync("git commit --allow-empty -m 'local diverge'", {
       cwd: ws,
       stdio: "ignore",
     });
+    execSync("git fetch origin", { cwd: ws, stdio: "ignore" });
 
     const issuesDir = writeLocalManifest(ws, [
       { id: "A", title: "Issue A", difficulty: 1 },
