@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { earlyWorkspaceDirForMcp } from "../src/mcp-env-hydrate.js";
+import {
+  captureLoginShellEnv,
+  earlyWorkspaceDirForMcp,
+  hydrateMcpEnvFromLoginShell,
+} from "../src/mcp-env-hydrate.js";
 
 test("earlyWorkspaceDirForMcp uses --workspace when present", () => {
   const prev = process.argv;
@@ -32,4 +38,30 @@ test("earlyWorkspaceDirForMcp falls back to cwd without --workspace", () => {
   } finally {
     process.argv = prev;
   }
+});
+
+test("hydrateMcpEnvFromLoginShell does not throw when passEnvPatterns regex is invalid", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-hydrate-"));
+  writeFileSync(
+    path.join(dir, "coder.json"),
+    JSON.stringify({
+      sandbox: { passEnv: ["FOO"], passEnvPatterns: ["("] },
+    }),
+  );
+  assert.doesNotThrow(() => hydrateMcpEnvFromLoginShell(dir));
+});
+
+test("captureLoginShellEnv sees exports from ~/.bashrc (login + interactive -ilc)", () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), "coder-bashrc-"));
+  writeFileSync(
+    path.join(home, ".bashrc"),
+    "export CODER_TEST_FROM_BASHRC=hydrate-test\n",
+  );
+  // Login shells read ~/.bash_profile first; Ubuntu-style profile sources .bashrc.
+  writeFileSync(
+    path.join(home, ".bash_profile"),
+    'test -f "$HOME/.bashrc" && . "$HOME/.bashrc"\n',
+  );
+  const raw = captureLoginShellEnv({ ...process.env, HOME: home });
+  assert.match(raw, /(^|\n)CODER_TEST_FROM_BASHRC=hydrate-test(\n|$)/);
 });

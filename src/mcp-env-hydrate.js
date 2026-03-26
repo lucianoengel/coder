@@ -6,6 +6,29 @@ import { parseArgs as nodeParseArgs } from "node:util";
 import { resolveConfig } from "./config.js";
 import { resolvePassEnv } from "./helpers.js";
 
+/** Avoid OOM if login shell prints an enormous env (or garbage). */
+const MAX_ENV_CAPTURE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Run `env` in a login **interactive** bash (`-ilc`), matching `bin/coder-mcp.js`
+ * PATH merge. The `-i` keeps parity with typical `~/.bashrc` usage (often sourced
+ * from `~/.profile` / `~/.bash_profile` for login shells). `timeout` + `maxBuffer`
+ * bound hangs and oversized output.
+ *
+ * @param {NodeJS.ProcessEnv} [childEnv] - Child environment (default `process.env`).
+ *   Tests may set `HOME` to a temp dir with `.bashrc` / `.bash_profile`.
+ * @returns {string} Raw `env` stdout
+ */
+export function captureLoginShellEnv(childEnv = process.env) {
+  return execSync("bash -ilc 'env'", {
+    encoding: "utf8",
+    timeout: 8000,
+    maxBuffer: MAX_ENV_CAPTURE_BYTES,
+    stdio: ["ignore", "pipe", "ignore"],
+    env: childEnv,
+  });
+}
+
 /**
  * Workspace directory for config resolution: same rules as `coder-mcp` CLI
  * (`--workspace`, `--workspace=`), else cwd. Used before full CLI parsing so
@@ -35,36 +58,38 @@ export function earlyWorkspaceDirForMcp() {
 export function hydrateMcpEnvFromLoginShell(workspaceDir) {
   let raw;
   try {
-    raw = execSync("bash -ilc 'env'", {
-      encoding: "utf8",
-      timeout: 8000,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    raw = captureLoginShellEnv();
   } catch {
     return;
   }
 
-  const loginEnv = {};
-  for (const line of raw.split("\n")) {
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq);
-    loginEnv[key] = line.slice(eq + 1);
-  }
+  if (!raw || raw.length > MAX_ENV_CAPTURE_BYTES) return;
 
-  const mergedScan = { ...process.env, ...loginEnv };
-
-  let config;
   try {
-    config = resolveConfig(workspaceDir);
-  } catch {
-    return;
-  }
+    const loginEnv = {};
+    for (const line of raw.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq);
+      loginEnv[key] = line.slice(eq + 1);
+    }
 
-  const names = resolvePassEnv(config, mergedScan);
-  for (const key of names) {
-    if (process.env[key]) continue;
-    const v = mergedScan[key];
-    if (v) process.env[key] = v;
+    const mergedScan = { ...process.env, ...loginEnv };
+
+    let config;
+    try {
+      config = resolveConfig(workspaceDir);
+    } catch {
+      return;
+    }
+
+    const names = resolvePassEnv(config, mergedScan);
+    for (const key of names) {
+      if (process.env[key]) continue;
+      const v = mergedScan[key];
+      if (v) process.env[key] = v;
+    }
+  } catch {
+    // resolvePassEnv can throw on invalid passEnvPatterns regex; never take down coder-mcp.
   }
 }
