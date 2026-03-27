@@ -304,7 +304,24 @@ export class CliAgent extends AgentAdapter {
       }
       if (sessionId) flags += ` --session-id ${shellEscape(sessionId)}`;
       if (resumeId) flags += ` --resume ${shellEscape(resumeId)}`;
-      return heredocPipe(prompt, flags);
+      let cmd = heredocPipe(prompt, flags);
+      // Set caps in the shell script itself: systemd-run --setenv can mishandle values
+      // with '=' (API keys) or long argv; exports run in the same bash as `claude`.
+      const maxIn = this.config.claude?.maxInputTokens;
+      const maxOut = this.config.claude?.maxOutputTokens;
+      const exports = [];
+      if (maxIn !== undefined && maxIn !== null) {
+        exports.push(
+          `export CLAUDE_CODE_MAX_INPUT_TOKENS=${shellEscape(String(maxIn))}`,
+        );
+      }
+      if (maxOut !== undefined && maxOut !== null) {
+        exports.push(
+          `export CLAUDE_CODE_MAX_OUTPUT_TOKENS=${shellEscape(String(maxOut))}`,
+        );
+      }
+      if (exports.length) cmd = `${exports.join("; ")}; ${cmd}`;
+      return cmd;
     }
 
     // codex: resume is a subcommand, not a flag

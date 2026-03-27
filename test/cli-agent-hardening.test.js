@@ -162,3 +162,21 @@ test("claude: token env vars are omitted when maxInputTokens/maxOutputTokens are
   assert.equal(base.CLAUDE_CODE_MAX_INPUT_TOKENS, undefined);
   assert.equal(base.CLAUDE_CODE_MAX_OUTPUT_TOKENS, undefined);
 });
+
+test("claude: _buildCommand prefixes shell exports for token caps when set", () => {
+  const config = CoderConfigSchema.parse({
+    claude: { maxInputTokens: 100_000, maxOutputTokens: 16384 },
+  });
+  const agent = new CliAgent("claude", {
+    cwd: "/tmp",
+    secrets: {},
+    config,
+    workspaceDir: "/tmp",
+  });
+  const cmd = agent._buildCommand("hi", {});
+  assert.ok(
+    cmd.startsWith(
+      "export CLAUDE_CODE_MAX_INPUT_TOKENS='100000'; export CLAUDE_CODE_MAX_OUTPUT_TOKENS='16384'; cat <<'",
+    ),
+  );
+});
